@@ -42,11 +42,24 @@ _attribute_data_retention_ static u8      radar_sta_toggle = 0;
 
 typedef struct
 {
-    s16 prev_x_mm;
-    s16 prev_y_mm;
-    u8  has_prev;
-    u8  stationary_frames;
+    s16   prev_x_mm;
+    s16   prev_y_mm;
+    u8    has_prev;
+    u8    stationary_frames;
+    u8    has_last_motion_dir;
+    float last_motion_dir_rad;
+
+    // Cache recent points for stable motion direction (1s window)
+    u8 motion_cache_head;
+    u8 motion_cache_count;
 } radar_prediction_state_t;
+
+typedef struct
+{
+    s16 x_mm;
+    s16 y_mm;
+    u32 tick;
+} radar_motion_point_t;
 
 typedef struct
 {
@@ -70,22 +83,103 @@ typedef enum
 #define RADAR_GIMBAL_SEQ_MAX_POINTS   16
 #define RADAR_GIMBAL_STEP_INTERVAL_US 100000
 
-_attribute_data_retention_ static radar_prediction_state_t g_radar_pred                                     = {0};
-_attribute_data_retention_ static radar_gimbal_point_t     g_radar_seq_build[RADAR_GIMBAL_SEQ_MAX_POINTS]   = {0};
-_attribute_data_retention_ static radar_gimbal_point_t     g_radar_seq_active[RADAR_GIMBAL_SEQ_MAX_POINTS]  = {0};
-_attribute_data_retention_ static radar_gimbal_point_t     g_radar_seq_pending[RADAR_GIMBAL_SEQ_MAX_POINTS] = {0};
-_attribute_data_retention_ static u8                       g_radar_seq_build_cnt                            = 0;
-_attribute_data_retention_ static u8                       g_radar_seq_active_cnt                           = 0;
-_attribute_data_retention_ static u8                       g_radar_seq_pending_cnt                          = 0;
-_attribute_data_retention_ static u8                       g_radar_seq_active_idx                           = 0;
-_attribute_data_retention_ static u8                       g_radar_seq_pending_valid                        = 0;
-_attribute_data_retention_ static u32                      g_radar_seq_step_tick                            = 0;
-_attribute_data_retention_ static radar_gimbal_fsm_t       g_radar_gimbal_fsm                               = RADAR_GIMBAL_FSM_IDLE;
-_attribute_data_retention_ static s16                      g_radar_busy_max_speed_abs                       = 0;
-_attribute_data_retention_ static u32                      g_radar_last_motion_tick                         = 0;
-_attribute_data_retention_ static u32                      g_radar_session_start_tick                       = 0;
-_attribute_data_retention_ static u32                      g_radar_rest_start_tick                          = 0;
-_attribute_data_retention_ static u8                       g_radar_resting                                  = 0;
+_attribute_data_retention_ static radar_prediction_state_t g_radar_pred = {0};
+
+// Motion direction cache (keep last 1 second of points)
+#define RADAR_MOTION_CACHE_WINDOW_US  1000000u
+#define RADAR_MOTION_CACHE_MAX_POINTS 64
+_attribute_data_retention_ static radar_motion_point_t g_radar_motion_cache[RADAR_MOTION_CACHE_MAX_POINTS] = {0};
+
+static inline void RadarMotionCacheReset(void)
+{
+    g_radar_pred.has_last_motion_dir = 0;
+    g_radar_pred.last_motion_dir_rad = 0.0f;
+    g_radar_pred.motion_cache_head   = 0;
+    g_radar_pred.motion_cache_count  = 0;
+}
+
+static inline u8 RadarMotionCacheIndexOldest(void)
+{
+    // oldest = head - count (mod N)
+    u8 head  = g_radar_pred.motion_cache_head;
+    u8 count = g_radar_pred.motion_cache_count;
+    if (count == 0)
+    {
+        return 0;
+    }
+    s16 idx = (s16)head - (s16)count;
+    while (idx < 0)
+    {
+        idx += RADAR_MOTION_CACHE_MAX_POINTS;
+    }
+    return (u8)idx;
+}
+
+static inline u8 RadarMotionCacheIndexNewest(void)
+{
+    // newest = head - 1 (mod N)
+    u8 head = g_radar_pred.motion_cache_head;
+    if (g_radar_pred.motion_cache_count == 0)
+    {
+        return 0;
+    }
+    return (u8)((head == 0) ? (RADAR_MOTION_CACHE_MAX_POINTS - 1) : (head - 1));
+}
+
+static void RadarMotionCachePrune(u32 now_tick)
+{
+    while (g_radar_pred.motion_cache_count)
+    {
+        u8  idx    = RadarMotionCacheIndexOldest();
+        u32 age_us = (now_tick - g_radar_motion_cache[idx].tick) >> 4;
+        if (age_us <= RADAR_MOTION_CACHE_WINDOW_US)
+        {
+            break;
+        }
+        g_radar_pred.motion_cache_count--;
+    }
+}
+
+static void RadarMotionCachePush(u32 now_tick, s16 x_mm, s16 y_mm)
+{
+    RadarMotionCachePrune(now_tick);
+
+    // de-dup: if newest is same point, refresh tick only
+    if (g_radar_pred.motion_cache_count)
+    {
+        u8 newest = RadarMotionCacheIndexNewest();
+        if (g_radar_motion_cache[newest].x_mm == x_mm && g_radar_motion_cache[newest].y_mm == y_mm)
+        {
+            g_radar_motion_cache[newest].tick = now_tick;
+            return;
+        }
+    }
+
+    g_radar_motion_cache[g_radar_pred.motion_cache_head].x_mm = x_mm;
+    g_radar_motion_cache[g_radar_pred.motion_cache_head].y_mm = y_mm;
+    g_radar_motion_cache[g_radar_pred.motion_cache_head].tick = now_tick;
+    g_radar_pred.motion_cache_head                            = (u8)((g_radar_pred.motion_cache_head + 1) % RADAR_MOTION_CACHE_MAX_POINTS);
+
+    if (g_radar_pred.motion_cache_count < RADAR_MOTION_CACHE_MAX_POINTS)
+    {
+        g_radar_pred.motion_cache_count++;
+    }
+}
+_attribute_data_retention_ static radar_gimbal_point_t g_radar_seq_build[RADAR_GIMBAL_SEQ_MAX_POINTS]   = {0};
+_attribute_data_retention_ static radar_gimbal_point_t g_radar_seq_active[RADAR_GIMBAL_SEQ_MAX_POINTS]  = {0};
+_attribute_data_retention_ static radar_gimbal_point_t g_radar_seq_pending[RADAR_GIMBAL_SEQ_MAX_POINTS] = {0};
+_attribute_data_retention_ static u8                   g_radar_seq_build_cnt                            = 0;
+_attribute_data_retention_ static u8                   g_radar_seq_active_cnt                           = 0;
+_attribute_data_retention_ static u8                   g_radar_seq_pending_cnt                          = 0;
+_attribute_data_retention_ static u8                   g_radar_seq_active_idx                           = 0;
+_attribute_data_retention_ static u8                   g_radar_seq_pending_valid                        = 0;
+_attribute_data_retention_ static u32                  g_radar_seq_step_tick                            = 0;
+_attribute_data_retention_ static radar_gimbal_fsm_t   g_radar_gimbal_fsm                               = RADAR_GIMBAL_FSM_IDLE;
+_attribute_data_retention_ static s16                  g_radar_busy_max_speed_abs                       = 0;
+_attribute_data_retention_ static u32                  g_radar_last_motion_tick                         = 0;
+_attribute_data_retention_ static u32                  g_radar_session_start_tick                       = 0;
+_attribute_data_retention_ static u32                  g_radar_rest_start_tick                          = 0;
+_attribute_data_retention_ static u8                   g_radar_resting                                  = 0;
 
 _attribute_data_retention_ static u32 g_radar_time_sec          = 0;
 _attribute_data_retention_ static u32 g_radar_time_tick_acc_us  = 0;
@@ -663,6 +757,7 @@ void RadarSessionStop(u8 reset)
     g_radar_seq_pending_valid  = 0;
     g_radar_gimbal_fsm         = RADAR_GIMBAL_FSM_IDLE;
     g_radar_busy_max_speed_abs = 0;
+    RadarMotionCacheReset();
     if (reset)
     {
         g_radar_session_start_tick = 0;
@@ -901,10 +996,10 @@ void app_radar_gimbal_track_task(void)
         }
 
         g_radar_seq_step_tick = clock_time();
-        #if (UI_STEP_MOTOR_ENABLE)
-            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, g_radar_seq_active[g_radar_seq_active_idx].pan_deg10);
-            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10);
-        #endif
+#if (UI_STEP_MOTOR_ENABLE)
+        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, g_radar_seq_active[g_radar_seq_active_idx].pan_deg10);
+        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10);
+#endif
         // LOG_D("PAN,%d,TILT,%d,idx,%d",
         //       g_radar_seq_active[g_radar_seq_active_idx].pan_deg10,
         //       g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10,
@@ -1060,6 +1155,27 @@ static float RadarDot(radar_vec2f_t a, radar_vec2f_t b)
 static float RadarCross(radar_vec2f_t a, radar_vec2f_t b)
 {
     return a.x * b.y - a.y * b.x;
+}
+
+static radar_vec2f_t RadarClosestPointOnSegment(radar_vec2f_t p, radar_vec2f_t a, radar_vec2f_t b)
+{
+    radar_vec2f_t ab    = RadarVecSub(b, a);
+    float         denom = RadarDot(ab, ab);
+    if (denom <= 0.000001f)
+    {
+        return a;
+    }
+
+    float t = RadarDot(RadarVecSub(p, a), ab) / denom;
+    if (t < 0.0f)
+    {
+        t = 0.0f;
+    }
+    else if (t > 1.0f)
+    {
+        t = 1.0f;
+    }
+    return RadarVecAdd(a, RadarVecMul(ab, t));
 }
 
 static float RadarLen(radar_vec2f_t a)
@@ -1236,9 +1352,54 @@ static void RadarAdvanceReflectQuad(s32           start_x_mm,
 
         if (best_edge < 0 || best_t > 1.0f)
         {
-            // Fallback: no intersection found (degenerate). Clamp by keeping start.
-            *out_x_mm = (s16)cur_start.x;
-            *out_y_mm = (s16)cur_start.y;
+            // Fallback: no exact intersection (numeric/degenerated case).
+            // Choose nearest boundary edge and compute reflected prediction from it.
+            int           nearest_edge = 0;
+            float         best_dist2   = -1.0f;
+            radar_vec2f_t nearest_proj = cur_end;
+
+            for (int i = 0; i < 4; i++)
+            {
+                radar_vec2f_t a  = RadarVec2((float)g_radar_boundary_quad[i].x_mm, (float)g_radar_boundary_quad[i].y_mm);
+                radar_vec2f_t b  = RadarVec2((float)g_radar_boundary_quad[(i + 1) % 4].x_mm, (float)g_radar_boundary_quad[(i + 1) % 4].y_mm);
+                radar_vec2f_t q  = RadarClosestPointOnSegment(cur_end, a, b);
+                radar_vec2f_t d  = RadarVecSub(q, cur_end);
+                float         d2 = RadarDot(d, d);
+
+                if (best_dist2 < 0.0f || d2 < best_dist2)
+                {
+                    best_dist2   = d2;
+                    nearest_edge = i;
+                    nearest_proj = q;
+                }
+            }
+
+            radar_vec2f_t edge_a    = RadarVec2((float)g_radar_boundary_quad[nearest_edge].x_mm, (float)g_radar_boundary_quad[nearest_edge].y_mm);
+            radar_vec2f_t edge_b    = RadarVec2((float)g_radar_boundary_quad[(nearest_edge + 1) % 4].x_mm, (float)g_radar_boundary_quad[(nearest_edge + 1) % 4].y_mm);
+            radar_vec2f_t edge_unit = RadarNormalize(RadarVecSub(edge_b, edge_a));
+            radar_vec2f_t seg_vec   = RadarVecSub(cur_end, cur_start);
+            float         seg_len   = RadarLen(seg_vec);
+            radar_vec2f_t v_unit    = RadarNormalize(seg_vec);
+            radar_vec2f_t v_ref_u   = RadarNormalize(RadarReflect(v_unit, edge_unit));
+            radar_vec2f_t out_pt;
+
+            if (v_ref_u.x == 0.0f && v_ref_u.y == 0.0f)
+            {
+                v_ref_u = edge_unit;
+            }
+
+            *inout_dir_rad = RadarWrapAngle(RadarAtan2Safe(v_ref_u.x, v_ref_u.y));
+            out_pt         = RadarVecAdd(nearest_proj, RadarVecMul(v_ref_u, seg_len));
+
+            s16 px = (s16)out_pt.x;
+            s16 py = (s16)out_pt.y;
+            if (!RadarPointInsideQuad((s32)px, (s32)py))
+            {
+                float proj_dist = 0.0f;
+                RadarProjectToQuad((s32)px, (s32)py, &px, &py, &proj_dist);
+            }
+            *out_x_mm = px;
+            *out_y_mm = py;
             return;
         }
 
@@ -1310,30 +1471,62 @@ static void BuildPredictionPoint(s16   cur_x_mm,
     }
 }
 
-static void ReportPredictionSerialized(s16 x_mm, s16 y_mm, s16 v_cm_s)
+static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_cm_s)
 {
     s16   dx_mm         = 0;
     s16   dy_mm         = 0;
     float motion_rad    = 0.0f;
+    u8    motion_valid  = 0;
     u8    is_stationary = 1;
+
+    RadarMotionCachePush(now_tick, x_mm, y_mm);
 
     if (g_radar_pred.has_prev)
     {
         dx_mm = (s16)(x_mm - g_radar_pred.prev_x_mm);
         dy_mm = (s16)(y_mm - g_radar_pred.prev_y_mm);
 
+        // Prefer direction derived from the 1s window edge points (oldest & newest)
+        if (g_radar_pred.motion_cache_count >= 2)
+        {
+            u8  oldest = RadarMotionCacheIndexOldest();
+            u8  newest = RadarMotionCacheIndexNewest();
+            s16 dx_w   = (s16)(g_radar_motion_cache[newest].x_mm - g_radar_motion_cache[oldest].x_mm);
+            s16 dy_w   = (s16)(g_radar_motion_cache[newest].y_mm - g_radar_motion_cache[oldest].y_mm);
+            if ((abs(dx_w) > STATIONARY_DXY_THRESHOLD_MM) || (abs(dy_w) > STATIONARY_DXY_THRESHOLD_MM))
+            {
+                motion_rad   = lookup_atan2((float)dx_w, (float)dy_w);
+                motion_valid = 1;
+            }
+        }
+
         if ((abs(dx_mm) > STATIONARY_DXY_THRESHOLD_MM) || (abs(dy_mm) > STATIONARY_DXY_THRESHOLD_MM))
         {
-            is_stationary                  = 0;
-            motion_rad                     = lookup_atan2((float)dx_mm, (float)dy_mm);
-            g_radar_pred.stationary_frames = 0;
+            is_stationary = 0;
+            if (!motion_valid && (dx_mm || dy_mm))
+            {
+                motion_rad   = lookup_atan2((float)dx_mm, (float)dy_mm);
+                motion_valid = 1;
+            }
+            if (motion_valid)
+            {
+                // Update sticky direction only while moving.
+                g_radar_pred.last_motion_dir_rad = motion_rad;
+                g_radar_pred.has_last_motion_dir = 1;
+            }
         }
         else
         {
-            g_radar_pred.stationary_frames++;
-            if (dx_mm || dy_mm)
+            // Keep last moving direction during stationary period.
+            if (g_radar_pred.has_last_motion_dir)
             {
-                motion_rad = lookup_atan2((float)dx_mm, (float)dy_mm);
+                motion_rad   = g_radar_pred.last_motion_dir_rad;
+                motion_valid = 1;
+            }
+            else if (!motion_valid && (dx_mm || dy_mm))
+            {
+                motion_rad   = lookup_atan2((float)dx_mm, (float)dy_mm);
+                motion_valid = 1;
             }
         }
     }
@@ -1357,9 +1550,9 @@ static void ReportPredictionSerialized(s16 x_mm, s16 y_mm, s16 v_cm_s)
         {
             s16   sx      = bx;
             s16   sy      = by;
-            float seq_dir = lookup_atan2((float)bx, (float)by);
+            float seq_dir = motion_rad;
 
-            for (u8 i = 0; i < 3; i++)
+            for (u8 i = 0; i < 6; i++)
             {
                 s32 dist = RadarRandRangeI32(100, 300);
                 s32 nx32 = (s32)sx + (s32)((float)dist * lookup_sin(seq_dir));
@@ -1367,8 +1560,14 @@ static void ReportPredictionSerialized(s16 x_mm, s16 y_mm, s16 v_cm_s)
 
                 radar_vec2f_t v_step = RadarVec2((float)(nx32 - sx), (float)(ny32 - sy));
                 RadarAdvanceReflectQuad((s32)sx, (s32)sy, v_step, &sx, &sy, &seq_dir);
+                // 保险：若仍在边界外，拉回到最近边界点
+                if (!RadarPointInsideQuad((s32)sx, (s32)sy))
+                {
+                    float proj_dist = 0.0f;
+                    RadarProjectToQuad((s32)sx, (s32)sy, &sx, &sy, &proj_dist);
+                }
                 RadarSeqBuildAppendPoint(sx, sy);
-                // LOG_D("PREDSEQ,%d,%d,%d", i + 1, sx, sy);
+                LOG_D("PREDSEQ,%d,%d,%d", i + 1, sx, sy);
             }
             radar_sta_toggle = 1;
         }
@@ -1376,7 +1575,7 @@ static void ReportPredictionSerialized(s16 x_mm, s16 y_mm, s16 v_cm_s)
         {
             RadarSeqBuildAppendPoint(ax, ay);
             RadarSeqBuildAppendPoint(bx, by);
-            // LOG_D("PRED,STA,%d,%d,%d,%d", ax, ay, bx, by);
+            LOG_D("PRED,STA,%d,%d,%d,%d", ax, ay, bx, by);
             radar_sta_toggle = 0;
         }
     }
@@ -1424,7 +1623,7 @@ static void ReportPredictionSerialized(s16 x_mm, s16 y_mm, s16 v_cm_s)
                 RadarProjectToQuad((s32)sx, (s32)sy, &sx, &sy, &proj_dist);
             }
             RadarSeqBuildAppendPoint(sx, sy);
-            // LOG_D("PREDSEQ,%d,%d,%d", i + 1, sx, sy);
+            LOG_D("PREDSEQ,%d,%d,%d", i + 1, sx, sy);
         }
     }
 
@@ -1486,7 +1685,7 @@ void app_radar_parse_and_report_frame(void)
 
             if (RadarSessionCanPredict(now_tick))
             {
-                ReportPredictionSerialized(x_in, y_in, v_avg);
+                ReportPredictionSerialized(now_tick, x_in, y_in, v_avg);
             }
 
 #if RADAR_FPS_TEST

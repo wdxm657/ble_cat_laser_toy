@@ -990,10 +990,14 @@ void main_loop(void)
         {
             // 进入设置状态
             app_ctrl_radar_boundary_enter();
+            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         }
     }
     else
+    {
+        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
         RadarSessionStop(1);
+    }
 #if FUNC_ELAPSED_TEST
     end_time = clock_time() >> 4;
     elapsed  = end_time - start_time;
