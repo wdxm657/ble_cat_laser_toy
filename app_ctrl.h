@@ -52,6 +52,8 @@ enum{
     CTRL_CMD_RADAR_PRED_DEBUG           = 0x57,
     /** APP -> device: request boundary quad (device emits 4x EVENT sub BOUNDARY_PT); RSP status only */
     CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY  = 0x58,
+    /** APP -> device: set radar track gimbal step interval; payload u16 LE interval_us (µs) */
+    CTRL_CMD_RADAR_TRACK_SPEED         = 0x59,
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
 };

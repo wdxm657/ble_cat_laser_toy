@@ -4,6 +4,9 @@ Radar prediction debug visualizer.
 - Serial: text lines after 8-char log prefix, e.g. PREV,...,RAW,... / PRED,STA,... / PREDSEQ,...
 - BLE: binary EVENT on Ctrl TX (cmd 0x57): prediction debug + BOUNDARY_PT (0x04).
   BOUNDARY_PT is **not** streamed: device sends 4 NOTIFY only after CMD **0x58** on Ctrl RX.
+  **CMD 0x59** (RADAR_TRACK_SPEED): APP writes Ctrl RX with payload u16 LE ``interval_us`` (µs)
+  to set radar track gimbal step interval (same as ``StepMotor_GimbalSetSpeedUs``).
+  The night-mode UI can send 0x59 from the right panel.
   Script defaults to requesting the quad on connect; use --no-ble-request-boundary to skip.
   The UI updates the black quad only after **all four** corners are received.
   pip install bleak
@@ -25,6 +28,7 @@ This script reconnects in a loop and prints errors to stderr.
 import argparse
 import asyncio
 import math
+import queue
 import struct
 import sys
 import threading
@@ -35,7 +39,8 @@ from collections import deque
 from typing import List, Optional, Set, Tuple
 
 import serial
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtCore import Qt
 
 import matplotlib
 
@@ -175,6 +180,7 @@ CTRL_MSG_TYPE_CMD = 0x01
 CTRL_MSG_TYPE_EVENT = 0x03
 CTRL_CMD_RADAR_PRED_DEBUG = 0x57
 CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = 0x58
+CTRL_CMD_RADAR_TRACK_SPEED = 0x59
 
 CTRL_RADAR_DBG_SUB_PREV_RAW = 0x01
 CTRL_RADAR_DBG_SUB_PRED_STA = 0x02
@@ -194,6 +200,26 @@ BOUNDARY_QUAD = [
     (1000, 4000),
     (-1000, 4000),
 ]
+
+# 与固件 StepMotor_ClampIntervalUs 下限一致；上位机发送前也会夹紧
+TRACK_INTERVAL_US_MIN = 750
+TRACK_INTERVAL_US_MAX = 20000
+TRACK_INTERVAL_DEFAULT_US = 800
+
+
+def build_ctrl_cmd_frame(cmd_id: int, seq: int, payload: bytes) -> bytes:
+    """version, msgType=CMD, cmdId, seq, payLen u16 LE, payload."""
+    plen = len(payload)
+    return bytes(
+        [
+            CTRL_PROTO_VERSION,
+            CTRL_MSG_TYPE_CMD,
+            cmd_id & 0xFF,
+            seq & 0xFF,
+            plen & 0xFF,
+            (plen >> 8) & 0xFF,
+        ]
+    ) + payload
 
 
 class RadarVisualizer:
@@ -218,6 +244,9 @@ class RadarVisualizer:
         self._ble_request_boundary = ble_request_boundary
         self._ble_thread: Optional[threading.Thread] = None
         self._ble_ctrl_tx_char: Optional[object] = None
+        self._ble_ctrl_rx_char: Optional[object] = None
+        self._ble_tx_queue = queue.Queue()
+        self._ble_tx_seq: int = 0
 
         self.seq_history = deque(maxlen=9)
 
@@ -242,6 +271,17 @@ class RadarVisualizer:
 
         if transport == "serial":
             self._ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.1)
+
+    def send_radar_track_interval_us(self, interval_us: int) -> bool:
+        """下发 CTRL_CMD_RADAR_TRACK_SPEED (0x59)，payload u16 LE interval_us。仅 BLE。"""
+        if self._transport != "ble":
+            return False
+        v = max(TRACK_INTERVAL_US_MIN, min(TRACK_INTERVAL_US_MAX, int(interval_us)))
+        self._ble_tx_seq = (self._ble_tx_seq + 1) & 0xFF
+        pl = struct.pack("<H", v)
+        frame = build_ctrl_cmd_frame(CTRL_CMD_RADAR_TRACK_SPEED, self._ble_tx_seq, pl)
+        self._ble_tx_queue.put(frame)
+        return True
 
     def start(self):
         if self._transport == "serial":
@@ -315,11 +355,18 @@ class RadarVisualizer:
                             "Confirm firmware is ble_cat_laser_toy and check GATT dump above."
                         )
                     self._ble_ctrl_tx_char = ctrl_tx
+                    rx_ch = _find_ctrl_rx_characteristic(client)
+                    self._ble_ctrl_rx_char = rx_ch
+                    if rx_ch is None:
+                        print(
+                            "[BLE] Ctrl RX not found; track speed writes disabled",
+                            file=sys.stderr,
+                        )
                     print(f"[BLE] notify on {ctrl_tx.uuid}", file=sys.stderr)
                     await client.start_notify(ctrl_tx, on_notify)
                     if self._ble_request_boundary:
 
-                        async def _write_get_boundary(rx_ch) -> None:
+                        async def _write_get_boundary(rx_char) -> None:
                             req = bytes(
                                 [
                                     CTRL_PROTO_VERSION,
@@ -331,13 +378,12 @@ class RadarVisualizer:
                                 ]
                             )
                             try:
-                                await client.write_gatt_char(rx_ch, req, response=True)
+                                await client.write_gatt_char(rx_char, req, response=True)
                             except Exception:
-                                await client.write_gatt_char(rx_ch, req, response=False)
+                                await client.write_gatt_char(rx_char, req, response=False)
 
                         await asyncio.sleep(0.25)
                         try:
-                            rx_ch = _find_ctrl_rx_characteristic(client)
                             if rx_ch is None:
                                 print(
                                     "[BLE] Ctrl RX not found; cannot request boundary quad",
@@ -369,6 +415,22 @@ class RadarVisualizer:
                                 file=sys.stderr,
                             )
                             break
+                        try:
+                            while True:
+                                pkt = self._ble_tx_queue.get_nowait()
+                                rxw = self._ble_ctrl_rx_char
+                                if rxw is not None:
+                                    try:
+                                        await client.write_gatt_char(
+                                            rxw, pkt, response=False
+                                        )
+                                    except Exception as ex:
+                                        print(
+                                            f"[BLE] write queue failed: {ex}",
+                                            file=sys.stderr,
+                                        )
+                        except queue.Empty:
+                            pass
                         keepalive += 1
                         # Light GATT read ~every 2s to nudge some Windows stacks / central scheduling.
                         if keepalive >= 40:
@@ -383,6 +445,7 @@ class RadarVisualizer:
                     except Exception:
                         pass
                     self._ble_ctrl_tx_char = None
+                    self._ble_ctrl_rx_char = None
             except Exception as ex:
                 if self._stop.is_set():
                     break
@@ -500,6 +563,26 @@ class RadarVisualizer:
             return
 
 
+NIGHT_STYLESHEET = """
+QMainWindow, QWidget { background-color: #1e1e2e; color: #cdd6f4; }
+QPlainTextEdit {
+  background-color: #181825; color: #cdd6f4; border: 1px solid #45475a;
+  border-radius: 6px; padding: 8px; font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+QGroupBox {
+  font-weight: bold; border: 1px solid #45475a; border-radius: 8px; margin-top: 12px; padding: 12px;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #89b4fa; }
+QSpinBox, QPushButton {
+  background: #313244; color: #cdd6f4; border: 1px solid #45475a; border-radius: 4px; padding: 6px 12px;
+}
+QPushButton:hover { background: #45475a; }
+QPushButton:disabled { color: #6c7086; background: #313244; }
+QLabel { color: #bac2de; }
+"""
+
+
 class RawLogWindow(QtWidgets.QMainWindow):
     def __init__(self, title: str = "Raw data"):
         super().__init__()
@@ -508,6 +591,7 @@ class RawLogWindow(QtWidgets.QMainWindow):
         self.text = QtWidgets.QPlainTextEdit()
         self.text.setReadOnly(True)
         self.setCentralWidget(self.text)
+        self.setStyleSheet(NIGHT_STYLESHEET)
 
     def append_lines(self, lines):
         if not lines:
@@ -516,7 +600,9 @@ class RawLogWindow(QtWidgets.QMainWindow):
         self.text.verticalScrollBar().setValue(self.text.verticalScrollBar().maximum())
 
 
-class RadarWindow(QtWidgets.QMainWindow):
+class RadarNightWindow(QtWidgets.QMainWindow):
+    """夜间模式：左侧坐标图，右侧雷达数据 + 跟踪步间隔下发 (0x59)。"""
+
     def __init__(self, vis: RadarVisualizer, raw_window: RawLogWindow, title: str):
         super().__init__()
         self.vis = vis
@@ -524,13 +610,71 @@ class RadarWindow(QtWidgets.QMainWindow):
         self._last_boundary_epoch = -1
 
         self.setWindowTitle(title)
-        self.resize(760, 860)
+        self.resize(1180, 820)
+        self.setStyleSheet(NIGHT_STYLESHEET)
 
-        self.figure = Figure(figsize=(7, 9), dpi=100)
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root = QtWidgets.QHBoxLayout(central)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(12)
+
+        splitter = QtWidgets.QSplitter(Qt.Horizontal)
+        root.addWidget(splitter, 1)
+
+        left_wrap = QtWidgets.QWidget()
+        left_l = QtWidgets.QVBoxLayout(left_wrap)
+        left_l.setContentsMargins(0, 0, 0, 0)
+        self.figure = Figure(figsize=(6.5, 8), dpi=100, facecolor="#11111b")
         self.canvas = FigureCanvas(self.figure)
-        self.setCentralWidget(self.canvas)
+        left_l.addWidget(self.canvas, 1)
+        splitter.addWidget(left_wrap)
 
-        self.ax = self.figure.add_subplot(111)
+        right = QtWidgets.QWidget()
+        right_l = QtWidgets.QVBoxLayout(right)
+        right_l.setContentsMargins(0, 0, 0, 0)
+        right_l.setSpacing(10)
+
+        lbl_data = QtWidgets.QLabel("雷达数据")
+        lbl_data.setStyleSheet("font-size: 14px; color: #89b4fa; font-weight: bold;")
+        right_l.addWidget(lbl_data)
+        self.radar_text = QtWidgets.QPlainTextEdit()
+        self.radar_text.setReadOnly(True)
+        self.radar_text.setMinimumWidth(340)
+        self.radar_text.document().setDefaultFont(
+            QtGui.QFont("Consolas", 11) if sys.platform == "win32" else QtGui.QFont("monospace", 11)
+        )
+        right_l.addWidget(self.radar_text, 1)
+
+        speed_box = QtWidgets.QGroupBox("跟踪速度 (BLE → 设备)")
+        speed_l = QtWidgets.QVBoxLayout(speed_box)
+        hint = QtWidgets.QLabel(
+            "步进间隔 interval_us：数值越小电机越快（固件与 StepMotor_GimbalSetSpeedUs 一致）。"
+            f" 允许 {TRACK_INTERVAL_US_MIN}～{TRACK_INTERVAL_US_MAX} µs。"
+        )
+        hint.setWordWrap(True)
+        speed_l.addWidget(hint)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("interval_us:"))
+        self.speed_spin = QtWidgets.QSpinBox()
+        self.speed_spin.setRange(TRACK_INTERVAL_US_MIN, TRACK_INTERVAL_US_MAX)
+        self.speed_spin.setValue(TRACK_INTERVAL_DEFAULT_US)
+        self.speed_spin.setSingleStep(25)
+        row.addWidget(self.speed_spin, 1)
+        speed_l.addLayout(row)
+        self.speed_btn = QtWidgets.QPushButton("下发 CMD 0x59 (RADAR_TRACK_SPEED)")
+        self.speed_btn.clicked.connect(self._on_send_speed)
+        speed_l.addWidget(self.speed_btn)
+        if vis._transport != "ble":
+            self.speed_spin.setEnabled(False)
+            self.speed_btn.setEnabled(False)
+            self.speed_btn.setToolTip("仅 BLE 模式可下发")
+        right_l.addWidget(speed_box)
+
+        splitter.addWidget(right)
+        splitter.setSizes([720, 420])
+
+        self.ax = self.figure.add_subplot(111, facecolor="#181825")
         self._setup_plot()
 
         self.timer = QtCore.QTimer(self)
@@ -543,49 +687,86 @@ class RadarWindow(QtWidgets.QMainWindow):
         self.log_timer.timeout.connect(self._flush_raw_log)
         self.log_timer.start()
 
+    def _on_send_speed(self) -> None:
+        ok = self.vis.send_radar_track_interval_us(self.speed_spin.value())
+        if not ok:
+            self.radar_text.appendPlainText(
+                "[本地] 下发失败（非 BLE 或未连接）\n"
+            )
+
     def _setup_plot(self):
+        C_TEXT = "#cdd6f4"
+        C_GRID = "#45475a"
+        self.ax.tick_params(colors=C_TEXT)
+        for s in self.ax.spines.values():
+            s.set_color(C_GRID)
+        self.ax.xaxis.label.set_color(C_TEXT)
+        self.ax.yaxis.label.set_color(C_TEXT)
+        self.ax.title.set_color("#89b4fa")
+
         with self.vis._lock:
             bq = [tuple(p) for p in self.vis.boundary_quad]
         quad = bq + [bq[0]]
         quad_xs = [p[0] for p in quad]
         quad_ys = [p[1] for p in quad]
         (self.boundary_line,) = self.ax.plot(
-            quad_xs, quad_ys, "k-", linewidth=2, alpha=0.8, label="Boundary (Quad)"
+            quad_xs,
+            quad_ys,
+            color="#89b4fa",
+            linewidth=2,
+            alpha=0.95,
+            label="Boundary",
         )
 
         (self.prev_point,) = self.ax.plot(
-            [], [], "yx", markersize=8, mew=2, label="Prev"
+            [], [], marker="x", color="#f9e2af", markersize=9, mew=2, label="Prev"
         )
-        (self.raw_point,) = self.ax.plot([], [], "bo", label="Raw")
-        (self.pred_a_point,) = self.ax.plot([], [], "go", label="Pred A (STA)")
-        (self.pred_b_point,) = self.ax.plot([], [], "co", label="Pred B (STA)")
-        (self.seq_points,) = self.ax.plot([], [], "r.", alpha=0.6, label="Pred Seq")
+        (self.raw_point,) = self.ax.plot(
+            [], [], "o", color="#89dceb", markersize=7, label="Raw"
+        )
+        (self.pred_a_point,) = self.ax.plot(
+            [], [], "s", color="#a6e3a1", markersize=6, label="Pred A"
+        )
+        (self.pred_b_point,) = self.ax.plot(
+            [], [], "s", color="#94e2d5", markersize=6, label="Pred B"
+        )
+        (self.seq_points,) = self.ax.plot(
+            [], [], ".", color="#f38ba8", alpha=0.85, markersize=8, label="Track / Seq"
+        )
 
         self.raw_text = self.ax.text(
-            0.02, 0.98, "", transform=self.ax.transAxes, va="top", fontsize=10
+            0.02,
+            0.98,
+            "",
+            transform=self.ax.transAxes,
+            va="top",
+            fontsize=9,
+            color="#bac2de",
         )
 
-        self.ax.set_xlabel("X (mm)")
-        self.ax.set_ylabel("Y (mm)")
+        self.ax.set_xlabel("X (mm)", color=C_TEXT)
+        self.ax.set_ylabel("Y (mm)", color=C_TEXT)
         self.ax.set_xlim(X_MIN - 100, X_MAX + 100)
         self.ax.set_ylim(Y_MIN - 100, Y_MAX + 100)
-        self.ax.grid(True, linestyle="--", alpha=0.4)
+        self.ax.grid(True, linestyle="--", alpha=0.35, color=C_GRID)
 
         self.motion_arrow = FancyArrowPatch(
             (0.0, 0.0),
             (0.0, 0.0),
             arrowstyle="-|>",
-            mutation_scale=32,
-            linewidth=4.0,
-            edgecolor="#FF0099",
-            facecolor="#FF0099",
+            mutation_scale=28,
+            linewidth=3.5,
+            edgecolor="#f5c2e7",
+            facecolor="#f5c2e7",
             zorder=9,
-            label="Motion dir (1s win)",
+            label="Motion",
         )
         self.ax.add_patch(self.motion_arrow)
         self.motion_arrow.set_visible(False)
 
-        self.ax.legend(loc="lower right")
+        leg = self.ax.legend(loc="lower right", facecolor="#1e1e2e", edgecolor=C_GRID)
+        for t in leg.get_texts():
+            t.set_color(C_TEXT)
         self.figure.tight_layout()
 
     def _flush_raw_log(self):
@@ -623,11 +804,11 @@ class RadarWindow(QtWidgets.QMainWindow):
             self.raw_point.set_data([x], [y])
             if mdir_ok and v is None:
                 th = mdeg10 / 10.0
-                self.raw_text.set_text(f"RAW x={x}mm y={y}mm  θ={th:.1f}° (1s)")
+                self.raw_text.set_text(f"RAW x={x} y={y} mm  θ={th:.1f}°")
             elif v is None:
-                self.raw_text.set_text(f"RAW x={x}mm y={y}mm")
+                self.raw_text.set_text(f"RAW x={x} y={y} mm")
             else:
-                self.raw_text.set_text(f"RAW x={x}mm y={y}mm v={v}cm/s")
+                self.raw_text.set_text(f"RAW x={x} y={y} mm  v={v} cm/s")
             if mdir_ok:
                 rad = math.radians(mdeg10 / 10.0)
                 ux = math.sin(rad)
@@ -640,7 +821,7 @@ class RadarWindow(QtWidgets.QMainWindow):
                 self.motion_arrow.set_visible(False)
         else:
             self.raw_point.set_data([], [])
-            self.raw_text.set_text("RAW: N/A")
+            self.raw_text.set_text("RAW: —")
             self.motion_arrow.set_visible(False)
 
         if latest_a is not None:
@@ -659,6 +840,25 @@ class RadarWindow(QtWidgets.QMainWindow):
             self.seq_points.set_data(xs, ys)
         else:
             self.seq_points.set_data([], [])
+
+        lines = [
+            "── 目标点 ──",
+            f"Prev:     {latest_prev if latest_prev else '—'}",
+            f"Raw:      {latest_raw[:2] if latest_raw else '—'}",
+            f"Motion:   valid={mdir_ok}  dir_deg×10={mdeg10}",
+            "",
+            "── 预测 / 跟踪 ──",
+            f"Pred A:   {latest_a if latest_a else '—'}",
+            f"Pred B:   {latest_b if latest_b else '—'}",
+            f"Seq pts:  {len(seq)}  {seq[-3:] if seq else ''}",
+            "",
+            "── 场地 ──",
+            f"Boundary epoch: {bepoch}",
+            f"Quad: {bquad}",
+            "",
+            f"UI 待下发 interval: {self.speed_spin.value()} µs  (CMD 0x59)",
+        ]
+        self.radar_text.setPlainText("\n".join(lines))
 
         self.canvas.draw_idle()
 
@@ -700,6 +900,7 @@ def main():
         sys.exit(2)
 
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyleSheet(NIGHT_STYLESHEET)
     vis = RadarVisualizer(
         args.transport,
         port=args.port,
@@ -720,7 +921,7 @@ def main():
     raw_window = RawLogWindow(raw_title)
     raw_window.show()
 
-    main_window = RadarWindow(vis, raw_window, win_title)
+    main_window = RadarNightWindow(vis, raw_window, win_title)
     main_window.show()
 
     exit_code = 0

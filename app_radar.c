@@ -85,18 +85,18 @@ typedef enum
     RADAR_GIMBAL_FSM_WAIT_DONE,
 } radar_gimbal_fsm_t;
 
-#define RADAR_GIMBAL_SEQ_MAX_POINTS    16
+#define RADAR_GIMBAL_SEQ_MAX_POINTS            16
 
 /* 单段移动耗时（相邻两点之间），单位与 clock_time_exceed 第二参数一致（微秒） */
-#define RADAR_GIMBAL_STEP_US_SLOW      400000u /* 0.4 s */
-#define RADAR_GIMBAL_STEP_US_MED       200000u /* 0.2 s */
-#define RADAR_GIMBAL_STEP_US_FAST      100000u /* 0.1 s */
+#define RADAR_GIMBAL_STEP_US_SLOW              400000u /* 0.4 s */
+#define RADAR_GIMBAL_STEP_US_MED               200000u /* 0.2 s */
+#define RADAR_GIMBAL_STEP_US_FAST              100000u /* 0.1 s */
 
 /*
  * 雷达直接跟踪：与 app_ctrl 边界移动（APP_CTRL_BOUNDARY_MOVE_SPEED_US）同量级步间隔，
  * 每帧只更新一个目标点，由 StepMotor_GimbalTask 连续逼近 —— 避免多点折线 + 分段等待造成的顿挫。
  */
-#define RADAR_TRACK_GIMBAL_INTERVAL_US 800u
+#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 8000u
 
 /*
  * 阶段二：沿估计运动方向在水平面内向前偏移 (mm)，使云台略超前目标。
@@ -106,13 +106,13 @@ typedef enum
 #define RADAR_TRACK_LEAD_ENABLE 1
 #endif
 /** 领跑距离 = BASE + |v_cm_s| * NUM / DEN (mm)，再夹到 MIN~MAX（与雷达 |v| 无关，低速也有 MIN 超前） */
-#define RADAR_TRACK_LEAD_MM_BASE      500
-#define RADAR_TRACK_LEAD_MM_PER_NUM   10
-#define RADAR_TRACK_LEAD_MM_PER_DEN   1
-#define RADAR_TRACK_LEAD_MM_MIN       200
-#define RADAR_TRACK_LEAD_MM_MAX       1000
+#define RADAR_TRACK_LEAD_MM_BASE    1000
+#define RADAR_TRACK_LEAD_MM_PER_NUM 10
+#define RADAR_TRACK_LEAD_MM_PER_DEN 1
+#define RADAR_TRACK_LEAD_MM_MIN     200
+#define RADAR_TRACK_LEAD_MM_MAX     2000
 /** 目标判定静止时，沿最后运动方向保留的较小超前 (mm)，需 motion_valid（含粘滞方向） */
-#define RADAR_TRACK_LEAD_MM_STATIC    300
+#define RADAR_TRACK_LEAD_MM_STATIC  1000
 
 /** 联调可视化：置 1 时经 BLE 上报当前跟踪点 (mm)，对应 scripts/visializable.py 的 predseq */
 #ifndef RADAR_TRACK_DBG_SEND_PREDSEQ
@@ -738,18 +738,12 @@ static u8 RadarGimbalIsBusy(void)
 
 void app_radar_point_to_pan_tilt(s32 x_mm, s32 y_mm, s32 height_mm, s16 *pan_deg10, s16 *tilt_deg10)
 {
-    // 根据x_mm和y_mm计算出r1_mm
-    s32 r1_mm = app_radar_mysqrt_3(x_mm * x_mm + y_mm * y_mm);
-    // LOG_D("r1_mm: %d", r1_mm);
-    // 在根据r_mm和h_mm计算出tilt_deg
-    *tilt_deg10 = (s16)(lookup_atan2((float)r1_mm, (float)height_mm) * RAD_TO_DEG * 10.0f) - 900;
-    // LOG_D("tilt_deg10: %d", *tilt_deg10);
-    // 根据y_mm和h_mm计算出r2_mm
-    s32 r2_mm = app_radar_mysqrt_3(y_mm * y_mm + height_mm * height_mm);
-    // LOG_D("r2_mm: %d", r2_mm);
-    // 根据r2_mm和x_mm计算出pan_deg
-    *pan_deg10 = (s16)(lookup_atan2((float)x_mm, (float)r2_mm) * RAD_TO_DEG * 10.0f);
-    // LOG_D("pan_deg10: %d", *pan_deg10);
+    // 根据x_mm和y_mm计算出pan_deg
+    *pan_deg10 = (s16)(lookup_atan2((float)x_mm, (float)y_mm) * RAD_TO_DEG * 10.0f);
+    // 根据x_mm和y_mm计算出r_mm
+    s32 r_mm = app_radar_mysqrt_3(x_mm * x_mm + y_mm * y_mm);
+    // 根据r_mm和h_mm计算出tilt_deg
+    *tilt_deg10 = (s16)(lookup_atan2((float)r_mm, (float)height_mm) * RAD_TO_DEG * 10.0f) - 900;
 }
 
 static void RadarSeqBuildReset(void)
@@ -1681,6 +1675,21 @@ static void RadarGimbalCancelSequence(void)
 }
 
 #if (UI_STEP_MOTOR_ENABLE)
+_attribute_data_retention_ static u32 g_radar_track_gimbal_interval_us = RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US;
+
+void app_radar_set_track_gimbal_interval_us(u32 interval_us)
+{
+    if (interval_us < STEP_MOTOR_MIN_INTERVAL_US_FASTEST)
+    {
+        interval_us = STEP_MOTOR_MIN_INTERVAL_US_FASTEST;
+    }
+    if (interval_us > 20000u)
+    {
+        interval_us = 20000u;
+    }
+    g_radar_track_gimbal_interval_us = interval_us;
+}
+
 /** 与蓝牙「移向限位」相同思路：固定步间隔 + 单一目标，电机顺滑跟随 */
 static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm)
 {
@@ -1688,9 +1697,14 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm)
     s16 tilt_deg10 = 0;
 
     app_radar_point_to_pan_tilt(x_mm, y_mm, g_radar_install_height_mm, &pan_deg10, &tilt_deg10);
-    StepMotor_GimbalSetSpeedUs(RADAR_TRACK_GIMBAL_INTERVAL_US);
+    StepMotor_GimbalSetSpeedUs(g_radar_track_gimbal_interval_us);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
+}
+#else
+void app_radar_set_track_gimbal_interval_us(u32 interval_us)
+{
+    (void)interval_us;
 }
 #endif
 
@@ -1703,6 +1717,8 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 {
     s16 v_abs;
     s32 lead_mm;
+    s32 rand1_mm = 0;
+    s32 rand2_mm = 0;
 
     *out_x = proc_x;
     *out_y = proc_y;
@@ -1714,8 +1730,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 
     if (is_stationary)
     {
-        /* 静止：沿用本帧给出的方向（含「粘滞」的最后运动方向），仅较小超前 */
-        lead_mm = (s32)RADAR_TRACK_LEAD_MM_STATIC;
+        /* 静止：沿用本帧给出的方向（含「粘滞」的最后运动方向），仅较小超前 + 200mm*/
+        lead_mm  = (s32)RADAR_TRACK_LEAD_MM_STATIC;
+        rand1_mm = RadarRandRangeI32(-200, 200);
+        rand2_mm = RadarRandRangeI32(-200, 200);
     }
     else
     {
@@ -1732,8 +1750,8 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     }
 
     {
-        s32 tx = (s32)proc_x + (s32)((float)lead_mm * lookup_sin(motion_rad));
-        s32 ty = (s32)proc_y + (s32)((float)lead_mm * lookup_cos(motion_rad));
+        s32 tx = (s32)proc_x + (s32)((float)lead_mm * lookup_sin(motion_rad)) + rand1_mm;
+        s32 ty = (s32)proc_y + (s32)((float)lead_mm * lookup_cos(motion_rad)) + rand2_mm;
 
         if (tx > 32767)
         {

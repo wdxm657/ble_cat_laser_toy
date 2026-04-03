@@ -514,12 +514,9 @@ static void app_ctrl_calc_xy_from_angles(s32 pan_deg10, s32 tilt_deg10, s32 heig
     }
 
     s32 r1_mm = height_mm * lookup_tan((900 + tilt_deg10) * DEG_TO_RAD_10);
-    s32 r2_mm = app_radar_mysqrt_3(r1_mm * r1_mm + height_mm * height_mm);
-    s32 x_mm  = (s32)((float)r2_mm * lookup_sin((pan_deg10)*DEG_TO_RAD_10));
-    s32 r3_mm = app_radar_mysqrt_3(r2_mm * r2_mm - x_mm * x_mm);
-    s32 y1_mm = (s32)((float)r3_mm * lookup_sin((900 + tilt_deg10) * DEG_TO_RAD_10));
-    s32 y_mm  = app_radar_mysqrt_3(r3_mm * r3_mm - height_mm * height_mm);
-    LOG_D("y1_mm: %d, y_mm: %d", y1_mm, y_mm);
+    s32 x_mm  = r1_mm * lookup_sin(pan_deg10 * DEG_TO_RAD_10);
+    s32 y_mm  = r1_mm * lookup_cos(pan_deg10 * DEG_TO_RAD_10);
+    LOG_D("x_mm: %d, y_mm: %d", x_mm, y_mm);
 
     if (x_mm > 32767)
     {
@@ -1665,6 +1662,28 @@ void app_ctrl_onRx(u8 *data, u16 len)
             u8 rsp[1] = {CTRL_STATUS_OK};
             app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
         }
+        break;
+    case CTRL_CMD_RADAR_TRACK_SPEED:
+#if (UI_RADAR_ENABLE)
+        LOG_D("CTRL_CMD_RADAR_TRACK_SPEED");
+        if (payLen < 2)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            u16 us = payload[0] | (payload[1] << 8);
+            app_radar_set_track_gimbal_interval_us((u32)us);
+            u8 rsp[3] = {CTRL_STATUS_OK, payload[0], payload[1]};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
+        }
+#else
+    {
+        u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
+    }
+#endif
         break;
     case CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY:
 #if (UI_RADAR_ENABLE)
