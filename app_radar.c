@@ -17,7 +17,7 @@
 #include "app_ctrl.h"
 
 #ifndef RADAR_GIMBAL_DEBUG_TRACK_PROC_ONLY
-/** Set to 1 (e.g. in app_config.h) to drive gimbal only from mirrored proc_x/proc_y each frame — no prediction path. */
+/** 保留宏占位；雷达跟踪已改为每帧单目标直接驱动，与宏取值无关。 */
 #define RADAR_GIMBAL_DEBUG_TRACK_PROC_ONLY 0
 #endif
 
@@ -85,16 +85,39 @@ typedef enum
     RADAR_GIMBAL_FSM_WAIT_DONE,
 } radar_gimbal_fsm_t;
 
-#define RADAR_GIMBAL_SEQ_MAX_POINTS 16
+#define RADAR_GIMBAL_SEQ_MAX_POINTS    16
 
 /* 单段移动耗时（相邻两点之间），单位与 clock_time_exceed 第二参数一致（微秒） */
-#define RADAR_GIMBAL_STEP_US_SLOW   400000u /* 0.4 s */
-#define RADAR_GIMBAL_STEP_US_MED    200000u /* 0.2 s */
-#define RADAR_GIMBAL_STEP_US_FAST   100000u /* 0.1 s */
+#define RADAR_GIMBAL_STEP_US_SLOW      400000u /* 0.4 s */
+#define RADAR_GIMBAL_STEP_US_MED       200000u /* 0.2 s */
+#define RADAR_GIMBAL_STEP_US_FAST      100000u /* 0.1 s */
 
-/* 雷达速度单位 cm/s：0.5 m/s = 50，1 m/s = 100 */
-#define RADAR_SPEED_LOW_CM_S        50
-#define RADAR_SPEED_MED_CM_S        100
+/*
+ * 雷达直接跟踪：与 app_ctrl 边界移动（APP_CTRL_BOUNDARY_MOVE_SPEED_US）同量级步间隔，
+ * 每帧只更新一个目标点，由 StepMotor_GimbalTask 连续逼近 —— 避免多点折线 + 分段等待造成的顿挫。
+ */
+#define RADAR_TRACK_GIMBAL_INTERVAL_US 800u
+
+/*
+ * 阶段二：沿估计运动方向在水平面内向前偏移 (mm)，使云台略超前目标。
+ * 可在 app_config.h 中 #define RADAR_TRACK_LEAD_ENABLE 0 关闭。
+ */
+#ifndef RADAR_TRACK_LEAD_ENABLE
+#define RADAR_TRACK_LEAD_ENABLE 1
+#endif
+/** 领跑距离 = BASE + |v_cm_s| * NUM / DEN (mm)，再夹到 MIN~MAX（与雷达 |v| 无关，低速也有 MIN 超前） */
+#define RADAR_TRACK_LEAD_MM_BASE      500
+#define RADAR_TRACK_LEAD_MM_PER_NUM   10
+#define RADAR_TRACK_LEAD_MM_PER_DEN   1
+#define RADAR_TRACK_LEAD_MM_MIN       200
+#define RADAR_TRACK_LEAD_MM_MAX       1000
+/** 目标判定静止时，沿最后运动方向保留的较小超前 (mm)，需 motion_valid（含粘滞方向） */
+#define RADAR_TRACK_LEAD_MM_STATIC    300
+
+/** 联调可视化：置 1 时经 BLE 上报当前跟踪点 (mm)，对应 scripts/visializable.py 的 predseq */
+#ifndef RADAR_TRACK_DBG_SEND_PREDSEQ
+#define RADAR_TRACK_DBG_SEND_PREDSEQ 1
+#endif
 
 _attribute_data_retention_ static radar_prediction_state_t g_radar_pred = {0};
 
@@ -192,7 +215,6 @@ _attribute_data_retention_ static u32                  g_radar_seq_step_interval
 _attribute_data_retention_ static u32                  g_radar_seq_pending_step_us                      = RADAR_GIMBAL_STEP_US_SLOW;
 _attribute_data_retention_ static u32                  g_radar_seq_step_tick                            = 0;
 _attribute_data_retention_ static radar_gimbal_fsm_t   g_radar_gimbal_fsm                               = RADAR_GIMBAL_FSM_IDLE;
-_attribute_data_retention_ static s16                  g_radar_busy_max_speed_abs                       = 0;
 _attribute_data_retention_ static u8                   g_radar_static_loop_en                           = 0;
 /* 下一段静止序列：1=逃逸点列，0=两随机点 (ax,ay)->(bx,by)；首次为两随机点 */
 _attribute_data_retention_ static u8    g_radar_static_next_is_escape = 0;
@@ -714,38 +736,20 @@ static u8 RadarGimbalIsBusy(void)
     return (g_radar_gimbal_fsm != RADAR_GIMBAL_FSM_IDLE);
 }
 
-static s16 RadarGetSpeedForPrediction(s16 v_cm_s)
-{
-    s16 cur_abs = RadarSpeedAbs(v_cm_s);
-
-    if (!RadarGimbalIsBusy())
-    {
-        g_radar_busy_max_speed_abs = cur_abs;
-        return cur_abs;
-    }
-
-    if (cur_abs > g_radar_busy_max_speed_abs)
-    {
-        g_radar_busy_max_speed_abs = cur_abs;
-    }
-
-    return g_radar_busy_max_speed_abs;
-}
-
 void app_radar_point_to_pan_tilt(s32 x_mm, s32 y_mm, s32 height_mm, s16 *pan_deg10, s16 *tilt_deg10)
 {
     // 根据x_mm和y_mm计算出r1_mm
     s32 r1_mm = app_radar_mysqrt_3(x_mm * x_mm + y_mm * y_mm);
-    LOG_D("r1_mm: %d", r1_mm);
+    // LOG_D("r1_mm: %d", r1_mm);
     // 在根据r_mm和h_mm计算出tilt_deg
     *tilt_deg10 = (s16)(lookup_atan2((float)r1_mm, (float)height_mm) * RAD_TO_DEG * 10.0f) - 900;
-    LOG_D("tilt_deg10: %d", *tilt_deg10);
+    // LOG_D("tilt_deg10: %d", *tilt_deg10);
     // 根据y_mm和h_mm计算出r2_mm
     s32 r2_mm = app_radar_mysqrt_3(y_mm * y_mm + height_mm * height_mm);
-    LOG_D("r2_mm: %d", r2_mm);
+    // LOG_D("r2_mm: %d", r2_mm);
     // 根据r2_mm和x_mm计算出pan_deg
     *pan_deg10 = (s16)(lookup_atan2((float)x_mm, (float)r2_mm) * RAD_TO_DEG * 10.0f);
-    LOG_D("pan_deg10: %d", *pan_deg10);
+    // LOG_D("pan_deg10: %d", *pan_deg10);
 }
 
 static void RadarSeqBuildReset(void)
@@ -756,11 +760,10 @@ static void RadarSeqBuildReset(void)
 static void RadarSeqStartBuilt(void)
 {
     memcpy(g_radar_seq_active, g_radar_seq_build, sizeof(radar_gimbal_point_t) * g_radar_seq_build_cnt);
-    g_radar_seq_active_cnt     = g_radar_seq_build_cnt;
-    g_radar_seq_active_idx     = 0;
-    g_radar_seq_step_tick      = clock_time();
-    g_radar_busy_max_speed_abs = 0;
-    g_radar_gimbal_fsm         = RADAR_GIMBAL_FSM_RUN;
+    g_radar_seq_active_cnt = g_radar_seq_build_cnt;
+    g_radar_seq_active_idx = 0;
+    g_radar_seq_step_tick  = clock_time();
+    g_radar_gimbal_fsm     = RADAR_GIMBAL_FSM_RUN;
     if (g_radar_seq_active_cnt == 2)
     {
         StepMotor_GimbalSetSpeedUs(2400);
@@ -804,7 +807,6 @@ void RadarSessionStop(u8 reset)
     g_radar_seq_active_is_static  = 0;
     g_radar_seq_pending_is_static = 0;
     g_radar_gimbal_fsm            = RADAR_GIMBAL_FSM_IDLE;
-    g_radar_busy_max_speed_abs    = 0;
     g_radar_static_loop_en        = 0;
     g_radar_static_next_is_escape = 0;
     g_radar_seq_step_interval_us  = RADAR_GIMBAL_STEP_US_SLOW;
@@ -1615,7 +1617,6 @@ void app_radar_gimbal_track_task(void)
             g_radar_seq_pending_is_static = 0;
             g_radar_seq_step_interval_us  = g_radar_seq_pending_step_us;
             g_radar_seq_step_tick         = clock_time();
-            g_radar_busy_max_speed_abs    = 0;
             g_radar_seq_active_is_static  = pending_static;
             g_radar_gimbal_fsm            = RADAR_GIMBAL_FSM_RUN;
             if (g_radar_seq_active_cnt == 2)
@@ -1653,7 +1654,6 @@ void app_radar_gimbal_track_task(void)
             // LOG_D("RADAR_GIMBAL_FSM_WAIT_DONE,0");
             g_radar_seq_active_cnt       = 0;
             g_radar_seq_active_idx       = 0;
-            g_radar_busy_max_speed_abs   = 0;
             g_radar_seq_active_is_static = 0;
             g_radar_gimbal_fsm           = RADAR_GIMBAL_FSM_IDLE;
         }
@@ -1665,36 +1665,102 @@ void app_radar_gimbal_track_task(void)
     }
 }
 
-static void BuildPredictionPoint(s16   cur_x_mm,
-                                 s16   cur_y_mm,
-                                 s16   dx_mm,
-                                 s16   dy_mm,
-                                 float dir_rad,
-                                 s32   distance_mm,
-                                 s32   angle_offset_deg,
-                                 s16  *out_x_mm,
-                                 s16  *out_y_mm)
+/** 停止多点序列 FSM，避免与「单目标连续跟踪」互相抢占、排队滞后 */
+static void RadarGimbalCancelSequence(void)
 {
-    float angle_rad = dir_rad + ((float)angle_offset_deg * DEG_TO_RAD);
-    s32   local_x   = (s32)((float)distance_mm * lookup_sin(angle_rad));
-    s32   local_y   = (s32)((float)distance_mm * lookup_cos(angle_rad));
+    g_radar_seq_build_cnt         = 0;
+    g_radar_seq_active_cnt        = 0;
+    g_radar_seq_active_idx        = 0;
+    g_radar_seq_pending_cnt       = 0;
+    g_radar_seq_pending_valid     = 0;
+    g_radar_seq_active_is_static  = 0;
+    g_radar_seq_pending_is_static = 0;
+    g_radar_gimbal_fsm            = RADAR_GIMBAL_FSM_IDLE;
+    g_radar_static_loop_en        = 0;
+    g_radar_static_next_is_escape = 0;
+}
 
-    s32 scale_q8 = RadarRandRangeI32(384, 768);
-    s32 pred_x   = (s32)cur_x_mm + ((s32)dx_mm * scale_q8 >> 8) + local_x;
-    s32 pred_y   = (s32)cur_y_mm + ((s32)dy_mm * scale_q8 >> 8) + local_y;
+#if (UI_STEP_MOTOR_ENABLE)
+/** 与蓝牙「移向限位」相同思路：固定步间隔 + 单一目标，电机顺滑跟随 */
+static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm)
+{
+    s16 pan_deg10  = 0;
+    s16 tilt_deg10 = 0;
 
-    // 边界处理：从 cur -> pred 的线段若越界，则按撞到的边做镜面反射并得到最终点
-    radar_vec2f_t v_step    = RadarVec2((float)(pred_x - cur_x_mm), (float)(pred_y - cur_y_mm));
-    float         dummy_dir = dir_rad;
-    RadarAdvanceReflectQuad((s32)cur_x_mm, (s32)cur_y_mm, v_step, out_x_mm, out_y_mm, &dummy_dir);
+    app_radar_point_to_pan_tilt(x_mm, y_mm, g_radar_install_height_mm, &pan_deg10, &tilt_deg10);
+    StepMotor_GimbalSetSpeedUs(RADAR_TRACK_GIMBAL_INTERVAL_US);
+    StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
+    StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
+}
+#endif
 
-    // 保险：若仍在边界外，拉回到最近边界点
-    if (!RadarPointInsideQuad((s32)*out_x_mm, (s32)*out_y_mm))
+#if RADAR_TRACK_LEAD_ENABLE
+/**
+ * 在 (proc_x, proc_y) 基础上沿 motion_rad 向前偏移 lead_mm（与既有预测点 sin(x)/cos(y) 约定一致），
+ * 越界则镜像回工作四边形内。
+ */
+static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 is_stationary, float motion_rad, s16 v_cm_s, s16 *out_x, s16 *out_y)
+{
+    s16 v_abs;
+    s32 lead_mm;
+
+    *out_x = proc_x;
+    *out_y = proc_y;
+
+    if (!motion_valid)
     {
-        float proj_dist = 0.0f;
-        RadarProjectToQuad((s32)*out_x_mm, (s32)*out_y_mm, out_x_mm, out_y_mm, &proj_dist);
+        return;
+    }
+
+    if (is_stationary)
+    {
+        /* 静止：沿用本帧给出的方向（含「粘滞」的最后运动方向），仅较小超前 */
+        lead_mm = (s32)RADAR_TRACK_LEAD_MM_STATIC;
+    }
+    else
+    {
+        v_abs   = RadarSpeedAbs(v_cm_s);
+        lead_mm = (s32)RADAR_TRACK_LEAD_MM_BASE + ((s32)v_abs * (s32)RADAR_TRACK_LEAD_MM_PER_NUM) / (s32)RADAR_TRACK_LEAD_MM_PER_DEN;
+        if (lead_mm < (s32)RADAR_TRACK_LEAD_MM_MIN)
+        {
+            lead_mm = (s32)RADAR_TRACK_LEAD_MM_MIN;
+        }
+        else if (lead_mm > (s32)RADAR_TRACK_LEAD_MM_MAX)
+        {
+            lead_mm = (s32)RADAR_TRACK_LEAD_MM_MAX;
+        }
+    }
+
+    {
+        s32 tx = (s32)proc_x + (s32)((float)lead_mm * lookup_sin(motion_rad));
+        s32 ty = (s32)proc_y + (s32)((float)lead_mm * lookup_cos(motion_rad));
+
+        if (tx > 32767)
+        {
+            tx = 32767;
+        }
+        else if (tx < -32768)
+        {
+            tx = -32768;
+        }
+        if (ty > 32767)
+        {
+            ty = 32767;
+        }
+        else if (ty < -32768)
+        {
+            ty = -32768;
+        }
+        *out_x = (s16)tx;
+        *out_y = (s16)ty;
+    }
+
+    if (!RadarPointInsideQuad((s32)*out_x, (s32)*out_y))
+    {
+        RadarMirrorOutsideAcrossNearestEdge(out_x, out_y);
     }
 }
+#endif /* RADAR_TRACK_LEAD_ENABLE */
 
 static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_cm_s)
 {
@@ -1785,108 +1851,37 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
     g_radar_pred.prev_y_mm = y_mm;
     g_radar_pred.has_prev  = 1;
 
-    RadarSeqBuildReset();
     if (!RadarPointInsideQuad((s32)proc_x, (s32)proc_y))
     {
         RadarMirrorOutsideAcrossNearestEdge(&proc_x, &proc_y);
     }
 
-#if RADAR_GIMBAL_DEBUG_TRACK_PROC_ONLY
-    /* 调试：每帧只提交单点 (proc_x, proc_y)，不走静止/运动预测分支，用于观察电机对处理坐标的跟踪 */
-    g_radar_static_loop_en        = 0;
-    g_radar_static_next_is_escape = 0;
-    RadarSeqBuildAppendPoint(proc_x, proc_y);
-    g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_FAST;
-    RadarSeqCommitBuiltMotion();
-    return;
+    /*
+     * 跟踪：先保证目标在场地四边形内 (proc)，再在阶段二沿运动方向加超前量。
+     */
+    {
+        s16 track_x = proc_x;
+        s16 track_y = proc_y;
+#if RADAR_TRACK_LEAD_ENABLE
+        RadarTrackComputeLeadMm(proc_x, proc_y, motion_valid, is_stationary, motion_rad, v_cm_s, &track_x, &track_y);
 #else
-    /* 以下内容：预测点序列控制电机 */
+        (void)motion_valid;
+        (void)motion_rad;
+        (void)is_stationary;
+        (void)v_cm_s;
+#endif
 
-    if (is_stationary)
-    {
-        u8  was_static_loop = g_radar_static_loop_en;
-        s16 ax, ay;
-        s16 bx, by;
-
-        BuildPredictionPoint(proc_x, proc_y, dx_mm, dy_mm, motion_rad, 300, 0, &ax, &ay);
-        BuildPredictionPoint(proc_x, proc_y, dx_mm, dy_mm, motion_rad, RadarRandRangeI32(500, 500), RadarRandRangeI32(-20, 20), &bx, &by);
-        g_radar_static_ax_mm   = ax;
-        g_radar_static_ay_mm   = ay;
-        g_radar_static_bx_mm   = bx;
-        g_radar_static_by_mm   = by;
-        g_radar_static_dir_rad = motion_rad;
-        g_radar_static_loop_en = 1;
-
-        if (!was_static_loop)
-        {
-            g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_SLOW;
-            if (g_radar_static_next_is_escape)
-            {
-                RadarSeqBuildStationaryEscapePoints(g_radar_static_bx_mm, g_radar_static_by_mm, g_radar_static_dir_rad, 2);
-                g_radar_static_next_is_escape = 0;
-            }
-            else
-            {
-                RadarSeqBuildStationary2Points(g_radar_static_ax_mm, g_radar_static_ay_mm, g_radar_static_bx_mm, g_radar_static_by_mm);
-                g_radar_static_next_is_escape = 1;
-            }
-            RadarSeqCommitBuiltStatic();
-        }
+        RadarGimbalCancelSequence();
+#if RADAR_TRACK_DBG_SEND_PREDSEQ
+        app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
+#endif
+#if (UI_STEP_MOTOR_ENABLE)
+        RadarGimbalApplyTargetMm(track_x, track_y);
+#else
+        (void)track_x;
+        (void)track_y;
+#endif
     }
-    else
-    {
-        g_radar_static_loop_en = 0;
-        s16   px, py;
-        s16   sx;
-        s16   sy;
-        float seq_dir;
-        s16   speed_abs;
-        u8    seq_num;
-
-        BuildPredictionPoint(proc_x, proc_y, dx_mm, dy_mm, motion_rad, RadarRandRangeI32(300, 300), RadarRandRangeI32(0, 0), &px, &py);
-
-        sx        = px;
-        sy        = py;
-        seq_dir   = motion_rad;
-        speed_abs = RadarGetSpeedForPrediction(v_cm_s);
-
-        /* 静止或 v<0.5m/s：2 点 / 0.4s；0.5~1m/s：3 点 / 0.2s；≥1m/s：6 点 / 0.1s */
-        if (speed_abs < RADAR_SPEED_LOW_CM_S)
-        {
-            seq_num                      = 2;
-            g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_SLOW;
-        }
-        else if (speed_abs < RADAR_SPEED_MED_CM_S)
-        {
-            seq_num                      = 3;
-            g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_MED;
-        }
-        else
-        {
-            seq_num                      = 6;
-            g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_FAST;
-        }
-
-        for (u8 i = 0; i < seq_num; i++)
-        {
-            s32 dist = RadarRandRangeI32(300, 300);
-            s32 nx32 = (s32)sx + (s32)((float)dist * lookup_sin(seq_dir));
-            s32 ny32 = (s32)sy + (s32)((float)dist * lookup_cos(seq_dir));
-
-            radar_vec2f_t v_step = RadarVec2((float)(nx32 - sx), (float)(ny32 - sy));
-            RadarAdvanceReflectQuad((s32)sx, (s32)sy, v_step, &sx, &sy, &seq_dir);
-            // 保险：若仍在边界外，拉回到最近边界点
-            if (!RadarPointInsideQuad((s32)sx, (s32)sy))
-            {
-                float proj_dist = 0.0f;
-                RadarProjectToQuad((s32)sx, (s32)sy, &sx, &sy, &proj_dist);
-            }
-            RadarSeqBuildAppendPoint(sx, sy);
-            app_ctrl_radar_dbg_send_predseq((u8)(i + 1), sx, sy);
-        }
-        RadarSeqCommitBuiltMotion();
-    }
-#endif /* !RADAR_GIMBAL_DEBUG_TRACK_PROC_ONLY */
 }
 
 #define RADAR_FPS_TEST 0

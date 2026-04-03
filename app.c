@@ -1012,7 +1012,7 @@ void main_loop(void)
 #ifdef UI_RADAR_ENABLE
     if (!StepMotor_GimbalResetBusy() && g_app_radar_on)
     {
-        app_radar_gimbal_track_task();  // 0.1s step by radar prediction sequence (FSM)
+        app_radar_gimbal_track_task();  /* StepMotor_GimbalTask；雷达目标在 parse 中直接 SetTarget */
         app_ctrl_motor_dir_task();
     }
     // StepMotor_GimbalDemoTask();
