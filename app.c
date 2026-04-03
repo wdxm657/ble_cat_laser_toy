@@ -592,6 +592,7 @@ _attribute_no_inline_ void user_init_normal(void)
 #ifdef UI_RADAR_ENABLE
     app_radar_uart_init();
     app_radar_init();
+    app_ctrl_init();
 #endif
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_Init();
@@ -984,6 +985,7 @@ void main_loop(void)
             else
             {
                 RadarSessionStop(1);
+                gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
             }
         }
         else

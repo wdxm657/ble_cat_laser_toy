@@ -40,11 +40,11 @@ u8 app_radar_is_boundary_set(void);
 u8 app_radar_is_install_height_set(void);
 u8 RadarSessionIsResting(void);
 
-s16 app_radar_point_to_pan_deg10(s32 x_mm, s32 y_mm);
-s16 app_radar_height_to_tilt_deg10(s32 height_mm, s32 y_mm);
 // Optional debug helper (used by commented test code in app.c)
 float app_radar_mysqrt_3(float x);
 
+void app_radar_point_to_pan_tilt(s32 x_mm, s32 y_mm, s32 height_mm, s16 *pan_deg10, s16 *tilt_deg10);
+int radar_boundary_load_from_flash(s32 x_mm[4], s32 y_mm[4]);
 void app_radar_clear_install_height_and_boundary_flash(void);
 
 #else

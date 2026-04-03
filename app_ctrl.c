@@ -113,12 +113,18 @@ static u8 app_ctrl_radar_boundary_check_order(const s32 x[4], const s32 y[4])
 
     if (!(y0 > y3 && y0 > y2 && y1 > y3 && y1 > y2))
     {
+        LOG_D("y0=%d, y3=%d, y2=%d, y1=%d", y0, y3, y2, y1);
+        LOG_D("y0=%d, y3=%d, y2=%d, y1=%d", y0, y3, y2, y1);
+        LOG_D("y0=%d, y3=%d, y2=%d, y1=%d", y0, y3, y2, y1);
         LOG_D("app_ctrl_radar_boundary_check_order failed: y0 > y3 && y0 > y2 && y1 > y3 && y1 > y2");
         return 0;
     }
 
     if (!(x0 < x1 && x3 < x2))
     {
+        LOG_D("x0=%d, x1=%d, x3=%d, x2=%d", x0, x1, x3, x2);
+        LOG_D("x0=%d, x1=%d, x3=%d, x2=%d", x0, x1, x3, x2);
+        LOG_D("x0=%d, x1=%d, x3=%d, x2=%d", x0, x1, x3, x2);
         LOG_D("app_ctrl_radar_boundary_check_order failed: x0 < x1 && x3 < x2");
         return 0;
     }
@@ -206,7 +212,7 @@ static u8 app_ctrl_radar_boundary_commit(u8 *errDetail, u8 *shortPairMask)
 
 #define APP_CTRL_BOUNDARY_MOVE_SPEED_US        1200
 #define APP_CTRL_BOUNDARY_MOVE_TOLERANCE_DEG10 5
-#define APP_CTRL_BOUNDARY_PAN_GUARD_MM         80
+#define APP_CTRL_BOUNDARY_PAN_GUARD_MM         300
 
 static void app_ctrl_radar_boundary_move_to_point(u8 point_index)
 {
@@ -216,11 +222,17 @@ static void app_ctrl_radar_boundary_move_to_point(u8 point_index)
     // app_radar_get_boundary_quad_by_index(point_index, &x_mm, &y_mm);
     s32 height_mm = 0;
     app_radar_get_install_height_mm(&height_mm);
-    LOG_D("x_mm: %d, y_mm: %d, height_mm: %d", x_mm, y_mm, height_mm);
 
-    s16 pan_deg10  = app_radar_point_to_pan_deg10(x_mm, y_mm);
-    s16 tilt_deg10 = app_radar_height_to_tilt_deg10(height_mm, y_mm);
-    LOG_D("pan_deg10: %d, tilt_deg10: %d", pan_deg10, tilt_deg10);
+    // s16 tilt_deg10 = app_radar_height_to_tilt_deg10(height_mm, y_mm);
+    s16 pan_deg10  = 0;
+    s16 tilt_deg10 = 0;
+    LOG_D("x: %d, y: %d, h: %d", x_mm, y_mm, height_mm);
+    LOG_D("x: %d, y: %d, h: %d", x_mm, y_mm, height_mm);
+    LOG_D("x: %d, y: %d, h: %d", x_mm, y_mm, height_mm);
+    app_radar_point_to_pan_tilt(x_mm, y_mm, height_mm, &pan_deg10, &tilt_deg10);
+    LOG_D("p: %d, t: %d", pan_deg10, tilt_deg10);
+    LOG_D("p: %d, t: %d", pan_deg10, tilt_deg10);
+    LOG_D("p: %d, t: %d", pan_deg10, tilt_deg10);
 
     StepMotor_GimbalSetSpeedUs(APP_CTRL_BOUNDARY_MOVE_SPEED_US);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
@@ -239,11 +251,16 @@ static u8 app_ctrl_radar_boundary_is_move_done(u8 point_index)
     s32 height_mm = 0;
     app_radar_get_install_height_mm(&height_mm);
 
-    s16 pan_target  = app_radar_point_to_pan_deg10(x_mm, y_mm);
-    s16 tilt_target = app_radar_height_to_tilt_deg10(height_mm, y_mm);
+    s16 pan_target  = 0;
+    s16 tilt_target = 0;
+    app_radar_point_to_pan_tilt(x_mm, y_mm, height_mm, &pan_target, &tilt_target);
+    LOG_D("pan_target: %d, tilt_target: %d", pan_target, tilt_target);
+    LOG_D("pan_target: %d, tilt_target: %d", pan_target, tilt_target);
     LOG_D("pan_target: %d, tilt_target: %d", pan_target, tilt_target);
     s16 pan_cur  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
     s16 tilt_cur = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
+    LOG_D("pan_cur: %d, tilt_cur: %d", pan_cur, tilt_cur);
+    LOG_D("pan_cur: %d, tilt_cur: %d", pan_cur, tilt_cur);
     LOG_D("pan_cur: %d, tilt_cur: %d", pan_cur, tilt_cur);
     if ((abs(pan_cur - pan_target) <= APP_CTRL_BOUNDARY_MOVE_TOLERANCE_DEG10) &&
         (abs(tilt_cur - tilt_target) <= APP_CTRL_BOUNDARY_MOVE_TOLERANCE_DEG10) &&
@@ -326,12 +343,12 @@ int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen)
     }
 #if (DEBUG_MODE)
     {
-        tl_printf("app_ctrl_send");
-        for (u8 i = 0; i < totalLen; i++)
-        {
-            tl_printf("0x%01x ", p[i]);
-        }
-        tl_printf("\r\n");
+        // tl_printf("app_ctrl_send");
+        // for (u8 i = 0; i < totalLen; i++)
+        // {
+        //     tl_printf("0x%01x ", p[i]);
+        // }
+        // tl_printf("\r\n");
     }
 #endif
     if (BLS_CONN_HANDLE != 0xFFFF)
@@ -341,6 +358,94 @@ int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen)
 
     return 0;
 }
+
+#if (UI_RADAR_ENABLE)
+static void app_ctrl_radar_dbg_pack_s16(u8 *p, s16 v)
+{
+    u16 u = (u16)v;
+    p[0]  = U16_LO(u);
+    p[1]  = U16_HI(u);
+}
+
+void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw_y, u8 motion_valid, s16 motion_dir_deg10)
+{
+    u8 pl[12];
+
+    pl[0] = CTRL_RADAR_DBG_SUB_PREV_RAW;
+    app_ctrl_radar_dbg_pack_s16(pl + 1, prev_x);
+    app_ctrl_radar_dbg_pack_s16(pl + 3, prev_y);
+    app_ctrl_radar_dbg_pack_s16(pl + 5, raw_x);
+    app_ctrl_radar_dbg_pack_s16(pl + 7, raw_y);
+    pl[9] = motion_valid ? 1 : 0;
+    app_ctrl_radar_dbg_pack_s16(pl + 10, motion_valid ? motion_dir_deg10 : (s16)0);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_PRED_DEBUG, g_ctrlSeq++, pl, sizeof(pl));
+}
+
+void app_ctrl_radar_dbg_send_pred_sta(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm)
+{
+    u8 pl[9];
+
+    pl[0] = CTRL_RADAR_DBG_SUB_PRED_STA;
+    app_ctrl_radar_dbg_pack_s16(pl + 1, ax_mm);
+    app_ctrl_radar_dbg_pack_s16(pl + 3, ay_mm);
+    app_ctrl_radar_dbg_pack_s16(pl + 5, bx_mm);
+    app_ctrl_radar_dbg_pack_s16(pl + 7, by_mm);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_PRED_DEBUG, g_ctrlSeq++, pl, sizeof(pl));
+}
+
+void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm)
+{
+    u8 pl[6];
+
+    pl[0] = CTRL_RADAR_DBG_SUB_PREDSEQ;
+    pl[1] = idx;
+    app_ctrl_radar_dbg_pack_s16(pl + 2, x_mm);
+    app_ctrl_radar_dbg_pack_s16(pl + 4, y_mm);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_PRED_DEBUG, g_ctrlSeq++, pl, sizeof(pl));
+}
+
+static s16 app_ctrl_radar_mm_to_dbg_s16(s32 mm)
+{
+    if (mm > (s32)32767)
+    {
+        return (s16)32767;
+    }
+    if (mm < (s32)-32768)
+    {
+        return (s16)-32768;
+    }
+    return (s16)mm;
+}
+
+static void app_ctrl_radar_dbg_send_boundary_pt(u8 corner_idx, s32 x_mm, s32 y_mm)
+{
+    u8 pl[6];
+
+    pl[0] = CTRL_RADAR_DBG_SUB_BOUNDARY_PT;
+    pl[1] = corner_idx;
+    app_ctrl_radar_dbg_pack_s16(pl + 2, app_ctrl_radar_mm_to_dbg_s16(x_mm));
+    app_ctrl_radar_dbg_pack_s16(pl + 4, app_ctrl_radar_mm_to_dbg_s16(y_mm));
+    LOG_D("send BOUNDARY_PT %d %d %d", corner_idx, x_mm, y_mm);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_PRED_DEBUG, g_ctrlSeq++, pl, sizeof(pl));
+}
+
+void app_ctrl_radar_dbg_send_boundary_quad_all(void)
+{
+    u8 i;
+    for (i = 0; i < 4; i++)
+    {
+        s32 x_mm = 0;
+        s32 y_mm = 0;
+        app_radar_get_boundary_quad_by_index(i, &x_mm, &y_mm);
+        app_ctrl_radar_dbg_send_boundary_pt(i, x_mm, y_mm);
+        /* Space NOTIFYs so the stack copies g_ctrlTxBuf each time (same buffer for all sends). */
+        if (i < 3)
+        {
+            sleep_us(8000);
+        }
+    }
+}
+#endif /* UI_RADAR_ENABLE */
 
 void app_ctrl_radar_boundary_enter(void)
 {
@@ -408,9 +513,13 @@ static void app_ctrl_calc_xy_from_angles(s32 pan_deg10, s32 tilt_deg10, s32 heig
         return;
     }
 
-    s32 r_mm = height_mm * lookup_tan((900 + tilt_deg10) * DEG_TO_RAD_10);
-    s32 x_mm = (s32)((float)r_mm * lookup_sin((pan_deg10)*DEG_TO_RAD_10));
-    s32 y_mm = (s32)((float)r_mm * lookup_cos((pan_deg10)*DEG_TO_RAD_10));
+    s32 r1_mm = height_mm * lookup_tan((900 + tilt_deg10) * DEG_TO_RAD_10);
+    s32 r2_mm = app_radar_mysqrt_3(r1_mm * r1_mm + height_mm * height_mm);
+    s32 x_mm  = (s32)((float)r2_mm * lookup_sin((pan_deg10)*DEG_TO_RAD_10));
+    s32 r3_mm = app_radar_mysqrt_3(r2_mm * r2_mm - x_mm * x_mm);
+    s32 y1_mm = (s32)((float)r3_mm * lookup_sin((900 + tilt_deg10) * DEG_TO_RAD_10));
+    s32 y_mm  = app_radar_mysqrt_3(r3_mm * r3_mm - height_mm * height_mm);
+    LOG_D("y1_mm: %d, y_mm: %d", y1_mm, y_mm);
 
     if (x_mm > 32767)
     {
@@ -780,6 +889,7 @@ void app_ctrl_motor_dir_task(void)
                 else if (direction == 0x02)
                 {
                     s32 limit_x_mm = g_radar_boundary_x[limit_index];
+                    LOG_D("cur_x_mm: %d, limit_x_mm: %d", cur_x_mm, limit_x_mm);
                     if (cur_x_mm <= (limit_x_mm + APP_CTRL_BOUNDARY_PAN_GUARD_MM))
                     {
                         need_stop = 1;
@@ -1192,29 +1302,22 @@ static int app_ctrl_handle_radar_boundary_save_point(u8 seq, u8 *payload, u16 le
     s16 tilt_cur  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
     s32 height_mm = 0;
     app_radar_get_install_height_mm(&height_mm);
-    LOG_D("height_mm: %d", height_mm);
 
-    float pan_rad  = (float)pan_cur * DEG_TO_RAD_10;
-    float tilt_rad = (float)(-tilt_cur) * DEG_TO_RAD_10;
-    LOG_D("pan_rad: %f, tilt_rad: %f", pan_rad, tilt_rad);
-    s16 y_mm = 0;
     s16 x_mm = 0;
-    if (tilt_rad > -0.01f && tilt_rad < 0.01f)
-    {
-        y_mm = (s16)RADAR_BOUNDARY_MIN_EDGE_MM;
-    }
-    else
-    {
-        y_mm = (s16)(height_mm / lookup_tan(tilt_rad));
-    }
-    x_mm = (s16)((float)y_mm * lookup_tan(pan_rad));
+    s16 y_mm = 0;
+    LOG_D("p: %d, t: %d, h: %d", pan_cur, tilt_cur, height_mm);
+    LOG_D("p: %d, t: %d, h: %d", pan_cur, tilt_cur, height_mm);
+    LOG_D("p: %d, t: %d, h: %d", pan_cur, tilt_cur, height_mm);
+    app_ctrl_calc_xy_from_angles(pan_cur, tilt_cur, height_mm, &x_mm, &y_mm);
 #else
     s16 x_mm = 0;
     s16 y_mm = 0;
 #endif
 
     app_ctrl_radar_boundary_store_point(point_index, x_mm, y_mm);
-    LOG_D("x_mm: %d, y_mm: %d", x_mm, y_mm);
+    LOG_D("x: %d, y: %d", x_mm, y_mm);
+    LOG_D("x: %d, y: %d", x_mm, y_mm);
+    LOG_D("x: %d, y: %d", x_mm, y_mm);
 
     u8 ready  = app_ctrl_radar_boundary_all_points_ready() ? 1 : 0;
     u8 rsp[4] = {CTRL_STATUS_OK, point_index, ready, 0};
@@ -1424,10 +1527,7 @@ void app_ctrl_init(void)
     memset(&g_motor_dir_state, 0, sizeof(g_motor_dir_state));
 #endif
 #if (UI_RADAR_ENABLE)
-    app_radar_get_boundary_quad_by_index(0, &g_radar_boundary_x[0], &g_radar_boundary_y[0]);
-    app_radar_get_boundary_quad_by_index(1, &g_radar_boundary_x[1], &g_radar_boundary_y[1]);
-    app_radar_get_boundary_quad_by_index(2, &g_radar_boundary_x[2], &g_radar_boundary_y[2]);
-    app_radar_get_boundary_quad_by_index(3, &g_radar_boundary_x[3], &g_radar_boundary_y[3]);
+    radar_boundary_load_from_flash(g_radar_boundary_x, g_radar_boundary_y);
 #endif
 }
 
@@ -1565,6 +1665,21 @@ void app_ctrl_onRx(u8 *data, u16 len)
             u8 rsp[1] = {CTRL_STATUS_OK};
             app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
         }
+        break;
+    case CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY:
+#if (UI_RADAR_ENABLE)
+        LOG_D("CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY");
+        app_ctrl_radar_dbg_send_boundary_quad_all();
+        // {
+        //     u8 rsp[1] = {CTRL_STATUS_OK};
+        //     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
+        // }
+#else
+    {
+        u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
+    }
+#endif
         break;
     default: {
         u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};

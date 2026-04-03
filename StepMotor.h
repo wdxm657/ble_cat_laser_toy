@@ -45,7 +45,7 @@
 
 /* angle precision: 0.1 degree (deg10) */
 #define GIMBAL_PAN_LIMIT_DEG10_POS         DEGx10(80)
-#define GIMBAL_PAN_LIMIT_DEG10_NEG         DEGx10(-90)
+#define GIMBAL_PAN_LIMIT_DEG10_NEG         DEGx10(-80)
 #define GIMBAL_TILT_LIMIT_DEG10_POS        DEGx10(0)
 #define GIMBAL_TILT_LIMIT_DEG10_NEG        DEGx10(-75)
 

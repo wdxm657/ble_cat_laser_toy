@@ -8,6 +8,7 @@
 #define APP_CTRL_H_
 
 #include "tl_common.h"
+#include "app_config.h"
 
 /**
  * @brief   Control protocol basic definitions
@@ -47,8 +48,22 @@ enum{
     CTRL_CMD_RADAR_BOUNDARY_EXIT        = 0x54,   // exit boundary setting mode
     CTRL_CMD_RADAR_BOUNDARY_COMMIT      = 0x55,   // commit all 4 points when APP confirms ready
     CTRL_CMD_RADAR_RESET_FLASH_CONFIG   = 0x56,   // reset radar install height and boundary in flash
+    /** EVENT only: compact radar prediction debug (see CTRL_RADAR_DBG_SUB_xxx) */
+    CTRL_CMD_RADAR_PRED_DEBUG           = 0x57,
+    /** APP -> device: request boundary quad (device emits 4x EVENT sub BOUNDARY_PT); RSP status only */
+    CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY  = 0x58,
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
+};
+
+/** payload[0] for CTRL_CMD_RADAR_PRED_DEBUG events */
+enum{
+    /** prev,raw 4xs16 + motion_valid(u8) + motion_dir_deg10(s16 LE), deg10=degrees*10, 0 if invalid -> 12 B */
+    CTRL_RADAR_DBG_SUB_PREV_RAW = 0x01,
+    CTRL_RADAR_DBG_SUB_PRED_STA = 0x02,   // ax,ay,bx,by (s16 LE) -> 9 B
+    CTRL_RADAR_DBG_SUB_PREDSEQ  = 0x03,   // idx (u8), x,y (s16 LE) -> 6 B
+    /** corner index 0..3, x_mm,y_mm (s16 LE, clamped from s32 in firmware) -> 6 B */
+    CTRL_RADAR_DBG_SUB_BOUNDARY_PT = 0x04,
 };
 
 // Error codes for response payload[0]
@@ -102,6 +117,13 @@ void app_ctrl_onRx(u8 *data, u16 len);
  * @return 0: success, other: fail
  */
 int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen);
+
+#if (UI_RADAR_ENABLE)
+void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw_y, u8 motion_valid, s16 motion_dir_deg10);
+void app_ctrl_radar_dbg_send_pred_sta(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm);
+void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm);
+void app_ctrl_radar_dbg_send_boundary_quad_all(void);
+#endif
 
 u8 app_ctrl_is_setting_mode(void);
 
