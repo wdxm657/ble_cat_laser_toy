@@ -249,6 +249,11 @@ void task_sleep_enter(u8 e, u8 *p, int n)
 
 _attribute_data_retention_ int ota_is_working = 0;
 
+void app_get_firmware_version(void)
+{
+    LOG_D("[APP][OTA] Get firmware version");
+}
+
 /**
  * @brief      this function is used to register the function for OTA start.
  * @param[in]  none
@@ -261,6 +266,7 @@ void app_enter_ota_mode(void)
     gpio_write(GPIO_LED_GREEN, 1);
 #endif
     ota_is_working = 1;
+    LOG_D("[APP][OTA] Enter OTA mode");
 }
 
 /**
