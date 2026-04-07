@@ -218,7 +218,7 @@ byte6 : 0x01           // evtId=到达限位
 byte7 : direction
 ```
 
-1. 边界点设置模式下触发“越界保护”时：
+2. 边界点设置模式下触发“越界保护”时：
 
 ```
 byte0 : 0x01
@@ -233,7 +233,22 @@ byte8 : pointIndex     // 当前正在设置的点
 byte9 : limitPointIndex// 约束参考点
 ```
 
-说明：在边界点设置模式中，设备会在 PAN/TILT 两方向做约束。即将越界时会自动停止电机并上报 evtId=0x02。
+3. **仅边界标定模式**下，俯仰“上”达到当前安装高度对应的地面投射最大距离（固件按 6 m 水平距离推算的俯仰上限）时：
+
+```
+byte0 : 0x01
+byte1 : 0x03           // msgType = EVENT
+byte2 : 0x22           // cmdId = MOTOR_DIR_CTRL
+byte3 : seq            // 事件序号
+byte4 : 0x04           // payloadLen = 4
+byte5 : 0x00
+byte6 : 0x03           // evtId=安装高度俯仰上限（6 m 投射几何上限）
+byte7 : direction      // 固定为 0x00（上）
+byte8 : tilt_deg10_L   // 当前俯仰角 deg×10，小端 s16
+byte9 : tilt_deg10_H
+```
+
+说明：在边界点设置模式中，设备会在 PAN/TILT 两方向做约束，即将越界时自动停止电机并上报 evtId=0x02。另：evtId=0x03 仅在边界标定流程中、且已设置安装高度时可能上报（俯仰“上”超过按 6 m 地面投射推算的上限时）；设备停止俯仰并锁角，普通四向控制（非标定）不触发 0x03。
 
 约束规则：
 

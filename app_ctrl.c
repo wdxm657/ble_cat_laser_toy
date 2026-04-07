@@ -91,6 +91,7 @@ static u8  g_radar_boundary_ready                         = 0;
 static u8  g_radar_boundary_mode                          = CTRL_RADAR_BOUNDARY_MODE_IDLE;
 static u8  g_radar_boundary_active_index                  = 0xFF;
 static u8  g_radar_boundary_point_mask                    = 0;
+static s16 g_hieght_angle_10                              = 0;
 
 static void app_ctrl_radar_boundary_reset(void)
 {
@@ -817,6 +818,23 @@ void app_ctrl_motor_dir_task(void)
                 height_mm = 2500;
             }
 
+            s16 tilt_deg10 = StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
+            if (app_radar_is_install_height_set() && g_motor_dir_state.axis == STEP_MOTOR_AXIS_TILT &&
+                g_motor_dir_state.direction == 0x00 && tilt_deg10 > g_hieght_angle_10)
+            {
+                StepMotor_Stop(g_motor_dir_state.axis);
+                StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt_deg10);
+                g_motor_dir_state.active = 0;
+
+                u8 evt[4] = {0};
+                evt[0]    = 0x03;  // max tilt for 6 m floor reach at install height
+                evt[1]    = 0x00;  // direction: up
+                evt[2]    = (u8)((u16)tilt_deg10 & 0xFF);
+                evt[3]    = (u8)(((u16)tilt_deg10 >> 8) & 0xFF);
+                app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_MOTOR_DIR_CTRL, g_ctrlSeq++, evt, sizeof(evt));
+                return;
+            }
+
             app_ctrl_calc_xy_from_angles(StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN),
                                          StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT),
                                          height_mm,
@@ -1177,6 +1195,8 @@ static int app_ctrl_handle_radar_set_install_height(u8 seq, u8 *payload, u16 len
     s16 height_mm = (s16)(payload[0] | (payload[1] << 8));
     app_radar_set_install_height_mm((s32)height_mm);
 
+    g_hieght_angle_10 = (s16)(lookup_atan2(6000, height_mm) * RAD_TO_DEG * 10.0f - 900.0f);
+
     u8 rsp[2] = {CTRL_STATUS_OK, 0};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_SET_INSTALL_HEIGHT, seq, rsp, sizeof(rsp));
     return 0;
@@ -1525,6 +1545,17 @@ void app_ctrl_init(void)
 #endif
 #if (UI_RADAR_ENABLE)
     radar_boundary_load_from_flash(g_radar_boundary_x, g_radar_boundary_y);
+    if (app_radar_is_install_height_set())
+    {
+        s32 h_mm = 0;
+        app_radar_get_install_height_mm(&h_mm);
+        if (h_mm <= 0)
+        {
+            h_mm = 2500;
+        }
+        g_hieght_angle_10 =
+            (s16)(lookup_atan2(6000, h_mm) * RAD_TO_DEG * 10.0f - 900.0f);
+    }
 #endif
 }
 

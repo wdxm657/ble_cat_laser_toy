@@ -40,6 +40,9 @@
 #endif
 
 #define DEGx10(_deg)                       (_deg * 10)
+// default motoer is 4096 steps per revolution
+// 2.5346 means faster 2.5346 times than default 4096 steps per revolution
+// 4096 / 2.5346 ~= 1616
 #define STEP_MOTOR_STEPS_PER_REV           1616u
 #define STEP_MOTOR_MIN_INTERVAL_US_FASTEST 750u
 
