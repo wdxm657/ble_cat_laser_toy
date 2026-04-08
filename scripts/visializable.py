@@ -29,7 +29,6 @@ import argparse
 import asyncio
 import math
 import queue
-import struct
 import sys
 import threading
 import time
@@ -48,6 +47,8 @@ matplotlib.use("Qt5Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyArrowPatch
+from visualizer import commands as vc
+from visualizer import protocol as cp
 
 # Default serial (when --transport serial)
 PORT = "COM3"
@@ -175,17 +176,13 @@ async def _bleak_ensure_gatt_ready(client) -> None:
 # Optional keepalive: standard GAP Device Name (read-only on most peripherals)
 GAP_DEVICE_NAME_UUID = "00002a00-0000-1000-8000-00805f9b34fb"
 
-CTRL_PROTO_VERSION = 0x01
-CTRL_MSG_TYPE_CMD = 0x01
-CTRL_MSG_TYPE_EVENT = 0x03
-CTRL_CMD_RADAR_PRED_DEBUG = 0x57
-CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = 0x58
-CTRL_CMD_RADAR_TRACK_SPEED = 0x59
-
-CTRL_RADAR_DBG_SUB_PREV_RAW = 0x01
-CTRL_RADAR_DBG_SUB_PRED_STA = 0x02
-CTRL_RADAR_DBG_SUB_PREDSEQ = 0x03
-CTRL_RADAR_DBG_SUB_BOUNDARY_PT = 0x04
+CTRL_PROTO_VERSION = cp.CTRL_PROTO_VERSION
+CTRL_MSG_TYPE_CMD = cp.CTRL_MSG_TYPE_CMD
+CTRL_MSG_TYPE_EVENT = cp.CTRL_MSG_TYPE_EVENT
+CTRL_MSG_TYPE_RSP = cp.CTRL_MSG_TYPE_RSP
+CTRL_CMD_TEXT_CHUNK = cp.CTRL_CMD_TEXT_CHUNK
+CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = cp.CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY
+CTRL_CMD_RADAR_TRACK_SPEED = cp.CTRL_CMD_RADAR_TRACK_SPEED
 
 # x: [-1100, 1100], y: [100, 4100]
 X_MIN, X_MAX = -2500, 2500
@@ -206,20 +203,17 @@ TRACK_INTERVAL_US_MIN = 750
 TRACK_INTERVAL_US_MAX = 20000
 TRACK_INTERVAL_DEFAULT_US = 800
 
+RADAR_BOUNDARY_ERR_TEXT = {
+    0: "OK",
+    1: "EDGE_TOO_SHORT(<1m)",
+    2: "ORDER_INVALID",
+    3: "STATE_INVALID",
+    4: "INDEX_INVALID",
+}
+
 
 def build_ctrl_cmd_frame(cmd_id: int, seq: int, payload: bytes) -> bytes:
-    """version, msgType=CMD, cmdId, seq, payLen u16 LE, payload."""
-    plen = len(payload)
-    return bytes(
-        [
-            CTRL_PROTO_VERSION,
-            CTRL_MSG_TYPE_CMD,
-            cmd_id & 0xFF,
-            seq & 0xFF,
-            plen & 0xFF,
-            (plen >> 8) & 0xFF,
-        ]
-    ) + payload
+    return cp.build_ctrl_cmd_frame(cmd_id, seq, payload)
 
 
 class RadarVisualizer:
@@ -240,6 +234,7 @@ class RadarVisualizer:
 
         self._ser = None
         self._ble_address = ble_address
+        self._ble_enabled = bool(ble_address)
         self._ble_list_gatt = ble_list_gatt
         self._ble_request_boundary = ble_request_boundary
         self._ble_thread: Optional[threading.Thread] = None
@@ -267,7 +262,14 @@ class RadarVisualizer:
             None,
         ]
 
-        self.raw_lines = deque(maxlen=2000)
+        self.log_lines = deque(maxlen=2000)
+        self.ctrl_lines = deque(maxlen=2000)
+
+        # BLE text chunk reassembly (EVENT 0x40). Firmware streams in-order chunks.
+        self._text_rx_transfer_id: Optional[int] = None
+        self._text_rx_chunk_total: int = 0
+        self._text_rx_next_chunk: int = 0
+        self._text_rx_buf = bytearray()
 
         if transport == "serial":
             self._ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.1)
@@ -278,9 +280,26 @@ class RadarVisualizer:
             return False
         v = max(TRACK_INTERVAL_US_MIN, min(TRACK_INTERVAL_US_MAX, int(interval_us)))
         self._ble_tx_seq = (self._ble_tx_seq + 1) & 0xFF
-        pl = struct.pack("<H", v)
+        pl = cp.u16le(v)
         frame = build_ctrl_cmd_frame(CTRL_CMD_RADAR_TRACK_SPEED, self._ble_tx_seq, pl)
         self._ble_tx_queue.put(frame)
+        return True
+
+    def send_cmd(self, cmd_id: int, payload: bytes, note: str = "") -> bool:
+        if self._transport != "ble":
+            return False
+        self._ble_tx_seq = (self._ble_tx_seq + 1) & 0xFF
+        frame = build_ctrl_cmd_frame(cmd_id, self._ble_tx_seq, payload)
+        self._ble_tx_queue.put(frame)
+        with self._lock:
+            if note:
+                self.ctrl_lines.append(
+                    f"[TX] cmd=0x{cmd_id:02X} seq={self._ble_tx_seq} {note}"
+                )
+            else:
+                self.ctrl_lines.append(
+                    f"[TX] cmd=0x{cmd_id:02X} seq={self._ble_tx_seq} pl={payload.hex()}"
+                )
         return True
 
     def start(self):
@@ -290,6 +309,15 @@ class RadarVisualizer:
         else:
             self._ble_thread = threading.Thread(target=self._ble_worker, daemon=True)
             self._ble_thread.start()
+
+    def set_ble_target(self, address: str, enabled: bool) -> None:
+        with self._lock:
+            self._ble_address = (address or "").strip()
+            self._ble_enabled = bool(enabled)
+
+    def ble_target(self) -> tuple[str, bool]:
+        with self._lock:
+            return (self._ble_address or ""), bool(self._ble_enabled)
 
     def close(self):
         self._stop.set()
@@ -307,9 +335,8 @@ class RadarVisualizer:
                 if not line:
                     continue
                 with self._lock:
-                    self.raw_lines.append(line)
-                if len(line) > 8:
-                    self._parse_line(line[8:])
+                    self.log_lines.append(line)
+                self._parse_line(line)
             except Exception:
                 time.sleep(0.01)
 
@@ -323,14 +350,8 @@ class RadarVisualizer:
     async def _ble_async(self):
         from bleak import BleakClient
 
-        address = self._ble_address
-        if not address:
-            return
-
         def on_notify(_handle, data: bytearray):
             b = bytes(data)
-            with self._lock:
-                self.raw_lines.append(b.hex())
             self._apply_ble_frame(b)
 
         def on_disconnected(*_args):
@@ -338,6 +359,10 @@ class RadarVisualizer:
 
         # Reconnect loop: peripheral or host may drop link (supervision ~4s on this firmware).
         while not self._stop.is_set():
+            address, enabled = self.ble_target()
+            if (not enabled) or (not address):
+                await asyncio.sleep(0.2)
+                continue
             try:
                 async with BleakClient(
                     address,
@@ -378,9 +403,13 @@ class RadarVisualizer:
                                 ]
                             )
                             try:
-                                await client.write_gatt_char(rx_char, req, response=True)
+                                await client.write_gatt_char(
+                                    rx_char, req, response=True
+                                )
                             except Exception:
-                                await client.write_gatt_char(rx_char, req, response=False)
+                                await client.write_gatt_char(
+                                    rx_char, req, response=False
+                                )
 
                         await asyncio.sleep(0.25)
                         try:
@@ -409,6 +438,10 @@ class RadarVisualizer:
                             )
                     keepalive = 0
                     while not self._stop.is_set():
+                        a2, e2 = self.ble_target()
+                        if (not e2) or (not a2):
+                            print("[BLE] disabled by UI, disconnecting", file=sys.stderr)
+                            break
                         if not client.is_connected:
                             print(
                                 "[BLE] is_connected=False, will reconnect",
@@ -454,51 +487,120 @@ class RadarVisualizer:
                 await asyncio.sleep(1.5)
 
     def _apply_ble_frame(self, data: bytes) -> None:
-        if len(data) < 6:
+        fr = cp.parse_ctrl_frame(data)
+        if fr is None:
             return
-        if data[0] != CTRL_PROTO_VERSION:
+        if fr.version != CTRL_PROTO_VERSION:
             return
-        if data[1] != CTRL_MSG_TYPE_EVENT or data[2] != CTRL_CMD_RADAR_PRED_DEBUG:
-            # RSP (0x02) and other CMDs also use Ctrl TX on some stacks; ignore here.
+        cmd_id = fr.cmd_id
+        payload = fr.payload
+
+        if fr.msg_type == CTRL_MSG_TYPE_EVENT and cmd_id == CTRL_CMD_TEXT_CHUNK:
+            if not payload:
+                return
+            # payload: [0]=transferId, [1]=chunkIndex, [2]=chunkTotal, [3]=dataLen, [4..]=data
+            if len(payload) < 4:
+                return
+            transfer_id = int(payload[0])
+            chunk_idx = int(payload[1])
+            chunk_total = int(payload[2])
+            data_len = int(payload[3])
+            if data_len < 0 or (4 + data_len) > len(payload):
+                return
+            chunk_data = payload[4 : 4 + data_len]
+
+            complete_lines = []
+            parse_hex_line = None
+            with self._lock:
+                # Start (or restart) on chunk 0 or transfer id change.
+                if (
+                    chunk_idx == 0
+                    or self._text_rx_transfer_id is None
+                    or self._text_rx_transfer_id != transfer_id
+                ):
+                    self._text_rx_transfer_id = transfer_id
+                    self._text_rx_chunk_total = max(1, chunk_total)
+                    self._text_rx_next_chunk = 0
+                    self._text_rx_buf = bytearray()
+
+                # Enforce in-order assembly (firmware sends sequentially).
+                if chunk_idx != self._text_rx_next_chunk:
+                    self._text_rx_transfer_id = None
+                    self._text_rx_chunk_total = 0
+                    self._text_rx_next_chunk = 0
+                    self._text_rx_buf = bytearray()
+                    return
+
+                self._text_rx_buf += chunk_data
+                self._text_rx_next_chunk += 1
+
+                if self._text_rx_next_chunk >= self._text_rx_chunk_total:
+                    b = bytes(self._text_rx_buf)
+                    self._text_rx_transfer_id = None
+                    self._text_rx_chunk_total = 0
+                    self._text_rx_next_chunk = 0
+                    self._text_rx_buf = bytearray()
+                    try:
+                        s = b.decode("utf-8", errors="replace")
+                        complete_lines = s.splitlines()
+                        for line in complete_lines:
+                            self.log_lines.append(line)
+                    except Exception:
+                        parse_hex_line = "[BLE][TEXT_CHUNK] " + b.hex()
+                        self.log_lines.append(parse_hex_line)
+
+            for line in complete_lines:
+                self._parse_line(line)
+            if parse_hex_line is not None:
+                self._parse_line(parse_hex_line)
             return
-        payload_len = data[4] | (data[5] << 8)
-        if len(data) < 6 + payload_len:
-            return
-        payload = data[6 : 6 + payload_len]
-        if not payload:
-            return
-        sub = payload[0]
-        try:
-            if sub not in (
-                CTRL_RADAR_DBG_SUB_PREV_RAW,
-                CTRL_RADAR_DBG_SUB_PRED_STA,
-                CTRL_RADAR_DBG_SUB_PREDSEQ,
-                CTRL_RADAR_DBG_SUB_BOUNDARY_PT,
-            ):
-                print(f"[BLE] unknown SUB in PRED_DEBUG payload: 0x{sub:02x}", file=sys.stderr)
-            if sub == CTRL_RADAR_DBG_SUB_PREV_RAW and len(payload) >= 12:
-                prev_x, prev_y, raw_x, raw_y, m_valid, m_deg10 = struct.unpack_from(
-                    "<hhhhBh", payload, 1
-                )
-                self._apply_prev_raw(
-                    prev_x, prev_y, raw_x, raw_y, int(m_valid), int(m_deg10)
-                )
-            elif sub == CTRL_RADAR_DBG_SUB_PREV_RAW and len(payload) >= 9:
-                prev_x, prev_y, raw_x, raw_y = struct.unpack_from("<hhhh", payload, 1)
-                self._apply_prev_raw(prev_x, prev_y, raw_x, raw_y, 0, 0)
-            elif sub == CTRL_RADAR_DBG_SUB_PRED_STA and len(payload) >= 9:
-                ax, ay, bx, by = struct.unpack_from("<hhhh", payload, 1)
-                self._apply_pred_sta(ax, ay, bx, by)
-            elif sub == CTRL_RADAR_DBG_SUB_PREDSEQ and len(payload) >= 6:
-                idx = payload[1]
-                x, y = struct.unpack_from("<hh", payload, 2)
-                self._apply_predseq(idx, x, y)
-            elif sub == CTRL_RADAR_DBG_SUB_BOUNDARY_PT and len(payload) >= 6:
-                bidx, bx, by = struct.unpack_from("<Bhh", payload, 1)
-                print(f"[BLE] BOUNDARY_PT corner={bidx} x={bx} y={by}", file=sys.stderr)
-                self._apply_boundary_pt(bidx, bx, by)
-        except struct.error:
-            return
+
+        with self._lock:
+            self.ctrl_lines.append(self._decode_ctrl_line(fr))
+
+    def _decode_ctrl_line(self, fr: cp.CtrlFrame) -> str:
+        pld = fr.payload
+        if fr.msg_type == CTRL_MSG_TYPE_RSP:
+            st = pld[0] if len(pld) >= 1 else -1
+            if fr.cmd_id == cp.CTRL_CMD_POWER_CTRL and len(pld) >= 2:
+                return f"[RSP][0x12] status={st} on={pld[1]}"
+            if fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL and len(pld) >= 3:
+                return f"[RSP][0x22] status={st} dir={pld[1]} op={pld[2]}"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_SET_INSTALL_HEIGHT:
+                return f"[RSP][0x50] status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_ENTER:
+                return f"[RSP][0x51] status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT and len(pld) >= 2:
+                err = pld[1]
+                return f"[RSP][0x52] status={st} idx/err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')})"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT and len(pld) >= 4:
+                idx = pld[1]
+                ready = pld[2]
+                err = pld[3]
+                return f"[RSP][0x53] status={st} idx={idx} ready={ready} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')})"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_COMMIT and len(pld) >= 4:
+                apply_ok = pld[1]
+                err = pld[2]
+                pair_mask = pld[3]
+                return f"[RSP][0x55] status={st} apply={apply_ok} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')}) pairMask=0x{pair_mask:02X}"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
+                return f"[RSP][0x56] status={st}"
+            return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
+
+        if (
+            fr.msg_type == CTRL_MSG_TYPE_EVENT
+            and fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL
+        ):
+            if len(pld) >= 2 and pld[0] == 0x01:
+                return f"[EVT][0x22] reached dir={pld[1]}"
+            if len(pld) >= 4 and pld[0] == 0x02:
+                return f"[EVT][0x22] boundary_guard dir={pld[1]} point={pld[2]} limit={pld[3]}"
+            if len(pld) >= 4 and pld[0] == 0x03:
+                tilt = pld[2] | (pld[3] << 8)
+                if tilt >= 0x8000:
+                    tilt -= 0x10000
+                return f"[EVT][0x22] height_limit dir={pld[1]} tilt_deg10={tilt}"
+        return f"[RX] type=0x{fr.msg_type:02X} cmd=0x{fr.cmd_id:02X} seq={fr.seq} pl={pld.hex()}"
 
     def _apply_boundary_pt(self, corner_idx: int, x_mm: int, y_mm: int) -> None:
         if corner_idx < 0 or corner_idx > 3:
@@ -544,14 +646,30 @@ class RadarVisualizer:
             self.seq_history.append((x, y))
 
     def _parse_line(self, line: str):
-        parts = [p.strip() for p in line.split(",")]
+        s = line.strip()
+        if not s:
+            return
+        if s.startswith("[") and "]" in s:
+            s = s.split("]", 1)[1].strip()
+
+        parts = [p.strip() for p in s.split(",")]
         if len(parts) < 2:
             return
 
         try:
             if parts[0] == "PREV" and len(parts) >= 6 and parts[3] == "RAW":
+                m_valid = 0
+                m_deg10 = 0
+                if len(parts) >= 9 and parts[6] == "M":
+                    m_valid = int(parts[7])
+                    m_deg10 = int(parts[8])
                 self._apply_prev_raw(
-                    int(parts[1]), int(parts[2]), int(parts[4]), int(parts[5])
+                    int(parts[1]),
+                    int(parts[2]),
+                    int(parts[4]),
+                    int(parts[5]),
+                    m_valid,
+                    m_deg10,
                 )
             elif parts[0] == "PRED" and parts[1] == "STA" and len(parts) >= 6:
                 self._apply_pred_sta(
@@ -559,6 +677,8 @@ class RadarVisualizer:
                 )
             elif parts[0] == "PREDSEQ" and len(parts) >= 4:
                 self._apply_predseq(int(parts[1]), int(parts[2]), int(parts[3]))
+            elif parts[0] == "BND" and len(parts) >= 4:
+                self._apply_boundary_pt(int(parts[1]), int(parts[2]), int(parts[3]))
         except ValueError:
             return
 
@@ -583,30 +703,12 @@ QLabel { color: #bac2de; }
 """
 
 
-class RawLogWindow(QtWidgets.QMainWindow):
-    def __init__(self, title: str = "Raw data"):
-        super().__init__()
-        self.setWindowTitle(title)
-        self.resize(520, 600)
-        self.text = QtWidgets.QPlainTextEdit()
-        self.text.setReadOnly(True)
-        self.setCentralWidget(self.text)
-        self.setStyleSheet(NIGHT_STYLESHEET)
-
-    def append_lines(self, lines):
-        if not lines:
-            return
-        self.text.appendPlainText("\n".join(lines))
-        self.text.verticalScrollBar().setValue(self.text.verticalScrollBar().maximum())
-
-
 class RadarNightWindow(QtWidgets.QMainWindow):
     """夜间模式：左侧坐标图，右侧雷达数据 + 跟踪步间隔下发 (0x59)。"""
 
-    def __init__(self, vis: RadarVisualizer, raw_window: RawLogWindow, title: str):
+    def __init__(self, vis: RadarVisualizer, title: str):
         super().__init__()
         self.vis = vis
-        self.raw_window = raw_window
         self._last_boundary_epoch = -1
 
         self.setWindowTitle(title)
@@ -642,9 +744,24 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.radar_text.setReadOnly(True)
         self.radar_text.setMinimumWidth(340)
         self.radar_text.document().setDefaultFont(
-            QtGui.QFont("Consolas", 11) if sys.platform == "win32" else QtGui.QFont("monospace", 11)
+            QtGui.QFont("Consolas", 11)
+            if sys.platform == "win32"
+            else QtGui.QFont("monospace", 11)
         )
         right_l.addWidget(self.radar_text, 1)
+
+        lbl_log = QtWidgets.QLabel("固件日志 (仅 0x40)")
+        lbl_log.setStyleSheet("font-size: 14px; color: #89b4fa; font-weight: bold;")
+        right_l.addWidget(lbl_log)
+        self.log_text = QtWidgets.QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(170)
+        self.log_text.document().setDefaultFont(
+            QtGui.QFont("Consolas", 10)
+            if sys.platform == "win32"
+            else QtGui.QFont("monospace", 10)
+        )
+        right_l.addWidget(self.log_text, 1)
 
         speed_box = QtWidgets.QGroupBox("跟踪速度 (BLE → 设备)")
         speed_l = QtWidgets.QVBoxLayout(speed_box)
@@ -671,6 +788,39 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.speed_btn.setToolTip("仅 BLE 模式可下发")
         right_l.addWidget(speed_box)
 
+        conn_box = QtWidgets.QGroupBox("BLE 连接")
+        conn_l = QtWidgets.QVBoxLayout(conn_box)
+        row_addr = QtWidgets.QHBoxLayout()
+        row_addr.addWidget(QtWidgets.QLabel("address:"))
+        self.addr_edit = QtWidgets.QLineEdit()
+        cur_addr, cur_en = self.vis.ble_target() if self.vis._transport == "ble" else ("", False)
+        self.addr_edit.setText(cur_addr)
+        row_addr.addWidget(self.addr_edit, 1)
+        conn_l.addLayout(row_addr)
+        self.conn_btn = QtWidgets.QPushButton("连接")
+        self.conn_btn.setCheckable(True)
+        self.conn_btn.setChecked(cur_en)
+        self._update_conn_btn_text()
+        self.conn_btn.clicked.connect(self._on_toggle_ble_conn)
+        conn_l.addWidget(self.conn_btn)
+        if vis._transport != "ble":
+            self.addr_edit.setEnabled(False)
+            self.conn_btn.setEnabled(False)
+            self.conn_btn.setToolTip("仅 BLE 模式可用")
+        right_l.addWidget(conn_box)
+
+        svc_box = QtWidgets.QGroupBox("控制服务面板")
+        svc_l = QtWidgets.QVBoxLayout(svc_box)
+        svc_l.setSpacing(6)
+        self._build_service_panel(svc_l)
+        right_l.addWidget(svc_box, 1)
+
+        self.ctrl_text = QtWidgets.QPlainTextEdit()
+        self.ctrl_text.setReadOnly(True)
+        self.ctrl_text.setMinimumHeight(130)
+        self.ctrl_text.setPlaceholderText("Ctrl RSP / EVENT 日志")
+        right_l.addWidget(self.ctrl_text, 1)
+
         splitter.addWidget(right)
         splitter.setSizes([720, 420])
 
@@ -687,12 +837,123 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.log_timer.timeout.connect(self._flush_raw_log)
         self.log_timer.start()
 
+        self.ctrl_timer = QtCore.QTimer(self)
+        self.ctrl_timer.setInterval(80)
+        self.ctrl_timer.timeout.connect(self._flush_ctrl_log)
+        self.ctrl_timer.start()
+
     def _on_send_speed(self) -> None:
         ok = self.vis.send_radar_track_interval_us(self.speed_spin.value())
         if not ok:
-            self.radar_text.appendPlainText(
-                "[本地] 下发失败（非 BLE 或未连接）\n"
+            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）\n")
+
+    def _update_conn_btn_text(self) -> None:
+        self.conn_btn.setText("断开" if self.conn_btn.isChecked() else "连接")
+
+    def _on_toggle_ble_conn(self) -> None:
+        enabled = self.conn_btn.isChecked()
+        addr = self.addr_edit.text().strip()
+        if enabled and not addr:
+            self.conn_btn.setChecked(False)
+            self._update_conn_btn_text()
+            self.radar_text.appendPlainText("[本地] 请输入 BLE address")
+            return
+        self.vis.set_ble_target(addr, enabled)
+        self._update_conn_btn_text()
+        self.radar_text.appendPlainText(f"[本地] BLE {'连接请求' if enabled else '已断开'}: {addr}")
+
+    def _build_service_panel(self, root: QtWidgets.QVBoxLayout) -> None:
+        g = QtWidgets.QGridLayout()
+        g.setHorizontalSpacing(6)
+        g.setVerticalSpacing(6)
+        root.addLayout(g)
+
+        # Power
+        b_power_on = QtWidgets.QPushButton("PowerOn")
+        b_power_on.clicked.connect(lambda: self._send(*vc.cmd_power_ctrl(1)))
+        b_power_off = QtWidgets.QPushButton("PowerOff")
+        b_power_off.clicked.connect(lambda: self._send(*vc.cmd_power_ctrl(0)))
+        g.addWidget(QtWidgets.QLabel("电源 (0x12)"), 0, 0)
+        g.addWidget(b_power_on, 0, 1)
+        g.addWidget(b_power_off, 0, 2)
+
+        # Direction control: press move, release stop
+        g.addWidget(QtWidgets.QLabel("电机方向 (0x22, 按下动/松开停)"), 1, 0, 1, 4)
+        self.dir_speed = QtWidgets.QSpinBox()
+        self.dir_speed.setRange(0, 3)
+        self.dir_speed.setValue(2)
+        g.addWidget(QtWidgets.QLabel("speed"), 2, 0)
+        g.addWidget(self.dir_speed, 2, 1)
+        self.btn_up = QtWidgets.QPushButton("↑")
+        self.btn_down = QtWidgets.QPushButton("↓")
+        self.btn_left = QtWidgets.QPushButton("←")
+        self.btn_right = QtWidgets.QPushButton("→")
+        g.addWidget(self.btn_up, 3, 1)
+        g.addWidget(self.btn_left, 4, 0)
+        g.addWidget(self.btn_down, 4, 1)
+        g.addWidget(self.btn_right, 4, 2)
+        self._bind_press_release(self.btn_up, 0)
+        self._bind_press_release(self.btn_down, 1)
+        self._bind_press_release(self.btn_left, 2)
+        self._bind_press_release(self.btn_right, 3)
+
+        # Height
+        g.addWidget(QtWidgets.QLabel("安装高度 (0x50, mm)"), 5, 0, 1, 2)
+        self.h_mm = QtWidgets.QSpinBox()
+        self.h_mm.setRange(500, 10000)
+        self.h_mm.setValue(2500)
+        b_h = QtWidgets.QPushButton("设置高度")
+        b_h.clicked.connect(
+            lambda: self._send(*vc.cmd_radar_set_height(self.h_mm.value()))
+        )
+        g.addWidget(self.h_mm, 6, 0)
+        g.addWidget(b_h, 6, 1)
+
+        # Boundary flow
+        g.addWidget(QtWidgets.QLabel("边界流程 (0x51/52/53/55 + 0x56)"), 7, 0, 1, 5)
+        self.b_idx = QtWidgets.QSpinBox()
+        self.b_idx.setRange(0, 3)
+        b_enter = QtWidgets.QPushButton("进入")
+        b_sel = QtWidgets.QPushButton("选择点")
+        b_save = QtWidgets.QPushButton("保存点")
+        b_commit = QtWidgets.QPushButton("提交")
+        b_reset = QtWidgets.QPushButton("复位")
+        b_exit = QtWidgets.QPushButton("退出")
+        b_enter.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_enter()))
+        b_sel.clicked.connect(
+            lambda: self._send(*vc.cmd_radar_boundary_select(self.b_idx.value()))
+        )
+        b_save.clicked.connect(
+            lambda: self._send(*vc.cmd_radar_boundary_save(self.b_idx.value()))
+        )
+        b_commit.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_commit()))
+        b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
+        b_exit.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_exit()))
+        g.addWidget(QtWidgets.QLabel("point"), 8, 0)
+        g.addWidget(self.b_idx, 8, 1)
+        g.addWidget(b_enter, 9, 0)
+        g.addWidget(b_sel, 9, 1)
+        g.addWidget(b_save, 9, 2)
+        g.addWidget(b_commit, 9, 3)
+        g.addWidget(b_reset, 9, 4)
+        g.addWidget(b_exit, 9, 5)
+
+    def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
+        btn.pressed.connect(
+            lambda d=direction: self._send(
+                *vc.cmd_motor_dir_start(d, self.dir_speed.value())
             )
+        )
+        btn.released.connect(
+            lambda d=direction: self._send(
+                *vc.cmd_motor_dir_stop(d, self.dir_speed.value())
+            )
+        )
+
+    def _send(self, cmd_id: int, payload: bytes, desc: str) -> None:
+        ok = self.vis.send_cmd(cmd_id, payload, desc)
+        if not ok:
+            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
 
     def _setup_plot(self):
         C_TEXT = "#cdd6f4"
@@ -723,12 +984,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         )
         (self.raw_point,) = self.ax.plot(
             [], [], "o", color="#89dceb", markersize=7, label="Raw"
-        )
-        (self.pred_a_point,) = self.ax.plot(
-            [], [], "s", color="#a6e3a1", markersize=6, label="Pred A"
-        )
-        (self.pred_b_point,) = self.ax.plot(
-            [], [], "s", color="#94e2d5", markersize=6, label="Pred B"
         )
         (self.seq_points,) = self.ax.plot(
             [], [], ".", color="#f38ba8", alpha=0.85, markersize=8, label="Track / Seq"
@@ -771,11 +1026,25 @@ class RadarNightWindow(QtWidgets.QMainWindow):
 
     def _flush_raw_log(self):
         with self.vis._lock:
-            if not self.vis.raw_lines:
+            if not self.vis.log_lines:
                 return
-            lines = list(self.vis.raw_lines)
-            self.vis.raw_lines.clear()
-        self.raw_window.append_lines(lines)
+            lines = list(self.vis.log_lines)
+            self.vis.log_lines.clear()
+        self.log_text.appendPlainText("\n".join(lines))
+        self.log_text.verticalScrollBar().setValue(
+            self.log_text.verticalScrollBar().maximum()
+        )
+
+    def _flush_ctrl_log(self):
+        with self.vis._lock:
+            if not self.vis.ctrl_lines:
+                return
+            lines = list(self.vis.ctrl_lines)
+            self.vis.ctrl_lines.clear()
+        self.ctrl_text.appendPlainText("\n".join(lines))
+        self.ctrl_text.verticalScrollBar().setValue(
+            self.ctrl_text.verticalScrollBar().maximum()
+        )
 
     def _update_view(self):
         with self.vis._lock:
@@ -824,16 +1093,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.raw_text.set_text("RAW: —")
             self.motion_arrow.set_visible(False)
 
-        if latest_a is not None:
-            self.pred_a_point.set_data([latest_a[0]], [latest_a[1]])
-        else:
-            self.pred_a_point.set_data([], [])
-
-        if latest_b is not None:
-            self.pred_b_point.set_data([latest_b[0]], [latest_b[1]])
-        else:
-            self.pred_b_point.set_data([], [])
-
         if seq:
             xs = [p[0] for p in seq]
             ys = [p[1] for p in seq]
@@ -848,8 +1107,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"Motion:   valid={mdir_ok}  dir_deg×10={mdeg10}",
             "",
             "── 预测 / 跟踪 ──",
-            f"Pred A:   {latest_a if latest_a else '—'}",
-            f"Pred B:   {latest_b if latest_b else '—'}",
             f"Seq pts:  {len(seq)}  {seq[-3:] if seq else ''}",
             "",
             "── 场地 ──",
@@ -863,7 +1120,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.canvas.draw_idle()
 
 
-# python visializable.py --transport ble --address 00:01:30:00:00:40
+# python visializable.py --transport ble --address A4:C1:38:9F:96:BB
 def main():
     parser = argparse.ArgumentParser(
         description="Radar prediction debug (serial or BLE)"
@@ -895,10 +1152,6 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.transport == "ble" and not args.address:
-        print("BLE mode requires --address <MAC>", file=sys.stderr)
-        sys.exit(2)
-
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(NIGHT_STYLESHEET)
     vis = RadarVisualizer(
@@ -912,16 +1165,11 @@ def main():
     vis.start()
 
     if args.transport == "ble":
-        raw_title = "Raw BLE notify (hex)"
-        win_title = f"Radar visualizer (BLE {args.address})"
+        win_title = f"Radar visualizer (BLE {args.address or 'manual'})"
     else:
-        raw_title = "Raw serial lines"
         win_title = f"Radar visualizer (serial {args.port})"
 
-    raw_window = RawLogWindow(raw_title)
-    raw_window.show()
-
-    main_window = RadarNightWindow(vis, raw_window, win_title)
+    main_window = RadarNightWindow(vis, win_title)
     main_window.show()
 
     exit_code = 0

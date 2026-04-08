@@ -9,6 +9,8 @@
 
 #include "tl_common.h"
 #include "app_config.h"
+#include "printf.h"
+#include <string.h>
 
 /**
  * @brief   Control protocol basic definitions
@@ -48,12 +50,10 @@ enum{
     CTRL_CMD_RADAR_BOUNDARY_EXIT        = 0x54,   // exit boundary setting mode
     CTRL_CMD_RADAR_BOUNDARY_COMMIT      = 0x55,   // commit all 4 points when APP confirms ready
     CTRL_CMD_RADAR_RESET_FLASH_CONFIG   = 0x56,   // reset radar install height and boundary in flash
-    /** EVENT only: compact radar prediction debug (see CTRL_RADAR_DBG_SUB_xxx) */
-    CTRL_CMD_RADAR_PRED_DEBUG           = 0x57,
     /** APP -> device: request boundary quad (device emits 4x EVENT sub BOUNDARY_PT); RSP status only */
-    CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY  = 0x58,
+    CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY  = 0x57,
     /** APP -> device: set radar track gimbal step interval; payload u16 LE interval_us (µs) */
-    CTRL_CMD_RADAR_TRACK_SPEED         = 0x59,
+    CTRL_CMD_RADAR_TRACK_SPEED         = 0x58,
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
 };
@@ -119,6 +119,36 @@ void app_ctrl_onRx(u8 *data, u16 len);
  * @return 0: success, other: fail
  */
 int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen);
+
+/**
+ * @brief   Send arbitrary bytes/text to PC visualizer via Ctrl TX notify (EVENT: CTRL_CMD_TEXT_CHUNK, 0x40).
+ *          Best-effort: if not connected, the call returns without sending.
+ */
+void app_ctrl_text_send_bytes(const u8 *data, u16 len);
+
+static inline void app_ctrl_text_send_str(const char *s)
+{
+    if (!s)
+    {
+        return;
+    }
+    app_ctrl_text_send_bytes((const u8 *)s, (u16)strlen(s));
+}
+
+/**
+ * @brief   Use this macro at LOG sites to send the formatted string to PC over BLE.
+ *          It does NOT hook printf, and does NOT use FIFO buffering.
+ *
+ * @note    Buffer is limited (local stack). Long lines will be truncated.
+ *          Payload is chunked internally to fit 20-byte ATT values.
+ */
+#define BLE_LOG_D(fmt, ...)                                                                 \
+    do                                                                                      \
+    {                                                                                       \
+        char _ble_log_buf[96];                                                              \
+        tl_sprintf(_ble_log_buf, fmt "\r\n", ##__VA_ARGS__);                                \
+        app_ctrl_text_send_bytes((const u8 *)_ble_log_buf, (u16)strlen(_ble_log_buf));      \
+    } while (0)
 
 #if (UI_RADAR_ENABLE)
 void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw_y, u8 motion_valid, s16 motion_dir_deg10);

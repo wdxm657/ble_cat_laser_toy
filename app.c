@@ -27,6 +27,7 @@
 #include "app.h"
 #include "app_att.h"
 #include "app_ui.h"
+#include "app_ctrl.h"
 #include "app_buffer.h"
 #include "StepMotor.h"
 
@@ -966,6 +967,7 @@ void main_loop(void)
     {
         // u32 elapsed = (clock_time() - g_time_tick_last) >> 4;
         // LOG_D("radar time tick elapsed: %d", elapsed);
+        // BLE_LOG_D("radar time tick");
         g_time_tick_last = clock_time();
         app_radar_on_time_tick();
     }
@@ -1013,7 +1015,7 @@ void main_loop(void)
 #ifdef UI_RADAR_ENABLE
     if (!StepMotor_GimbalResetBusy() && g_app_radar_on)
     {
-        app_radar_gimbal_track_task();  /* StepMotor_GimbalTask；雷达目标在 parse 中直接 SetTarget */
+        app_radar_gimbal_track_task(); /* StepMotor_GimbalTask；雷达目标在 parse 中直接 SetTarget */
         app_ctrl_motor_dir_task();
     }
     // StepMotor_GimbalDemoTask();
