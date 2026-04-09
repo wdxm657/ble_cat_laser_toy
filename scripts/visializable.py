@@ -487,6 +487,8 @@ class RadarVisualizer:
                 await asyncio.sleep(1.5)
 
     def _apply_ble_frame(self, data: bytes) -> None:
+        # 打印16进制数据
+        print(data.hex())
         fr = cp.parse_ctrl_frame(data)
         if fr is None:
             return

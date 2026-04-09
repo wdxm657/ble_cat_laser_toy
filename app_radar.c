@@ -844,7 +844,7 @@ void RadarSessionStop(u8 reset)
 
 u8 RadarSessionIsResting(void)
 {
-    return 0;
+    return g_radar_rest_mode;
 }
 
 static void RadarSessionOnMotion(u32 now_tick)

@@ -230,7 +230,6 @@ static void app_ctrl_radar_boundary_move_to_point(u8 point_index)
     BLE_LOG_D("x: %d, y: %d, h: %d", x_mm, y_mm, height_mm);
     app_radar_point_to_pan_tilt(x_mm, y_mm, height_mm, &pan_deg10, &tilt_deg10);
     BLE_LOG_D("p: %d, t: %d", pan_deg10, tilt_deg10);
-
     StepMotor_GimbalSetSpeedUs(APP_CTRL_BOUNDARY_MOVE_SPEED_US);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
@@ -348,7 +347,8 @@ int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen)
     {
         blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_READ_DP_H, g_ctrlTxBuf, totalLen);
     }
-
+    // memset(g_ctrlRxBuf, 0, sizeof(g_ctrlRxBuf));
+    // memset(g_ctrlTxBuf, 0, sizeof(g_ctrlTxBuf));
     return 0;
 }
 
@@ -397,12 +397,12 @@ void app_ctrl_text_send_bytes(const u8 *data, u16 len)
         // Space NOTIFYs so the stack copies g_ctrlTxBuf each time (same buffer for all sends).
         if (idx + 1 < total)
         {
-            sleep_us(8000);
+            sleep_us(5000);
         }
     }
+    sleep_us(10000);
 }
 
-#if (UI_RADAR_ENABLE && DEBUG_MODE)
 void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw_y, u8 motion_valid, s16 motion_dir_deg10)
 {
     BLE_LOG_D("PREV,%d,%d,RAW,%d,%d,M,%d,%d", prev_x, prev_y, raw_x, raw_y, motion_valid ? 1 : 0, motion_valid ? motion_dir_deg10 : 0);
@@ -439,7 +439,6 @@ void app_ctrl_radar_dbg_send_boundary_quad_all(void)
         }
     }
 }
-#endif /* UI_RADAR_ENABLE && DEBUG_MODE */
 
 void app_ctrl_radar_boundary_enter(void)
 {
@@ -1053,6 +1052,9 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     }
 
     u8 on = payload[0] ? 1 : 0;
+    LOG_D("pc: %d  payload: %d", on, payload[0]);
+    LOG_D("pc: %d  payload: %d", on, payload[0]);
+    LOG_D("pc: %d  payload: %d", on, payload[0]);
     app_set_radar_state(on);
 
     u8 rsp[2] = {CTRL_STATUS_OK, on};
@@ -1186,6 +1188,9 @@ static int app_ctrl_handle_radar_set_install_height(u8 seq, u8 *payload, u16 len
     }
 
     s16 height_mm = (s16)(payload[0] | (payload[1] << 8));
+    LOG_D("height_mm: %d, payload: %d, %d", height_mm, payload[0], payload[1]);
+    LOG_D("height_mm: %d, payload: %d, %d", height_mm, payload[0], payload[1]);
+    LOG_D("height_mm: %d, payload: %d, %d", height_mm, payload[0], payload[1]);
     app_radar_set_install_height_mm((s32)height_mm);
 
     g_hieght_angle_10 = (s16)(lookup_atan2(6000, height_mm) * RAD_TO_DEG * 10.0f - 900.0f);
@@ -1210,6 +1215,11 @@ static int app_ctrl_handle_radar_boundary_enter(u8 seq, u8 *payload, u16 len)
 
     g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_SETTING;
     app_ctrl_radar_boundary_reset();
+    s32 h = 0;
+    app_radar_get_install_height_mm(&h);
+    BLE_LOG_D("height_mm: %d", h);
+    BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
+    BLE_LOG_D("g_radar_boundary_y: %d, %d, %d, %d", g_radar_boundary_y[0], g_radar_boundary_y[1], g_radar_boundary_y[2], g_radar_boundary_y[3]);
 
     u8 rsp[2] = {CTRL_STATUS_OK, 0};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_ENTER, seq, rsp, sizeof(rsp));
@@ -1249,6 +1259,8 @@ static int app_ctrl_handle_radar_boundary_select_point(u8 seq, u8 *payload, u16 
     }
 
     g_radar_boundary_active_index = point_index;
+    BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
+    BLE_LOG_D("g_radar_boundary_y: %d, %d, %d, %d", g_radar_boundary_y[0], g_radar_boundary_y[1], g_radar_boundary_y[2], g_radar_boundary_y[3]);
     app_ctrl_radar_boundary_move_to_point(point_index);
 
     u8 rsp[3] = {CTRL_STATUS_OK, point_index, 0};
@@ -1406,6 +1418,8 @@ static int app_ctrl_handle_radar_boundary_exit(u8 seq, u8 *payload, u16 len)
 
     g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
     app_ctrl_radar_boundary_reset();
+    BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
+    BLE_LOG_D("g_radar_boundary_y: %d, %d, %d, %d", g_radar_boundary_y[0], g_radar_boundary_y[1], g_radar_boundary_y[2], g_radar_boundary_y[3]);
 
     u8 rsp[2] = {CTRL_STATUS_OK, 0};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_EXIT, seq, rsp, sizeof(rsp));

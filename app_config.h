@@ -174,15 +174,18 @@ enum{
 	#define	GPIO_LED_GREEN	GPIO_PA5
 	#define	GPIO_LED_WHITE	GPIO_PA4 // 激光指示灯
 	#define	GPIO_LED_RED	GPIO_PA7
+	#define RADAR_SWITCH    GPIO_PB5
 	#define LED_ON_LEVEL 			1 		//gpio output high voltage to turn on led
 	#define PA4_FUNC				AS_GPIO
 	#define PA5_FUNC				AS_GPIO
 	#define PA6_FUNC				AS_GPIO
 	#define PA7_FUNC				AS_GPIO
+	#define PB5_FUNC          		AS_GPIO
 	#define	PA4_OUTPUT_ENABLE		1
 	#define	PA5_OUTPUT_ENABLE		1
 	#define PA6_OUTPUT_ENABLE		1
 	#define	PA7_OUTPUT_ENABLE		1
+	#define PB5_OUTPUT_ENABLE 1
 	#endif
 #endif
 #if(UI_STEP_MOTOR_ENABLE)

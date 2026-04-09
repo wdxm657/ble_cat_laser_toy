@@ -135,6 +135,7 @@ static inline void app_ctrl_text_send_str(const char *s)
     app_ctrl_text_send_bytes((const u8 *)s, (u16)strlen(s));
 }
 
+#if DEBUG_MODE
 /**
  * @brief   Use this macro at LOG sites to send the formatted string to PC over BLE.
  *          It does NOT hook printf, and does NOT use FIFO buffering.
@@ -149,7 +150,9 @@ static inline void app_ctrl_text_send_str(const char *s)
         tl_sprintf(_ble_log_buf, fmt "\r\n", ##__VA_ARGS__);                                \
         app_ctrl_text_send_bytes((const u8 *)_ble_log_buf, (u16)strlen(_ble_log_buf));      \
     } while (0)
-
+#else
+#define BLE_LOG_D(fmt, ...) ((void)0)
+#endif
 #if (UI_RADAR_ENABLE)
 void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw_y, u8 motion_valid, s16 motion_dir_deg10);
 void app_ctrl_radar_dbg_send_pred_sta(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm);
