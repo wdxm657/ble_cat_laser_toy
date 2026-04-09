@@ -1669,13 +1669,22 @@ void app_radar_set_track_gimbal_interval_us(u32 interval_us)
 }
 
 /** 与蓝牙「移向限位」相同思路：固定步间隔 + 单一目标，电机顺滑跟随 */
-static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm)
+#define M_PI     3.1415926
+#define M_PI_3   (M_PI / 3.0f)
+#define M_2_PI_3 (2.0f * M_PI / 3.0f)
+static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
 {
     s16 pan_deg10  = 0;
     s16 tilt_deg10 = 0;
 
     app_radar_point_to_pan_tilt(x_mm, y_mm, g_radar_install_height_mm, &pan_deg10, &tilt_deg10);
     StepMotor_GimbalSetSpeedUs(g_radar_track_gimbal_interval_us);
+    // 如果方向为pi/3-2pi/3，则需要将水平角和垂直角固定+5°
+    if (motion_rad > M_PI_3 && motion_rad < M_2_PI_3)
+    {
+        pan_deg10 += 50;
+        tilt_deg10 += 10;
+    }
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
 }
@@ -1920,7 +1929,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         RadarGimbalCancelSequence();
         // app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
 #if (UI_STEP_MOTOR_ENABLE)
-        RadarGimbalApplyTargetMm(track_x, track_y);
+        RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
 #else
         (void)track_x;
         (void)track_y;
