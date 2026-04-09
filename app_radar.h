@@ -44,11 +44,15 @@ u8 RadarSessionIsResting(void);
 float app_radar_mysqrt_3(float x);
 
 void app_radar_point_to_pan_tilt(s32 x_mm, s32 y_mm, s32 height_mm, s16 *pan_deg10, s16 *tilt_deg10);
-int radar_boundary_load_from_flash(s32 x_mm[4], s32 y_mm[4]);
+int  radar_boundary_load_from_flash(s32 x_mm[4], s32 y_mm[4]);
 void app_radar_clear_install_height_and_boundary_flash(void);
 
 /** 雷达跟踪时云台步进间隔 (µs)；无步进电机编译时为空操作 */
 void app_radar_set_track_gimbal_interval_us(u32 interval_us);
+u8   app_radar_has_recent_motion(u32 timeout_us);
+void app_radar_set_enabled(u8 on);
+void app_radar_task_power_schedule(void);
+u8   app_radar_is_power_on(void);
 
 #else
 static inline void app_radar_reset_boundary_default(void)

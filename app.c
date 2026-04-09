@@ -56,8 +56,11 @@ static u8 g_app_radar_on = 0;
 void app_set_radar_state(u8 on)
 {
     g_app_radar_on = on ? 1 : 0;
-    if (!on)
+    app_radar_set_enabled(g_app_radar_on);
+    if (!g_app_radar_on)
+    {
         StepMotor_GimbalResetStart();
+    }
 }
 
 u8 app_get_radar_state(void)
@@ -94,7 +97,7 @@ const u8 tbl_advData[] = {
     'S',
     'P',
     'N',
-    'B',
+    'A',
     2,
     DT_FLAGS,
     0x05,  // BLE limited discoverable mode and BR/EDR not supported
@@ -125,7 +128,7 @@ u8 tbl_scanRsp[] = {
     'S',
     'P',
     'N',
-    'B',
+    'A',
     17,
     DT_MANUFACTURER_SPECIFIC_DATA,
     0x00,
@@ -983,7 +986,15 @@ void main_loop(void)
             // 判断当前是否为设置状态
             if (!app_ctrl_is_setting_mode())
             {
-                app_radar_parse_and_report_frame();
+                app_radar_task_power_schedule();
+                if (app_radar_is_power_on())
+                {
+                    app_radar_parse_and_report_frame();
+                }
+                else
+                {
+                    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+                }
             }
             else
             {
@@ -1000,6 +1011,7 @@ void main_loop(void)
     }
     else
     {
+        app_radar_set_enabled(0);
         gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
         RadarSessionStop(1);
     }

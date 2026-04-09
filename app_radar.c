@@ -16,18 +16,11 @@
 #include "app_config.h"
 #include "app_ctrl.h"
 
-#ifndef RADAR_GIMBAL_DEBUG_TRACK_PROC_ONLY
-/** 保留宏占位；雷达跟踪已改为每帧单目标直接驱动，与宏取值无关。 */
-#define RADAR_GIMBAL_DEBUG_TRACK_PROC_ONLY 0
-#endif
-
 #define RADAR_INSTALL_HEIGHT_DEFAULT_MM (2.5f * 1000.0f)
 #define RADAR_FRAME_LEN                 30
 #define SAMPLE_COUNT                    1
 #define STATIONARY_DXY_THRESHOLD_MM     5
 #define RADAR_IDLE_TIMEOUT_US           (1000000u * 30u)  // 30s
-#define RADAR_SESSION_REST_US           (1000000u * 60u)  // 1min
-#define RADAR_SESSION_MAX_US            (1000000u * 15u)  // 10min
 
 #define RADAR_TIME_SEC_PER_DAY          86400u
 
@@ -106,18 +99,15 @@ typedef enum
 #define RADAR_TRACK_LEAD_ENABLE 1
 #endif
 /** 领跑距离 = BASE + |v_cm_s| * NUM / DEN (mm)，再夹到 MIN~MAX（与雷达 |v| 无关，低速也有 MIN 超前） */
-#define RADAR_TRACK_LEAD_MM_BASE    1000
-#define RADAR_TRACK_LEAD_MM_PER_NUM 10
-#define RADAR_TRACK_LEAD_MM_PER_DEN 1
-#define RADAR_TRACK_LEAD_MM_MIN     200
-#define RADAR_TRACK_LEAD_MM_MAX     2000
+#define RADAR_TRACK_LEAD_MM_BASE       600
+#define RADAR_TRACK_LEAD_MM_PER_NUM    10
+#define RADAR_TRACK_LEAD_MM_PER_DEN    1
+#define RADAR_TRACK_LEAD_MM_MIN        200
+#define RADAR_TRACK_LEAD_MM_MAX        2000
 /** 目标判定静止时，沿最后运动方向保留的较小超前 (mm)，需 motion_valid（含粘滞方向） */
-#define RADAR_TRACK_LEAD_MM_STATIC  1000
-
-/** 联调可视化：置 1 时经 BLE 上报当前跟踪点 (mm)，对应 scripts/visializable.py 的 predseq */
-#ifndef RADAR_TRACK_DBG_SEND_PREDSEQ
-#define RADAR_TRACK_DBG_SEND_PREDSEQ 1
-#endif
+#define RADAR_TRACK_LEAD_MM_STATIC     600
+/** 跟踪点与猫位置的最小间距约束，避免边界修正后贴近目标 */
+#define RADAR_TRACK_ESCAPE_MIN_DIST_MM 600
 
 _attribute_data_retention_ static radar_prediction_state_t g_radar_pred = {0};
 
@@ -224,9 +214,24 @@ _attribute_data_retention_ static s16   g_radar_static_bx_mm          = 0;
 _attribute_data_retention_ static s16   g_radar_static_by_mm          = 0;
 _attribute_data_retention_ static float g_radar_static_dir_rad        = 0.0f;
 _attribute_data_retention_ static u32   g_radar_last_motion_tick      = 0;
-_attribute_data_retention_ static u32   g_radar_session_start_tick    = 0;
+_attribute_data_retention_ static u8    g_radar_power_on              = 0;
+_attribute_data_retention_ static u8    g_radar_low_freq_phase_on     = 1;
+_attribute_data_retention_ static u8    g_radar_hold_on_mode          = 0;
+_attribute_data_retention_ static u8    g_radar_rest_mode             = 0;
+_attribute_data_retention_ static u32   g_radar_phase_tick            = 0;
 _attribute_data_retention_ static u32   g_radar_rest_start_tick       = 0;
-_attribute_data_retention_ static u8    g_radar_resting               = 0;
+_attribute_data_retention_ static u32   g_radar_work_acc_tick         = 0;
+_attribute_data_retention_ static u16   g_radar_work_acc_sec          = 0;
+
+typedef enum
+{
+    RADAR_POWER_LOG_STATE_NONE = 0,
+    RADAR_POWER_LOG_STATE_REST,
+    RADAR_POWER_LOG_STATE_HOLD_ON,
+    RADAR_POWER_LOG_STATE_LOW_FREQ_ON,
+    RADAR_POWER_LOG_STATE_LOW_FREQ_OFF,
+} radar_power_log_state_t;
+_attribute_data_retention_ static u8 g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_NONE;
 
 _attribute_data_retention_ static u32 g_radar_time_sec          = 0;
 _attribute_data_retention_ static u32 g_radar_time_tick_acc_us  = 0;
@@ -293,6 +298,34 @@ typedef struct
 } radar_play_record_flash_t;
 
 _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
+
+#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)    // 1s
+#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)    // 4s
+#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)   // 30s
+#define RADAR_WORK_MAX_US          (1000000u * 600u)  // 10min
+#define RADAR_REST_EXIT_US         (1000000u * 60u)   // 1min
+
+static void app_radar_power_switch(u8 on)
+{
+    gpio_write(RADAR_SWITCH, on ? 1 : 0);
+    if (!on)
+    {
+        RadarSessionStop(1);
+    }
+    g_radar_power_on = on ? 1 : 0;
+}
+
+static void app_radar_power_state_reset(void)
+{
+    g_radar_low_freq_phase_on    = 1;
+    g_radar_hold_on_mode         = 0;
+    g_radar_rest_mode            = 0;
+    g_radar_phase_tick           = 0;
+    g_radar_rest_start_tick      = 0;
+    g_radar_work_acc_tick        = 0;
+    g_radar_work_acc_sec         = 0;
+    g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_NONE;
+}
 
 static inline s16 RadarSpeedAbs(s16 v_cm_s)
 {
@@ -806,79 +839,24 @@ void RadarSessionStop(u8 reset)
     g_radar_seq_step_interval_us  = RADAR_GIMBAL_STEP_US_SLOW;
     g_radar_seq_pending_step_us   = RADAR_GIMBAL_STEP_US_SLOW;
     RadarMotionCacheReset();
-    if (reset)
-    {
-        g_radar_session_start_tick = 0;
-    }
+    (void)reset;
 }
 
 u8 RadarSessionIsResting(void)
 {
-    return g_radar_resting;
-}
-
-static void RadarSessionEnterRest(u32 now_tick)
-{
-    RadarSessionStop(1);
-    StepMotor_StopAll();
-    g_radar_resting         = 1;
-    g_radar_rest_start_tick = now_tick;
+    return 0;
 }
 
 static void RadarSessionOnMotion(u32 now_tick)
 {
     g_radar_last_motion_tick = now_tick;
-    if (g_radar_resting)
-    {
-        return;
-    }
-
-    if (g_radar_session_start_tick == 0)
-    {
-        g_radar_session_start_tick = now_tick;
-    }
     radar_play_record_start();
     gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
 }
 
 static u8 RadarSessionCanPredict(u32 now_tick)
 {
-    static u8 count   = 0;
-    u32       elapsed = (now_tick - g_radar_rest_start_tick) >> 4;
-    if (g_radar_resting)
-    {
-        // 休息了60秒，退出休息状态
-        if (elapsed >= RADAR_SESSION_REST_US)
-        {
-            g_radar_resting         = 0;
-            g_radar_rest_start_tick = 0;
-            LOG_D("%ds rest, exit rest", elapsed);
-        }
-        else
-        {
-            return 0;
-        }
-    }
-
-    // 工作了600秒，进入休息状态
-    elapsed = (now_tick - g_radar_session_start_tick) >> 4;
-    if (g_radar_session_start_tick &&
-        elapsed >= RADAR_SESSION_MAX_US)
-    {
-        count++;
-        g_radar_session_start_tick = clock_time();
-        if (count >= 4 * 10)
-        {
-            count = 0;
-            LOG_D("work %ds, stop radar", elapsed);
-            radar_play_record_end();
-            RadarSessionEnterRest(now_tick);
-            StepMotor_GimbalResetStart();
-            gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-        }
-
-        return 0;
-    }
+    u32 elapsed = 0;
 
     if (g_radar_last_motion_tick == 0)
     {
@@ -1569,94 +1547,94 @@ static void RadarSeqBuildStationaryEscapePoints(s16 start_x_mm, s16 start_y_mm, 
 void app_radar_gimbal_track_task(void)
 {
     StepMotor_GimbalTask();
-    switch (g_radar_gimbal_fsm)
-    {
-    case RADAR_GIMBAL_FSM_IDLE:
-        break;
+    //     switch (g_radar_gimbal_fsm)
+    //     {
+    //     case RADAR_GIMBAL_FSM_IDLE:
+    //         break;
 
-    case RADAR_GIMBAL_FSM_RUN:
-        if (g_radar_seq_active_idx >= g_radar_seq_active_cnt)
-        {
-            g_radar_gimbal_fsm = RADAR_GIMBAL_FSM_WAIT_DONE;
-            break;
-        }
+    //     case RADAR_GIMBAL_FSM_RUN:
+    //         if (g_radar_seq_active_idx >= g_radar_seq_active_cnt)
+    //         {
+    //             g_radar_gimbal_fsm = RADAR_GIMBAL_FSM_WAIT_DONE;
+    //             break;
+    //         }
 
-        if (!clock_time_exceed(g_radar_seq_step_tick, g_radar_seq_step_interval_us))
-        {
-            break;
-        }
+    //         if (!clock_time_exceed(g_radar_seq_step_tick, g_radar_seq_step_interval_us))
+    //         {
+    //             break;
+    //         }
 
-        g_radar_seq_step_tick = clock_time();
-#if (UI_STEP_MOTOR_ENABLE)
-        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, g_radar_seq_active[g_radar_seq_active_idx].pan_deg10);
-        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10);
-#endif
-        // LOG_D("PAN,%d,TILT,%d,idx,%d",
-        //       g_radar_seq_active[g_radar_seq_active_idx].pan_deg10,
-        //       g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10,
-        //       g_radar_seq_active_idx);
-        g_radar_seq_active_idx++;
-        break;
+    //         g_radar_seq_step_tick = clock_time();
+    // #if (UI_STEP_MOTOR_ENABLE)
+    //         StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, g_radar_seq_active[g_radar_seq_active_idx].pan_deg10);
+    //         StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10);
+    // #endif
+    //         // LOG_D("PAN,%d,TILT,%d,idx,%d",
+    //         //       g_radar_seq_active[g_radar_seq_active_idx].pan_deg10,
+    //         //       g_radar_seq_active[g_radar_seq_active_idx].tilt_deg10,
+    //         //       g_radar_seq_active_idx);
+    //         g_radar_seq_active_idx++;
+    //         break;
 
-    case RADAR_GIMBAL_FSM_WAIT_DONE:
-        if (g_radar_seq_pending_valid && g_radar_seq_pending_cnt)
-        {
-            u8 pending_static = g_radar_seq_pending_is_static;
-            // LOG_D("RADAR_GIMBAL_FSM_WAIT_DONE, %d", g_radar_seq_pending_cnt);
-            memcpy(g_radar_seq_active, g_radar_seq_pending, sizeof(radar_gimbal_point_t) * g_radar_seq_pending_cnt);
-            g_radar_seq_active_cnt        = g_radar_seq_pending_cnt;
-            g_radar_seq_active_idx        = 0;
-            g_radar_seq_pending_cnt       = 0;
-            g_radar_seq_pending_valid     = 0;
-            g_radar_seq_pending_is_static = 0;
-            g_radar_seq_step_interval_us  = g_radar_seq_pending_step_us;
-            g_radar_seq_step_tick         = clock_time();
-            g_radar_seq_active_is_static  = pending_static;
-            g_radar_gimbal_fsm            = RADAR_GIMBAL_FSM_RUN;
-            if (g_radar_seq_active_cnt == 2)
-            {
-                StepMotor_GimbalSetSpeedUs(1600);
-            }
-            if (g_radar_seq_active_cnt == 3)
-            {
-                StepMotor_GimbalSetSpeedUs(1200);
-            }
-            if (g_radar_seq_active_cnt == 6)
-            {
-                StepMotor_GimbalSetSpeedUs(800);
-            }
-        }
-        else if (g_radar_static_loop_en)
-        {
-            RadarSeqBuildReset();
-            if (g_radar_static_next_is_escape)
-            {
-                RadarSeqBuildStationaryEscapePoints(g_radar_static_bx_mm, g_radar_static_by_mm, g_radar_static_dir_rad, 2);
-                g_radar_static_next_is_escape = 0;
-            }
-            else
-            {
-                RadarSeqBuildStationary2Points(g_radar_static_ax_mm, g_radar_static_ay_mm, g_radar_static_bx_mm, g_radar_static_by_mm);
-                g_radar_static_next_is_escape = 1;
-            }
-            g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_SLOW;
-            RadarSeqStartBuilt();
-            g_radar_seq_active_is_static = 1;
-        }
-        else
-        {
-            // LOG_D("RADAR_GIMBAL_FSM_WAIT_DONE,0");
-            g_radar_seq_active_cnt       = 0;
-            g_radar_seq_active_idx       = 0;
-            g_radar_seq_active_is_static = 0;
-            g_radar_gimbal_fsm           = RADAR_GIMBAL_FSM_IDLE;
-        }
-        break;
+    //     case RADAR_GIMBAL_FSM_WAIT_DONE:
+    //         if (g_radar_seq_pending_valid && g_radar_seq_pending_cnt)
+    //         {
+    //             u8 pending_static = g_radar_seq_pending_is_static;
+    //             // LOG_D("RADAR_GIMBAL_FSM_WAIT_DONE, %d", g_radar_seq_pending_cnt);
+    //             memcpy(g_radar_seq_active, g_radar_seq_pending, sizeof(radar_gimbal_point_t) * g_radar_seq_pending_cnt);
+    //             g_radar_seq_active_cnt        = g_radar_seq_pending_cnt;
+    //             g_radar_seq_active_idx        = 0;
+    //             g_radar_seq_pending_cnt       = 0;
+    //             g_radar_seq_pending_valid     = 0;
+    //             g_radar_seq_pending_is_static = 0;
+    //             g_radar_seq_step_interval_us  = g_radar_seq_pending_step_us;
+    //             g_radar_seq_step_tick         = clock_time();
+    //             g_radar_seq_active_is_static  = pending_static;
+    //             g_radar_gimbal_fsm            = RADAR_GIMBAL_FSM_RUN;
+    //             if (g_radar_seq_active_cnt == 2)
+    //             {
+    //                 StepMotor_GimbalSetSpeedUs(1600);
+    //             }
+    //             if (g_radar_seq_active_cnt == 3)
+    //             {
+    //                 StepMotor_GimbalSetSpeedUs(1200);
+    //             }
+    //             if (g_radar_seq_active_cnt == 6)
+    //             {
+    //                 StepMotor_GimbalSetSpeedUs(800);
+    //             }
+    //         }
+    //         else if (g_radar_static_loop_en)
+    //         {
+    //             RadarSeqBuildReset();
+    //             if (g_radar_static_next_is_escape)
+    //             {
+    //                 RadarSeqBuildStationaryEscapePoints(g_radar_static_bx_mm, g_radar_static_by_mm, g_radar_static_dir_rad, 2);
+    //                 g_radar_static_next_is_escape = 0;
+    //             }
+    //             else
+    //             {
+    //                 RadarSeqBuildStationary2Points(g_radar_static_ax_mm, g_radar_static_ay_mm, g_radar_static_bx_mm, g_radar_static_by_mm);
+    //                 g_radar_static_next_is_escape = 1;
+    //             }
+    //             g_radar_seq_step_interval_us = RADAR_GIMBAL_STEP_US_SLOW;
+    //             RadarSeqStartBuilt();
+    //             g_radar_seq_active_is_static = 1;
+    //         }
+    //         else
+    //         {
+    //             // LOG_D("RADAR_GIMBAL_FSM_WAIT_DONE,0");
+    //             g_radar_seq_active_cnt       = 0;
+    //             g_radar_seq_active_idx       = 0;
+    //             g_radar_seq_active_is_static = 0;
+    //             g_radar_gimbal_fsm           = RADAR_GIMBAL_FSM_IDLE;
+    //         }
+    //         break;
 
-    default:
-        g_radar_gimbal_fsm = RADAR_GIMBAL_FSM_IDLE;
-        break;
-    }
+    //     default:
+    //         g_radar_gimbal_fsm = RADAR_GIMBAL_FSM_IDLE;
+    //         break;
+    //     }
 }
 
 /** 停止多点序列 FSM，避免与「单目标连续跟踪」互相抢占、排队滞后 */
@@ -1711,7 +1689,7 @@ void app_radar_set_track_gimbal_interval_us(u32 interval_us)
 #if RADAR_TRACK_LEAD_ENABLE
 /**
  * 在 (proc_x, proc_y) 基础上沿 motion_rad 向前偏移 lead_mm（与既有预测点 sin(x)/cos(y) 约定一致），
- * 越界则镜像回工作四边形内。
+ * 越界时按反射前进修正并保证最小逃跑距离，再回到工作四边形内。
  */
 static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 is_stationary, float motion_rad, s16 v_cm_s, s16 *out_x, s16 *out_y)
 {
@@ -1750,8 +1728,16 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     }
 
     {
-        s32 tx = (s32)proc_x + (s32)((float)lead_mm * lookup_sin(motion_rad)) + rand1_mm;
-        s32 ty = (s32)proc_y + (s32)((float)lead_mm * lookup_cos(motion_rad)) + rand2_mm;
+        s32           tx              = (s32)proc_x + (s32)((float)lead_mm * lookup_sin(motion_rad)) + rand1_mm;
+        s32           ty              = (s32)proc_y + (s32)((float)lead_mm * lookup_cos(motion_rad)) + rand2_mm;
+        s16           candidate_x     = 0;
+        s16           candidate_y     = 0;
+        float         escape_dir_rad  = motion_rad;
+        s32           escape_min_dist = (s32)RADAR_TRACK_ESCAPE_MIN_DIST_MM;
+        float         dist_to_proc_mm = 0.0f;
+        s32           step_dx         = 0;
+        s32           step_dy         = 0;
+        radar_vec2f_t step_unit       = RadarVec2(0.0f, 0.0f);
 
         if (tx > 32767)
         {
@@ -1769,13 +1755,54 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
         {
             ty = -32768;
         }
-        *out_x = (s16)tx;
-        *out_y = (s16)ty;
-    }
+        candidate_x = (s16)tx;
+        candidate_y = (s16)ty;
 
-    if (!RadarPointInsideQuad((s32)*out_x, (s32)*out_y))
-    {
-        RadarMirrorOutsideAcrossNearestEdge(out_x, out_y);
+        /* 越界时按“沿运动向量前进并反射”处理，避免最近垂足投影导致贴边/贴猫。 */
+        if (!RadarPointInsideQuad((s32)candidate_x, (s32)candidate_y))
+        {
+            radar_vec2f_t v_step = RadarVec2((float)((s32)candidate_x - (s32)proc_x), (float)((s32)candidate_y - (s32)proc_y));
+            RadarAdvanceReflectQuad((s32)proc_x, (s32)proc_y, v_step, &candidate_x, &candidate_y, &escape_dir_rad);
+            if (!RadarPointInsideQuad((s32)candidate_x, (s32)candidate_y))
+            {
+                float proj_dist = 0.0f;
+                RadarProjectToQuad((s32)candidate_x, (s32)candidate_y, &candidate_x, &candidate_y, &proj_dist);
+            }
+        }
+
+        step_dx         = (s32)candidate_x - (s32)proc_x;
+        step_dy         = (s32)candidate_y - (s32)proc_y;
+        dist_to_proc_mm = app_radar_mysqrt_3((float)(step_dx * step_dx + step_dy * step_dy));
+
+        /* 边界修正后若离目标过近，强制推开到最小“逃跑”距离。 */
+        if (dist_to_proc_mm < (float)escape_min_dist)
+        {
+            if (dist_to_proc_mm > 1.0f)
+            {
+                step_unit = RadarNormalize(RadarVec2((float)step_dx, (float)step_dy));
+            }
+            else
+            {
+                step_unit = RadarNormalize(RadarVec2(lookup_sin(escape_dir_rad), lookup_cos(escape_dir_rad)));
+                if (step_unit.x == 0.0f && step_unit.y == 0.0f)
+                {
+                    step_unit = RadarVec2(0.0f, 1.0f);
+                }
+            }
+
+            {
+                radar_vec2f_t v_escape = RadarVecMul(step_unit, (float)escape_min_dist);
+                RadarAdvanceReflectQuad((s32)proc_x, (s32)proc_y, v_escape, &candidate_x, &candidate_y, &escape_dir_rad);
+                if (!RadarPointInsideQuad((s32)candidate_x, (s32)candidate_y))
+                {
+                    float proj_dist = 0.0f;
+                    RadarProjectToQuad((s32)candidate_x, (s32)candidate_y, &candidate_x, &candidate_y, &proj_dist);
+                }
+            }
+        }
+
+        *out_x = candidate_x;
+        *out_y = candidate_y;
     }
 }
 #endif /* RADAR_TRACK_LEAD_ENABLE */
@@ -1789,7 +1816,8 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
     float motion_rad    = 0.0f;
     u8    motion_valid  = 0;
     u8    is_stationary = 1;
-
+    u8    oldest        = 0;
+    u8    newest        = 0;
     if (x_mm == 0 && y_mm == 0)
     {
         x_mm = g_radar_pred.prev_x_mm;
@@ -1805,10 +1833,10 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         // Prefer direction derived from the 1s window edge points (oldest & newest)
         if (g_radar_pred.motion_cache_count >= 2)
         {
-            u8  oldest = RadarMotionCacheIndexOldest();
-            u8  newest = RadarMotionCacheIndexNewest();
-            s16 dx_w   = (s16)(g_radar_motion_cache[newest].x_mm - g_radar_motion_cache[oldest].x_mm);
-            s16 dy_w   = (s16)(g_radar_motion_cache[newest].y_mm - g_radar_motion_cache[oldest].y_mm);
+            oldest   = RadarMotionCacheIndexOldest();
+            newest   = RadarMotionCacheIndexNewest();
+            s16 dx_w = (s16)(g_radar_motion_cache[newest].x_mm - g_radar_motion_cache[oldest].x_mm);
+            s16 dy_w = (s16)(g_radar_motion_cache[newest].y_mm - g_radar_motion_cache[oldest].y_mm);
             if ((abs(dx_w) > STATIONARY_DXY_THRESHOLD_MM) || (abs(dy_w) > STATIONARY_DXY_THRESHOLD_MM))
             {
                 motion_rad   = lookup_atan2((float)dx_w, (float)dy_w);
@@ -1862,8 +1890,8 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             }
             motion_dir_deg10 = (s16)d;
         }
-        app_ctrl_radar_dbg_send_prev_raw(
-            g_radar_pred.prev_x_mm, g_radar_pred.prev_y_mm, x_mm, y_mm, motion_valid, motion_dir_deg10);
+        // app_ctrl_radar_dbg_send_prev_raw(
+        //     g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
     }
     g_radar_pred.prev_x_mm = x_mm;
     g_radar_pred.prev_y_mm = y_mm;
@@ -1890,9 +1918,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
 #endif
 
         RadarGimbalCancelSequence();
-#if RADAR_TRACK_DBG_SEND_PREDSEQ
-        app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
-#endif
+        // app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
 #if (UI_STEP_MOTOR_ENABLE)
         RadarGimbalApplyTargetMm(track_x, track_y);
 #else
@@ -1955,10 +1981,10 @@ void app_radar_parse_and_report_frame(void)
                 RadarSessionOnMotion(now_tick);
             }
 
-            if (RadarSessionCanPredict(now_tick))
-            {
-                ReportPredictionSerialized(now_tick, x_in, y_in, v_avg);
-            }
+            // if (RadarSessionCanPredict(now_tick))
+            // {
+            ReportPredictionSerialized(now_tick, x_in, y_in, v_avg);
+            // }
 
 #if RADAR_FPS_TEST
             u32 current_time = clock_time() >> 4;
@@ -1975,6 +2001,168 @@ void app_radar_parse_and_report_frame(void)
 #endif
         }
     }
+}
+
+u8 app_radar_has_recent_motion(u32 timeout_us)
+{
+    if (g_radar_last_motion_tick == 0)
+    {
+        return 0;
+    }
+
+    return clock_time_exceed(g_radar_last_motion_tick, timeout_us) ? 0 : 1;
+}
+
+void app_radar_set_enabled(u8 on)
+{
+    if (!on)
+    {
+        app_radar_power_state_reset();
+        app_radar_power_switch(0);
+    }
+    else
+    {
+        app_radar_power_state_reset();
+        g_radar_work_acc_tick = clock_time();
+        g_radar_phase_tick    = g_radar_work_acc_tick;
+        app_radar_power_switch(1);
+    }
+}
+
+void app_radar_task_power_schedule(void)
+{
+    u32 now_tick = clock_time();
+
+    if (g_radar_rest_mode)
+    {
+        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_REST)
+        {
+            LOG_D("radar rest mode");
+            LOG_D("radar rest mode");
+            LOG_D("radar rest mode");
+            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
+        }
+        app_radar_power_switch(0);
+        if (clock_time_exceed(g_radar_rest_start_tick, RADAR_REST_EXIT_US))
+        {
+            LOG_D("radar rest mode exit");
+            LOG_D("radar rest mode exit");
+            LOG_D("radar rest mode exit");
+            g_radar_rest_mode         = 0;
+            g_radar_work_acc_tick     = now_tick;
+            g_radar_work_acc_sec      = 0;
+            g_radar_phase_tick        = now_tick;
+            g_radar_low_freq_phase_on = 1;
+            app_radar_power_switch(1);
+        }
+        return;
+    }
+
+    if (g_radar_work_acc_tick == 0)
+    {
+        g_radar_work_acc_tick = now_tick;
+    }
+
+    if (clock_time_exceed(g_radar_work_acc_tick, 1000000u))
+    {
+        g_radar_work_acc_tick = now_tick;
+        if (g_radar_work_acc_sec < 0xFFFFu)
+        {
+            g_radar_work_acc_sec++;
+        }
+    }
+
+    if (g_radar_work_acc_sec >= 600u)
+    {
+        g_radar_rest_mode       = 1;
+        g_radar_rest_start_tick = now_tick;
+        g_radar_hold_on_mode    = 0;
+        g_radar_phase_tick      = now_tick;
+        g_radar_work_acc_sec    = 0;
+        app_radar_power_switch(0);
+        StepMotor_GimbalResetStart();
+        return;
+    }
+
+    if (g_radar_hold_on_mode)
+    {
+        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
+        {
+            LOG_D("radar hold on mode");
+            LOG_D("radar hold on mode");
+            LOG_D("radar hold on mode");
+            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_HOLD_ON;
+        }
+        app_radar_power_switch(1);
+        if (!app_radar_has_recent_motion(RADAR_HOLD_ON_NO_MOTION_US))
+        {
+            LOG_D("radar hold on mode exit");
+            LOG_D("radar hold on mode exit");
+            LOG_D("radar hold on mode exit");
+            g_radar_hold_on_mode      = 0;
+            g_radar_low_freq_phase_on = 0;
+            g_radar_phase_tick        = now_tick;
+            app_radar_power_switch(0);
+        }
+        return;
+    }
+
+    if (g_radar_phase_tick == 0)
+    {
+        g_radar_phase_tick = now_tick;
+    }
+
+    if (g_radar_low_freq_phase_on)
+    {
+        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_ON)
+        {
+            LOG_D("radar low freq phase on");
+            LOG_D("radar low freq phase on");
+            LOG_D("radar low freq phase on");
+            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_ON;
+        }
+        app_radar_power_switch(1);
+        if (app_radar_has_recent_motion(RADAR_LOW_FREQ_ON_US))
+        {
+            g_radar_hold_on_mode = 1;
+            return;
+        }
+
+        if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_ON_US))
+        {
+            LOG_D("radar low freq phase on exit");
+            LOG_D("radar low freq phase on exit");
+            LOG_D("radar low freq phase on exit");
+            g_radar_low_freq_phase_on = 0;
+            g_radar_phase_tick        = now_tick;
+            app_radar_power_switch(0);
+        }
+    }
+    else
+    {
+        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_OFF)
+        {
+            LOG_D("radar low freq phase off");
+            LOG_D("radar low freq phase off");
+            LOG_D("radar low freq phase off");
+            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_OFF;
+        }
+        app_radar_power_switch(0);
+        if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_OFF_US))
+        {
+            LOG_D("radar low freq phase off exit");
+            LOG_D("radar low freq phase off exit");
+            LOG_D("radar low freq phase off exit");
+            g_radar_low_freq_phase_on = 1;
+            g_radar_phase_tick        = now_tick;
+            app_radar_power_switch(1);
+        }
+    }
+}
+
+u8 app_radar_is_power_on(void)
+{
+    return g_radar_power_on;
 }
 
 void app_radar_uart_init(void)
