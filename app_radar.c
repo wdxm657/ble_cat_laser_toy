@@ -1670,8 +1670,8 @@ void app_radar_set_track_gimbal_interval_us(u32 interval_us)
 
 /** 与蓝牙「移向限位」相同思路：固定步间隔 + 单一目标，电机顺滑跟随 */
 #define M_PI     3.1415926
-#define M_PI_3   (M_PI / 3.0f)
-#define M_2_PI_3 (2.0f * M_PI / 3.0f)
+#define M_PI_3   (M_PI / 4.0f)
+#define M_2_PI_3 (3.0f * M_PI / 4.0f)
 static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
 {
     s16 pan_deg10  = 0;
@@ -1683,7 +1683,7 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
     if (motion_rad > M_PI_3 && motion_rad < M_2_PI_3)
     {
         pan_deg10 += 50;
-        tilt_deg10 += 10;
+        tilt_deg10 += 25;
     }
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
@@ -2046,6 +2046,7 @@ void app_radar_task_power_schedule(void)
     {
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_REST)
         {
+            radar_play_record_end();
             LOG_D("radar rest mode");
             LOG_D("radar rest mode");
             LOG_D("radar rest mode");
@@ -2105,6 +2106,7 @@ void app_radar_task_power_schedule(void)
         app_radar_power_switch(1);
         if (!app_radar_has_recent_motion(RADAR_HOLD_ON_NO_MOTION_US))
         {
+            radar_play_record_end();
             LOG_D("radar hold on mode exit");
             LOG_D("radar hold on mode exit");
             LOG_D("radar hold on mode exit");
