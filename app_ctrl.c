@@ -1055,7 +1055,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     LOG_D("pc: %d  payload: %d", on, payload[0]);
     LOG_D("pc: %d  payload: %d", on, payload[0]);
     LOG_D("pc: %d  payload: %d", on, payload[0]);
-    app_set_radar_state(on);
+    app_set_power_state(on);
 
     u8 rsp[2] = {CTRL_STATUS_OK, on};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_POWER_CTRL, seq, rsp, sizeof(rsp));

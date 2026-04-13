@@ -51,13 +51,13 @@ u32 latest_user_event_tick;
 #endif
 own_addr_type_t app_own_address_type = OWN_ADDRESS_PUBLIC;
 
-static u8 g_app_radar_on = 0;
+static u8 g_app_power_on = 0;
 
-void app_set_radar_state(u8 on)
+void app_set_power_state(u8 on)
 {
-    g_app_radar_on = on ? 1 : 0;
-    app_radar_set_enabled(g_app_radar_on);
-    if (!g_app_radar_on)
+    g_app_power_on = on ? 1 : 0;
+    app_radar_set_enabled(g_app_power_on);
+    if (!g_app_power_on)
     {
         StepMotor_GimbalResetStart();
     }
@@ -65,7 +65,7 @@ void app_set_radar_state(u8 on)
 
 u8 app_get_radar_state(void)
 {
-    return g_app_radar_on;
+    return g_app_power_on;
 }
 
 u8 g_flash_uid[16];
@@ -962,6 +962,7 @@ void main_loop(void)
 #endif
 
 #ifdef UI_RADAR_ENABLE
+    app_radar_debug_rx_poll();
     if (!g_time_tick_last)
     {
         g_time_tick_last = clock_time();
@@ -978,7 +979,7 @@ void main_loop(void)
     // a_atan2 = lookup_atan2(2, 1) * RAD_TO_DEG;
     // 测试根号
     // a_sqrt3 = app_radar_mysqrt_3(3 * 3 + 4 * 4);
-    if (g_app_radar_on)
+    if (g_app_power_on)
     {
         // 判断当前是否设置完成高度和逗宠区域
         if (app_radar_is_install_height_set() && app_radar_is_boundary_set())
@@ -1025,7 +1026,7 @@ void main_loop(void)
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalResetTask();
 #ifdef UI_RADAR_ENABLE
-    if (!StepMotor_GimbalResetBusy() && g_app_radar_on)
+    if (!StepMotor_GimbalResetBusy() && g_app_power_on)
     {
         app_radar_gimbal_track_task(); /* StepMotor_GimbalTask；雷达目标在 parse 中直接 SetTarget */
         app_ctrl_motor_dir_task();
@@ -1040,7 +1041,7 @@ void main_loop(void)
 #endif
 
 #if (UI_LED_ENABLE)
-    if (g_app_radar_on)
+    if (g_app_power_on)
     {
         app_ui_led_task();
     }

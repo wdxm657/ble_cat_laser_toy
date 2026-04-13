@@ -19,6 +19,9 @@
 void app_radar_uart_init(void);
 void app_radar_uart_ndma_irq_proc(void);
 
+/** 主循环中调用；可选调试统计（RADAR_RX_IRQ_DEBUG）。 */
+void app_radar_debug_rx_poll(void);
+
 void app_radar_parse_and_report_frame(void);
 void app_radar_gimbal_track_task(void);
 
@@ -55,6 +58,10 @@ void app_radar_task_power_schedule(void);
 u8   app_radar_is_power_on(void);
 
 #else
+static inline void app_radar_debug_rx_poll(void)
+{
+}
+
 static inline void app_radar_reset_boundary_default(void)
 {
 }

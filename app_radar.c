@@ -16,6 +16,11 @@
 #include "app_config.h"
 #include "app_ctrl.h"
 
+/** 置 0 可关闭 ISR 计数与周期日志，发布前建议关闭。 */
+#ifndef RADAR_RX_IRQ_DEBUG
+#define RADAR_RX_IRQ_DEBUG 0
+#endif
+
 #define RADAR_INSTALL_HEIGHT_DEFAULT_MM (2.5f * 1000.0f)
 #define RADAR_FRAME_LEN                 30
 #define SAMPLE_COUNT                    1
@@ -31,6 +36,15 @@
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte[RADAR_FRAME_LEN];
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte_cnt = 0;
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_flag     = 0;
+
+#if RADAR_RX_IRQ_DEBUG
+volatile u32 g_radar_dbg_rx_drain_bytes      = 0;
+volatile u32 g_radar_dbg_rx_drain_irq_cnt    = 0;
+volatile u32 g_radar_dbg_rx_flag_set_cnt     = 0;
+volatile u32 g_radar_dbg_rx_flag_cleared_cnt = 0;
+volatile u32 g_radar_dbg_rx_uart_irq_cnt     = 0;
+volatile u32 g_radar_dbg_rx_asm_bytes        = 0;
+#endif
 
 _attribute_data_retention_ static int32_t radar_x_sum      = 0;
 _attribute_data_retention_ static int32_t radar_y_sum      = 0;
@@ -1949,6 +1963,9 @@ void app_radar_parse_and_report_frame(void)
         return;
     }
     g_uart_ndma_rx_flag = 0;
+#if RADAR_RX_IRQ_DEBUG
+    g_radar_dbg_rx_flag_cleared_cnt++;
+#endif
     // LOG_D("app_radar_parse_and_report_frame");
 
     if ((g_uart_ndma_rx_byte[0] != 0xAAU) || (g_uart_ndma_rx_byte[1] != 0xFFU) || (g_uart_ndma_rx_byte[2] != 0x03U) ||
@@ -2187,6 +2204,154 @@ void app_radar_uart_init(void)
     uart_irq_enable(1, 0);
 }
 
+#if RADAR_RX_IRQ_DEBUG
+extern u8 app_get_radar_state(void);
+
+void app_radar_debug_rx_poll(void)
+{
+    static u32 last_tick;
+    static u32 snap_drain;
+    static u32 snap_clr;
+    static u32 snap_set;
+    static u32 snap_irq;
+    static u32 snap_asm;
+
+    if (!last_tick)
+    {
+        last_tick = clock_time();
+        return;
+    }
+    if (!clock_time_exceed(last_tick, 1000000u))
+    {
+        return;
+    }
+    last_tick = clock_time();
+
+    u32 d_drain = g_radar_dbg_rx_drain_bytes - snap_drain;
+    u32 d_clr   = g_radar_dbg_rx_flag_cleared_cnt - snap_clr;
+    u32 d_set   = g_radar_dbg_rx_flag_set_cnt - snap_set;
+    u32 d_irq   = g_radar_dbg_rx_uart_irq_cnt - snap_irq;
+    u32 d_asm   = g_radar_dbg_rx_asm_bytes - snap_asm;
+    snap_drain  = g_radar_dbg_rx_drain_bytes;
+    snap_clr    = g_radar_dbg_rx_flag_cleared_cnt;
+    snap_set    = g_radar_dbg_rx_flag_set_cnt;
+    snap_irq    = g_radar_dbg_rx_uart_irq_cnt;
+    snap_asm    = g_radar_dbg_rx_asm_bytes;
+
+    u8 app_on     = app_get_radar_state();
+    u8 rad_on     = app_radar_is_power_on();
+    u8 parse_gate = (app_on && rad_on) ? 1U : 0U;
+
+    LOG_D(
+        "radar_rx dbg/s: d_irq=%u d_asm=%u d_set=%u d_clr=%u d_drain=%u f=%u app=%u rad=%u gate=%u",
+        (unsigned)d_irq,
+        (unsigned)d_asm,
+        (unsigned)d_set,
+        (unsigned)d_clr,
+        (unsigned)d_drain,
+        (unsigned)g_uart_ndma_rx_flag,
+        (unsigned)app_on,
+        (unsigned)rad_on,
+        (unsigned)parse_gate);
+
+    if (d_drain > 0U && d_clr == 0U && g_uart_ndma_rx_flag)
+    {
+        LOG_D("radar_rx STUCK? drain without clr");
+    }
+    if (g_uart_ndma_rx_flag && !parse_gate)
+    {
+        LOG_D("radar_rx note: f=1 gate=0 (app/rad flags)");
+    }
+}
+#else
+void app_radar_debug_rx_poll(void)
+{
+}
+#endif
+
+/**
+ * 按帧头 AA FF 03 00 重新对齐，避免丢字节/噪声后永远等不到「恰好 30 字节且尾为 55 CC」的旧逻辑死锁。
+ * 收满 30 字节后仅校验帧尾；帧头已在同步阶段保证。
+ */
+static void radar_uart_ndma_rx_push_byte(u8 data)
+{
+    if (g_uart_ndma_rx_byte_cnt < 4)
+    {
+        if (g_uart_ndma_rx_byte_cnt == 0)
+        {
+            if (data == 0xAA)
+            {
+                g_uart_ndma_rx_byte[0]  = data;
+                g_uart_ndma_rx_byte_cnt = 1;
+            }
+        }
+        else if (g_uart_ndma_rx_byte_cnt == 1)
+        {
+            if (data == 0xFF)
+            {
+                g_uart_ndma_rx_byte[1]  = data;
+                g_uart_ndma_rx_byte_cnt = 2;
+            }
+            else
+            {
+                g_uart_ndma_rx_byte_cnt = (data == 0xAA) ? 1 : 0;
+                if (data == 0xAA)
+                {
+                    g_uart_ndma_rx_byte[0] = 0xAA;
+                }
+            }
+        }
+        else if (g_uart_ndma_rx_byte_cnt == 2)
+        {
+            if (data == 0x03)
+            {
+                g_uart_ndma_rx_byte[2]  = data;
+                g_uart_ndma_rx_byte_cnt = 3;
+            }
+            else if (data == 0xAA)
+            {
+                g_uart_ndma_rx_byte[0]  = 0xAA;
+                g_uart_ndma_rx_byte_cnt = 1;
+            }
+            else
+            {
+                g_uart_ndma_rx_byte_cnt = 0;
+            }
+        }
+        else
+        {
+            if (data == 0x00)
+            {
+                g_uart_ndma_rx_byte[3]  = data;
+                g_uart_ndma_rx_byte_cnt = 4;
+            }
+            else if (data == 0xAA)
+            {
+                g_uart_ndma_rx_byte[0]  = 0xAA;
+                g_uart_ndma_rx_byte_cnt = 1;
+            }
+            else
+            {
+                g_uart_ndma_rx_byte_cnt = 0;
+            }
+        }
+        return;
+    }
+
+    g_uart_ndma_rx_byte[g_uart_ndma_rx_byte_cnt++] = data;
+    if (g_uart_ndma_rx_byte_cnt == RADAR_FRAME_LEN)
+    {
+        if (g_uart_ndma_rx_byte[RADAR_FRAME_LEN - 2] == 0x55 && g_uart_ndma_rx_byte[RADAR_FRAME_LEN - 1] == 0xCC)
+        {
+            g_uart_ndma_rx_flag = 1;
+#if RADAR_RX_IRQ_DEBUG
+            g_radar_dbg_rx_flag_set_cnt++;
+#endif
+        }
+        g_uart_ndma_rx_byte_cnt = 0;
+    }
+}
+
 void app_radar_uart_ndma_irq_proc(void)
 {
     if (!uart_ndmairq_get())
@@ -2194,10 +2359,18 @@ void app_radar_uart_ndma_irq_proc(void)
         return;
     }
 
+#if RADAR_RX_IRQ_DEBUG
+    g_radar_dbg_rx_uart_irq_cnt++;
+#endif
+
     unsigned char rx_cnt = reg_uart_buf_cnt & 0x0f;
 
     if (g_uart_ndma_rx_flag)
     {
+#if RADAR_RX_IRQ_DEBUG
+        g_radar_dbg_rx_drain_irq_cnt++;
+        g_radar_dbg_rx_drain_bytes += (u32)rx_cnt;
+#endif
         while (rx_cnt--)
         {
             (void)uart_ndma_read_byte();
@@ -2207,27 +2380,10 @@ void app_radar_uart_ndma_irq_proc(void)
 
     while (rx_cnt--)
     {
-        u8 data = uart_ndma_read_byte();
-        if (g_uart_ndma_rx_byte_cnt >= sizeof(g_uart_ndma_rx_byte))
-        {
-            g_uart_ndma_rx_byte_cnt = 0;
-        }
-        g_uart_ndma_rx_byte[g_uart_ndma_rx_byte_cnt++] = data;
-
-        if (g_uart_ndma_rx_byte_cnt >= 2 &&
-            g_uart_ndma_rx_byte[g_uart_ndma_rx_byte_cnt - 2] == 0x55 &&
-            g_uart_ndma_rx_byte[g_uart_ndma_rx_byte_cnt - 1] == 0xCC)
-        {
-            if (g_uart_ndma_rx_byte_cnt == 30 &&
-                g_uart_ndma_rx_byte[0] == 0xAA &&
-                g_uart_ndma_rx_byte[1] == 0xFF &&
-                g_uart_ndma_rx_byte[2] == 0x03 &&
-                g_uart_ndma_rx_byte[3] == 0x00)
-            {
-                g_uart_ndma_rx_flag = 1;
-            }
-            g_uart_ndma_rx_byte_cnt = 0;
-        }
+#if RADAR_RX_IRQ_DEBUG
+        g_radar_dbg_rx_asm_bytes++;
+#endif
+        radar_uart_ndma_rx_push_byte(uart_ndma_read_byte());
     }
 }
 
