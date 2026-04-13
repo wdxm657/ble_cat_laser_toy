@@ -229,8 +229,8 @@ _attribute_data_retention_ static s16   g_radar_static_by_mm          = 0;
 _attribute_data_retention_ static float g_radar_static_dir_rad        = 0.0f;
 _attribute_data_retention_ static u32   g_radar_last_motion_tick      = 0;
 _attribute_data_retention_ static u8    g_radar_power_on              = 0;
-_attribute_data_retention_ static u8    g_radar_low_freq_phase_on     = 1;
-_attribute_data_retention_ static u8    g_radar_hold_on_mode          = 0;
+_attribute_data_retention_ static u8    g_radar_low_freq_phase_on     = 0;
+_attribute_data_retention_ static u8    g_radar_hold_on_mode          = 1;
 _attribute_data_retention_ static u8    g_radar_rest_mode             = 0;
 _attribute_data_retention_ static u32   g_radar_phase_tick            = 0;
 _attribute_data_retention_ static u32   g_radar_rest_start_tick       = 0;
@@ -331,8 +331,8 @@ static void app_radar_power_switch(u8 on)
 
 static void app_radar_power_state_reset(void)
 {
-    g_radar_low_freq_phase_on    = 1;
-    g_radar_hold_on_mode         = 0;
+    g_radar_low_freq_phase_on    = 0;
+    g_radar_hold_on_mode         = 1;
     g_radar_rest_mode            = 0;
     g_radar_phase_tick           = 0;
     g_radar_rest_start_tick      = 0;
@@ -2065,15 +2065,11 @@ void app_radar_task_power_schedule(void)
         {
             radar_play_record_end();
             LOG_D("radar rest mode");
-            LOG_D("radar rest mode");
-            LOG_D("radar rest mode");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
         }
         app_radar_power_switch(0);
         if (clock_time_exceed(g_radar_rest_start_tick, RADAR_REST_EXIT_US))
         {
-            LOG_D("radar rest mode exit");
-            LOG_D("radar rest mode exit");
             LOG_D("radar rest mode exit");
             g_radar_rest_mode         = 0;
             g_radar_work_acc_tick     = now_tick;
@@ -2116,16 +2112,15 @@ void app_radar_task_power_schedule(void)
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
         {
             LOG_D("radar hold on mode");
-            LOG_D("radar hold on mode");
-            LOG_D("radar hold on mode");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_HOLD_ON;
+            app_radar_power_switch(1);
+            u32 now_tick = clock_time();
+            RadarSessionOnMotion(now_tick);
+            return;
         }
-        app_radar_power_switch(1);
         if (!app_radar_has_recent_motion(RADAR_HOLD_ON_NO_MOTION_US))
         {
             radar_play_record_end();
-            LOG_D("radar hold on mode exit");
-            LOG_D("radar hold on mode exit");
             LOG_D("radar hold on mode exit");
             g_radar_hold_on_mode      = 0;
             g_radar_low_freq_phase_on = 0;
@@ -2145,8 +2140,6 @@ void app_radar_task_power_schedule(void)
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_ON)
         {
             LOG_D("radar low freq phase on");
-            LOG_D("radar low freq phase on");
-            LOG_D("radar low freq phase on");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_ON;
         }
         app_radar_power_switch(1);
@@ -2159,8 +2152,6 @@ void app_radar_task_power_schedule(void)
         if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_ON_US))
         {
             LOG_D("radar low freq phase on exit");
-            LOG_D("radar low freq phase on exit");
-            LOG_D("radar low freq phase on exit");
             g_radar_low_freq_phase_on = 0;
             g_radar_phase_tick        = now_tick;
             app_radar_power_switch(0);
@@ -2171,15 +2162,11 @@ void app_radar_task_power_schedule(void)
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_OFF)
         {
             LOG_D("radar low freq phase off");
-            LOG_D("radar low freq phase off");
-            LOG_D("radar low freq phase off");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_OFF;
         }
         app_radar_power_switch(0);
         if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_OFF_US))
         {
-            LOG_D("radar low freq phase off exit");
-            LOG_D("radar low freq phase off exit");
             LOG_D("radar low freq phase off exit");
             g_radar_low_freq_phase_on = 1;
             g_radar_phase_tick        = now_tick;
