@@ -97,7 +97,7 @@ const u8 tbl_advData[] = {
     'S',
     'P',
     'N',
-    'A',
+    'B',
     2,
     DT_FLAGS,
     0x05,  // BLE limited discoverable mode and BR/EDR not supported
@@ -128,7 +128,7 @@ u8 tbl_scanRsp[] = {
     'S',
     'P',
     'N',
-    'A',
+    'B',
     17,
     DT_MANUFACTURER_SPECIFIC_DATA,
     0x00,
