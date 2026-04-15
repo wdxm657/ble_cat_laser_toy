@@ -1073,7 +1073,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     }
 
     u8 rsp[5] = {CTRL_STATUS_OK, 0, 0, 0, 0};
-    rsp[1]    = app_get_radar_state() ? 1 : 0;
+    rsp[1]    = app_get_power_state() ? 1 : 0;
 #if (UI_RADAR_ENABLE)
     rsp[2]        = app_radar_is_boundary_set() ? 1 : 0;
     s32 height_mm = 0;

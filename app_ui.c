@@ -113,7 +113,7 @@ void app_ui_led_task(void)
         return;
     }
 
-    if (!app_get_radar_state())
+    if (!app_get_power_state())
     {
         app_ui_led_all_off();
         return;

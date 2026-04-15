@@ -2217,7 +2217,7 @@ void app_radar_uart_deinit(void)
 }
 
 #if RADAR_RX_IRQ_DEBUG
-extern u8 app_get_radar_state(void);
+extern u8 app_get_power_state(void);
 
 void app_radar_debug_rx_poll(void)
 {
@@ -2250,7 +2250,7 @@ void app_radar_debug_rx_poll(void)
     snap_irq    = g_radar_dbg_rx_uart_irq_cnt;
     snap_asm    = g_radar_dbg_rx_asm_bytes;
 
-    u8 app_on     = app_get_radar_state();
+    u8 app_on     = app_get_power_state();
     u8 rad_on     = app_radar_is_power_on();
     u8 parse_gate = (app_on && rad_on) ? 1U : 0U;
 

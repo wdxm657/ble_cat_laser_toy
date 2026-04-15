@@ -63,7 +63,7 @@ void app_set_power_state(u8 on)
     }
 }
 
-u8 app_get_radar_state(void)
+u8 app_get_power_state(void)
 {
     return g_app_power_on;
 }
