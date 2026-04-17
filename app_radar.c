@@ -230,6 +230,8 @@ _attribute_data_retention_ static float g_radar_static_dir_rad        = 0.0f;
 _attribute_data_retention_ static u32   g_radar_last_motion_tick      = 0;
 _attribute_data_retention_ static u8    g_radar_power_on              = 0;
 _attribute_data_retention_ static u8    g_radar_low_freq_phase_on     = 0;
+_attribute_data_retention_ static u8    g_radar_uart_warmup_done      = 0;
+_attribute_data_retention_ static u32   g_radar_uart_warmup_tick      = 0;
 _attribute_data_retention_ static u8    g_radar_hold_on_mode          = 1;
 _attribute_data_retention_ static u8    g_radar_rest_mode             = 0;
 _attribute_data_retention_ static u32   g_radar_phase_tick            = 0;
@@ -313,11 +315,12 @@ typedef struct
 
 _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
 
-#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)    // 1s
-#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)    // 4s
-#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)   // 30s
-#define RADAR_WORK_MAX_US          (1000000u * 600u)  // 10min
-#define RADAR_REST_EXIT_US         (1000000u * 60u)   // 1min
+#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)        // 1s
+#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)        // 4s
+#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)       // 30s
+#define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
+#define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
+#define RADAR_UART_WARMUP_US       (1000000u * 7u / 10u)  // 700ms
 
 static void app_radar_power_switch(u8 on)
 {
@@ -1958,6 +1961,25 @@ static u32 radar_start_time = 0;
 
 void app_radar_parse_and_report_frame(void)
 {
+    if (!g_radar_uart_inited)
+    {
+        return;
+    }
+
+    if (!g_radar_uart_warmup_done)
+    {
+        if (!clock_time_exceed(g_radar_uart_warmup_tick, RADAR_UART_WARMUP_US))
+        {
+            return;
+        }
+
+        radar_uart_rx_state_reset();
+        radar_uart_hw_drain_and_clear();
+        uart_irq_enable(1, 0);
+        g_radar_uart_warmup_done = 1;
+        return;
+    }
+
     if (!g_uart_ndma_rx_flag)
     {
         return;
@@ -2182,6 +2204,25 @@ u8 app_radar_is_power_on(void)
 
 static u8 g_radar_uart_inited = 0;
 
+static void radar_uart_rx_state_reset(void)
+{
+    g_uart_ndma_rx_flag     = 0;
+    g_uart_ndma_rx_byte_cnt = 0;
+    memset((void *)g_uart_ndma_rx_byte, 0, sizeof(g_uart_ndma_rx_byte));
+    uart_ndma_clear_rx_index();
+    uart_ndma_clear_tx_index();
+}
+
+static void radar_uart_hw_drain_and_clear(void)
+{
+    unsigned char rx_cnt = reg_uart_buf_cnt & 0x0f;
+    while (rx_cnt--)
+    {
+        (void)uart_ndma_read_byte();
+    }
+    uart_clear_parity_error();
+}
+
 void app_radar_uart_init(void)
 {
     if (g_radar_uart_inited)
@@ -2189,14 +2230,18 @@ void app_radar_uart_init(void)
         return;
     }
     g_radar_uart_inited = 1;
-    // gpio_write(LEIDA_CTL_O, 1);
+
     uart_gpio_set(GPIO_PB6, GPIO_PB7);
     uart_init_baudrate(256000, CLOCK_SYS_CLOCK_HZ, PARITY_NONE, STOP_BIT_ONE);
     uart_dma_enable(0, 0);
-    uart_ndma_clear_rx_index();
-    uart_ndma_clear_tx_index();
     uart_ndma_irq_triglevel(1, 0);
-    uart_irq_enable(1, 0);
+
+    radar_uart_rx_state_reset();
+    radar_uart_hw_drain_and_clear();
+    uart_irq_enable(0, 0);
+
+    g_radar_uart_warmup_done = 0;
+    g_radar_uart_warmup_tick = clock_time();
 }
 
 void app_radar_uart_deinit(void)
@@ -2206,14 +2251,21 @@ void app_radar_uart_deinit(void)
         return;
     }
     g_radar_uart_inited = 0;
-    // 关闭雷达串口,将串口引脚设置为GPIO
+
+    uart_irq_enable(0, 0);
+    radar_uart_rx_state_reset();
+    radar_uart_hw_drain_and_clear();
+
+    // 关闭雷达串口,将串口引脚设置为GPIO并拉低以降低断电后功耗
     gpio_set_func(GPIO_PB6, AS_GPIO);
     gpio_set_func(GPIO_PB7, AS_GPIO);
     gpio_set_output_en(GPIO_PB6, 1);
     gpio_set_output_en(GPIO_PB7, 1);
     gpio_write(GPIO_PB6, 0);
     gpio_write(GPIO_PB7, 0);
-    // gpio_write(LEIDA_CTL_O, 0);
+
+    g_radar_uart_warmup_done = 0;
+    g_radar_uart_warmup_tick = 0;
 }
 
 #if RADAR_RX_IRQ_DEBUG
