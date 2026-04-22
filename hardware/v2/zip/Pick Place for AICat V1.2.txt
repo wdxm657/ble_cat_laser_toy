@@ -1,0 +1,99 @@
+Altium Designer Pick and Place Locations
+C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\Pick Place for AICat V1.2.txt
+
+========================================================================================================================
+File Design Information:
+
+Date:       21/04/26
+Time:       09:26
+Revision:   Not in VersionControl
+Variant:    No variations
+Units used: mil
+
+Designator Comment               Layer       Footprint                                           Center-X(mil) Center-Y(mil) Rotation Description                   
+P1         DEBUG                 TopLayer    SIP4-2.54                                           2365.000      2782.000      270      "Header, 4-Pin"               
+BAT        BX-PH2.0-3PWT         TopLayer    HDR-TH_3P-P2.50_ZX-XH2.54-3PWZ                      3915.470      3734.812      180      ""                            
+C1         0.1uF                 TopLayer    0603_C                                              3922.001      3084.000      180      Capacitor                     
+C2         1uf                   TopLayer    0603_C                                              3387.000      3044.001      270      无极电容                          
+C4         10uF                  TopLayer    0603_C                                              3157.000      2991.999      90       Capacitor                     
+C5         10uf                  TopLayer    0603_C                                              3928.000      3548.001      270      Capacitor                     
+C6         10UF                  TopLayer    0603_c                                              3879.001      3262.000      180      ""                            
+C9         100nF                 TopLayer    0603_C                                              3167.001      2638.000      180      ""                            
+C10        220pF                 TopLayer    0402_c                                              2641.000      3208.000      180      Capacitor                     
+C11        NC                    TopLayer    0402_C                                              2578.000      3226.000      270      Capacitor                     
+C12        NC                    TopLayer    0402_C                                              2450.000      3225.000      270      Capacitor                     
+C13        NC                    TopLayer    0402_C                                              2320.000      3227.000      270      Capacitor                     
+C14        NC                    TopLayer    0402_C                                              2192.000      3226.000      270      Capacitor                     
+C16        12PF                  TopLayer    0603_c                                              2496.000      3424.001      270      Capacitor                     
+C17        12PF                  TopLayer    0603_c                                              2741.000      3428.999      90       Capacitor                     
+C18        1UF                   TopLayer    0603_c                                              3052.000      3423.999      90       ""                            
+C19        1UF                   TopLayer    0603_c                                              2983.000      3422.999      90       ""                            
+C20        220uF/10V             TopLayer    SMD_6.3*5.4_电解                                      2968.900      3700.983      270      ""                            
+C21        100nf                 TopLayer    0603_C                                              2758.000      3717.999      90       无极电容                          
+C22        1UF                   TopLayer    0603_c                                              3123.001      3217.000      180      ""                            
+C24        0.1uF                 TopLayer    0603_C                                              3581.999      3796.000      360      Capacitor                     
+C25        22uf-16v              TopLayer    0805_c                                              3544.000      3287.000      180      无极电容                          
+C26        22uf-16v              TopLayer    0805_c                                              3585.000      3720.000      180      无极电容                          
+JiGuang    JiGuang               TopLayer    CONN-SMD_2P-P1.25-LT                                2373.000      3637.000      270      ""                            
+LeiDa      HC-1.25-4PLT          TopLayer    CONN-SMD_4P-P1.25_LT                                3522.000      3991.000      180      ""                            
+D1         SMF5.0CA_C726939      TopLayer    SOD-123_双向                                          3741.552      3082.370      360      ""                            
+D2         "SE6V3LHN102T 6.3v单向" TopLayer    0402-D                                              2701.846      3191.652      270      ""                            
+D3         DSK24                 TopLayer    SOD-123FL                                           3538.135      3196.535      180      "High Conductance Fast Diode" 
+M1         MOTORA                TopLayer    CONN-SMD_1.25-5PLT                                  2526.000      3989.000      180      ""                            
+M2         MOTORB                TopLayer    CONN-SMD_1.25-5PLT                                  3048.000      3990.000      180      ""                            
+L1         0R                    TopLayer    0402_R                                              2518.000      3208.000      180      ""                            
+L2         0R                    TopLayer    0402_R                                              2384.000      3209.000      180      ""                            
+L3         0R                    TopLayer    0402_R                                              2255.000      3210.000      180      ""                            
+L4         47uH                  TopLayer    IND-SMD_L3.5-W3.0_CD31                              3574.000      3436.000      90       ""                            
+LED1       XL-A3528RGBC-BM       TopLayer    LED-ARRAY-SMD_4P-L3.2-W2.8-LS3.5-BL_XL-A3528RGBC-BM 2712.000      2512.000      360      ""                            
+LED2       *                     TopLayer    LED-SMD_4P-L3.2-W1.6-TL_XL-3216SURUGC               3206.000      2511.000      360      ""                            
+P2         UART                  TopLayer    SIP4-2.54                                           2484.110      3032.000      360      "Header, 4-Pin"               
+Q1         "SI2301 P"            TopLayer    SOT-23                                              3312.480      2831.315      270      ""                            
+Q2         S8050                 TopLayer    SOT-23(SOT-23-3)                                    3457.000      2698.000      90       NPN三极管                        
+Q4         "SI2301 P"            TopLayer    SOT-23                                              3367.520      3249.685      90       ""                            
+Q5         S8050                 TopLayer    SOT-23(SOT-23-3)                                    3417.000      3576.000      90       NPN三极管                        
+R1         1.3k                  TopLayer    0603_R                                              3731.001      3260.000      360      ""                            
+R2         10k                   TopLayer    0603_R                                              3462.000      3045.001      90       Resistor                      
+R3         R250                  TopLayer    1206_R                                              3836.011      3173.516      180      ""                            
+R4         5.1K                  TopLayer    0603_R                                              3634.000      2702.999      270      ""                            
+R5         5.1K                  TopLayer    0603_R                                              3562.000      2704.999      270      ""                            
+R6         560K                  TopLayer    0603_R                                              3307.999      2718.000      180      ""                            
+R7         1K                    TopLayer    0603_R                                              3306.001      2643.000      360      ""                            
+R8         1k                    TopLayer    0603_R                                              2646.000      2674.001      90       ""                            
+R10        1K                    TopLayer    0603_r                                              3454.999      2895.000      180      Resistor                      
+R11        1k                    TopLayer    0603_R                                              2718.000      2673.001      90       ""                            
+R12        560K                  TopLayer    0603_R                                              3168.999      2852.000      180      ""                            
+R13        10K                   TopLayer    0603_r                                              3456.001      2821.000      360      Resistor                      
+R14        1k                    TopLayer    0603_R                                              2793.000      2672.001      90       ""                            
+R16        1K                    TopLayer    0603_R                                              3170.999      2713.000      180      ""                            
+R17        100K                  TopLayer    0603_R                                              3168.001      2782.000      360      ""                            
+R18        1K                    TopLayer    0603_R                                              3381.999      2566.000      180      ""                            
+R25        330R                  TopLayer    0603_R                                              3123.000      3424.999      270      Resistor                      
+R26        330R                  TopLayer    0603_R                                              3190.000      3425.999      270      Resistor                      
+R27        330R                  TopLayer    0603_R                                              3250.000      3426.999      270      Resistor                      
+R28        330R                  TopLayer    0603_R                                              3316.000      3426.999      270      Resistor                      
+R29        560K                  TopLayer    0603_R                                              3384.000      3427.001      90       ""                            
+R32        1K                    TopLayer    0603_R                                              3459.000      3427.001      90       ""                            
+R33        1K                    TopLayer    0603_r                                              3412.001      3769.000      360      Resistor                      
+R34        10K                   TopLayer    0603_r                                              3420.001      3683.000      360      Resistor                      
+U1         TP4056X               TopLayer    SOP8-9                                              3781.000      3459.000      360      TP4056                        
+U2         SSP7615               TopLayer    SOT-23-5                                            3271.897      3055.330      180      ""                            
+U3         TLSR8208C             TopLayer    QFN-40_L5.0-W5.0-P0.40-BL-EP3.7                     2858.148      3183.912      360      ""                            
+U4         ULN2802               TopLayer    ESSOP-10                                            2601.456      3712.695      0        ""                            
+USB1       "TYPE-C 6P"           TopLayer    TPYE-C-6                                            4075.000      2865.000      127      ""                            
+Y1         "24MHz +-20PPM"       TopLayer    CRYSTAL-SMD_4P-L3.2-W2.5                            2621.866      3434.082      360      ""                            
+U5         HE9116A50NR           TopLayer    SOT-23                                              3573.315      3606.520      180      ""                            
+U6         ULN2802               TopLayer    ESSOP-10                                            3215.456      3674.695      360      ""                            
+C8         100nF                 BottomLayer 0603_C                                              2321.001      3977.000      180      ""                            
+C15        0.1uf/25v             BottomLayer 0603_C                                              2316.999      3759.000      360      Capacitor                     
+Q3         AO3400                BottomLayer SOT-23                                              2343.520      3637.315      270      ""                            
+R9         10k                   BottomLayer 0603_R                                              2320.001      3835.000      360      Resistor                      
+R15        100R                  BottomLayer 0603_R                                              2321.999      3902.000      180      Resistor                      
+R19        330R                  BottomLayer 0603_R                                              2338.999      3453.000      180      Resistor                      
+R20        10K                   BottomLayer 0603_R                                              2340.001      3526.000      360      ""                            
+R21        330R                  BottomLayer 0603_R                                              2710.000      3612.999      270      Resistor                      
+R22        330R                  BottomLayer 0603_R                                              2778.000      3613.999      270      Resistor                      
+R23        330R                  BottomLayer 0603_R                                              2847.000      3614.999      270      Resistor                      
+R24        330R                  BottomLayer 0603_R                                              2917.000      3615.999      270      Resistor                      
+R30        10K                   BottomLayer 0603_R                                              3313.000      3619.999      270      ""                            
+R31        10K                   BottomLayer 0603_R                                              3243.000      3619.999      270      ""                            

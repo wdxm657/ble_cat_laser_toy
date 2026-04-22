@@ -1959,6 +1959,26 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
 static u32 radar_start_time = 0;
 #endif
 
+static void radar_uart_hw_drain_and_clear(void)
+{
+    unsigned char rx_cnt = reg_uart_buf_cnt & 0x0f;
+    while (rx_cnt--)
+    {
+        (void)uart_ndma_read_byte();
+    }
+    uart_clear_parity_error();
+}
+
+static u8 g_radar_uart_inited = 0;
+
+static void radar_uart_rx_state_reset(void)
+{
+    g_uart_ndma_rx_flag     = 0;
+    g_uart_ndma_rx_byte_cnt = 0;
+    memset((void *)g_uart_ndma_rx_byte, 0, sizeof(g_uart_ndma_rx_byte));
+    uart_ndma_clear_rx_index();
+    uart_ndma_clear_tx_index();
+}
 void app_radar_parse_and_report_frame(void)
 {
     if (!g_radar_uart_inited)
@@ -2200,27 +2220,6 @@ void app_radar_task_power_schedule(void)
 u8 app_radar_is_power_on(void)
 {
     return g_radar_power_on;
-}
-
-static u8 g_radar_uart_inited = 0;
-
-static void radar_uart_rx_state_reset(void)
-{
-    g_uart_ndma_rx_flag     = 0;
-    g_uart_ndma_rx_byte_cnt = 0;
-    memset((void *)g_uart_ndma_rx_byte, 0, sizeof(g_uart_ndma_rx_byte));
-    uart_ndma_clear_rx_index();
-    uart_ndma_clear_tx_index();
-}
-
-static void radar_uart_hw_drain_and_clear(void)
-{
-    unsigned char rx_cnt = reg_uart_buf_cnt & 0x0f;
-    while (rx_cnt--)
-    {
-        (void)uart_ndma_read_byte();
-    }
-    uart_clear_parity_error();
 }
 
 void app_radar_uart_init(void)

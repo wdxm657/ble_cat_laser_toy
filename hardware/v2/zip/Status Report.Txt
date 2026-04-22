@@ -1,0 +1,13 @@
+Output: NC Drill Files
+Type  : NC Drill
+From  : Project [Free Documents]
+   Generated File[AICat V1.2-RoundHoles.TXT]
+   Generated File[AICat V1.2-SlotHoles.TXT]
+   Generated File[AICat V1.2.LDP]
+   Generated File[AICat V1.2.DRR]
+
+
+Files Generated   : 4
+Documents Printed : 0
+
+Finished Output Generation At 9:26:20 On 2026/4/21

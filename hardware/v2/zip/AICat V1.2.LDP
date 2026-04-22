@@ -1,0 +1,3 @@
+Layer Pairs Export File for PCB: C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc
+LayersSetName=Top_Bot_Thru_Holes|DrillFile=aicat v1.2-roundholes.txt|DrillLayers=gtl,gbl
+LayersSetName=Top_Bot_Slot_Holes|DrillFile=aicat v1.2-slotholes.txt|DrillLayers=gtl,gbl

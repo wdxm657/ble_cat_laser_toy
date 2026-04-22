@@ -1,0 +1,402 @@
+<html>
+<head>
+<META http-equiv="Content-Type" content="text/html">
+<style type="text/css">
+		h1, h2, h3, h4, h5, h6 {
+			font-family : segoe ui;
+			color : black;
+			background-color : #EDE7D9;
+			padding: 0.3em;
+		}
+
+		h1 {
+			font-size: 1.2em;
+		}		
+
+		h2 {
+			font-size: 1.2em;
+		}
+
+		body {
+			font-family : segoe ui;
+		}
+
+		td, th {
+			padding: 0.5em;
+			text-align : left;
+			width: 10em;
+		}
+		th {
+			background-color : #EEEEEE;
+
+		}
+		th.column1, td.column1 {
+			text-align: left;
+			width : auto;
+		}
+		table {
+			width : 100%;
+			font-size: 0.9em;
+		}
+
+		.DRC_summary_header {
+			padding-bottom : 0.1em;
+			border : 0px solid black;
+			width: 100%;
+			align: left;
+		}
+
+		.DRC_summary_header_col1,
+		.DRC_summary_header_col2, 
+		.DRC_summary_header_col3 {
+			color : black;
+			font-size:100%;
+			padding : 0em;
+			padding-top : 0.2em;
+			padding-bottom 0.2em;
+			border : 0px solid black;
+			vertical-align: top;
+			text-align: left;
+		}
+
+		.DRC_summary_header_col1 {
+			font-weight: bold;
+			width: 8em;
+		}
+
+		.DRC_summary_header_col2 {
+			width: 0.1em;
+		
+		}
+
+		.DRC_summary_header_col3 {
+			width : auto;
+		}
+
+		.header_holder {
+		    Width = 100%;
+		    border = 0px solid green;
+		    padding = 0;
+		}
+
+
+		.front_matter, .front_matter_column1, .front_matter_column2, .front_matter_column3
+		{
+			left : 0;
+			top : 0;
+			padding: 0em;
+			padding-top : 0.1em;
+			border : 0px solid black;
+			width : 100%;
+			vertical-align: top;
+			text-align: left;
+		}
+
+		.front_matter_column1 {
+			width : 8em;
+			font-weight: bold;
+		}
+
+		.front_matter_column2 {
+			width: 0.1em;
+		}
+
+		.front_matter_column3 {
+			width : auto;
+		}
+
+		.total_column1, .total_column {
+			font-weight : bold;
+		}
+		.total_column1 {
+			text-align : left;
+		}
+		.warning, .error {
+			color : red;
+			font-weight : bold;
+		}
+		tr.onmouseout_odd {
+			background-color : #white;
+		}
+		tr.onmouseout_even { 
+			background-color : #FAFAFA;
+		}
+		tr.onmouseover_odd, tr.onmouseover_even { 
+			background-color : #EEEEEE;
+		} 
+		a:link, a:visited, .q a:link,.q a:active,.q {
+			color: #21489e; 
+		}
+		a:link.callback, a:visited.callback { 
+			color: #21489e;
+		}
+		a:link.customize, a:visited.customize {
+			color: #C0C0C0;
+			position: absolute; 
+			right: 10px;
+		}	
+		p.contents_level1 {
+			font-weight : bold;
+			font-size : 110%;
+			margin : 0.5em;
+		}
+		p.contents_level2 {
+			position : relative;
+			left : 20px;
+			margin : 0.5em;
+		}
+	</style><script type="text/javascript">
+		function coordToMils(coord) {
+			var number = coord / 10000;
+			
+			if (number != number.toFixed(3))
+				number = number.toFixed(3);
+
+			return number + 'mil'
+		}
+
+		function coordToMM(coord) {
+			var number = 0.0254 * coord / 10000;
+			
+			if (number != number.toFixed(4))
+				number = number.toFixed(4);
+			
+			return number + 'mm'
+		}
+	
+		function convertCoord(coordNode, units) {
+			for (var i = 0; i < coordNode.childNodes.length; i++) {
+				coordNode.removeChild(coordNode.childNodes[i]);
+			}
+
+			var coord = coordNode.getAttribute('value');
+			if (coord != null) {
+				if (units == 'mm') {
+					textNode = document.createTextNode(coordToMM(coord));
+					coordNode.appendChild(textNode);
+				} else if (units == 'mil') {
+					textNode = document.createTextNode(coordToMils(coord));		
+					coordNode.appendChild(textNode);	
+				}
+			}
+		}
+	
+		function convertUnits(unitNode, units) {
+			for (var i = 0; i < unitNode.childNodes.length; i++) {
+				unitNode.removeChild(unitNode.childNodes[i]);		
+			}
+		
+			textNode = document.createTextNode(units); 
+			unitNode.appendChild(textNode);
+		}
+	
+		function changeUnits(radio_input, units) {
+			if (radio_input.checked) {
+			
+				var elements = document.getElementsByName('coordinate');
+				if (elements) {
+					for (var i = 0; i < elements.length; i++) {
+						convertCoord(elements[i], units);
+					}
+				}
+	
+				var elements = document.getElementsByName('units');
+				if (elements) {
+					for (var i = 0; i < elements.length; i++) {
+						convertUnits(elements[i], units);
+					}
+				}
+			}
+		}
+	</script><title>Design Rule Verification Report</title>
+</head>
+<body onload=""><img ALT="Altium" src="
+			file://C:\Users\Public\Documents\Altium\AD18\Templates\AD_logo.png
+		"><h1>Design Rule Verification Report</h1>
+<table class="header_holder">
+<td class="column1">
+<table class="front_matter">
+<tr class="front_matter">
+<td class="front_matter_column1">Date:</td>
+<td class="front_matter_column2"></td>
+<td class="front_matter_column3">2026/4/21</td>
+</tr>
+<tr class="front_matter">
+<td class="front_matter_column1">Time:</td>
+<td class="front_matter_column2"></td>
+<td class="front_matter_column3">9:23:37</td>
+</tr>
+<tr class="front_matter">
+<td class="front_matter_column1">Elapsed Time:</td>
+<td class="front_matter_column2"></td>
+<td class="front_matter_column3">00:00:00</td>
+</tr>
+<tr class="front_matter">
+<td class="front_matter_column1">Filename:</td>
+<td class="front_matter_column2"></td>
+<td class="front_matter_column3"><a href="file:///C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc" class="file"><acronym title="C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc">C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc</acronym></a></td>
+</tr>
+</table>
+</td>
+<td class="column2">
+<table class="DRC_summary_header">
+<tr>
+<td class="DRC_summary_header_col1">Warnings:</td>
+<td class="DRC_summary_header_col2"></td>
+<td class="DRC_summary_header_col3">0</td></tr>
+<tr>
+<td class="DRC_summary_header_col1">Rule Violations:</td>
+<td class="DRC_summary_header_col2"></td>
+<td class="DRC_summary_header_col3" style="color : red">22</td></tr>
+</table>
+</td>
+</table><a name="IDX3C0BHQ2SJ4GSCQMAHRRO1TEDV01PZLFKUQHMUW1F4DQZYC5NG"><h2>Summary</h2></a><table>
+<tr>
+<th class="column1">Warnings</th>
+<th class="column2">Count</th>
+</tr>
+<tr>
+<td style="font-weight : bold; text-align : right" class="column1">Total</td>
+<td style="font-weight : bold" class="column2">0</td>
+</tr>
+</table><br><table>
+<tr>
+<th class="column1">Rule Violations</th>
+<th class="column2">Count</th>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="#ID4FSSYSMR35TPF3VBK12EBGYCHFWZPJL2P4OAR5BCRI32U4HOAFNG">Clearance Constraint (Gap=7mil) (All),(All)</a></td>
+<td class="column2">3</td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="#IDQUFWTM2IWHEHDA01ZL4FLXY5FTSR0QBXCXO1YC1DPC3UIUJD4AI">Short-Circuit Constraint (Allowed=No) (All),(All)</a></td>
+<td class="column2">2</td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="#ID50HPQLYA2IEBM542PZ1WSVHHVCCMCUQDCG0PUHEF0KOZHN4OXN">Un-Routed Net Constraint ( (All) )</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="#IDXQQKVI4OE2SNNA2DWWVIVDSRIIOUTQGX0FSETPJOOF2RVAIFBELK">Width Constraint (Min=8mil) (Max=100mil) (Preferred=10mil) (All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="#IDLPWGQPX1S5ZWMVLIMFSRH3WZBGKR13WPUA52BAIMKW4FZ4I0AC3E">Power Plane Connect Rule(Relief Connect )(Expansion=20mil) (Conductor Width=10mil) (Air Gap=10mil) (Entries=4) (All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="#IDA3F5CHPVLCT4PHJSXSMDZP0X0OHSPDGPKJO0NRHVS3YUG0DN30QN">Hole Size Constraint (Min=1mil) (Max=100mil) (All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="#IDRJFV33IDIBI4DSSKFC4AVMPIOJ3ZZ5FCBQNVDNOAKYIBX44RYDCO">Hole To Hole Clearance (Gap=4mil) (All),(All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="#IDGEZBJVUMO3RDKCIMT0XZVS04ZP4O15IRG0XT5I0CIOM403XE41C">Minimum Solder Mask Sliver (Gap=2mil) (All),(All)</a></td>
+<td class="column2">8</td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="#IDBUSLCTGKUQ2GKGDKH4QB5TSQCHUKIEXMUUPIFDGPWKRB14YY0FZE">Silk To Solder Mask (Clearance=0mil) (IsPad),(All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="#IDAYWBZVTJVBBOCPIR1W055CJSLGMWCKC2BYXWFXECCV1QDFK4QE4J">Silk to Silk (Clearance=2mil) (All),(All)</a></td>
+<td class="column2">9</td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="#IDXZANRIRTUXKDO1MX2TW3SSYRMFBVNOLUBCXZWUKAM2BZFVQWZ4UD">Net Antennae (Tolerance=0mil) (All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="#IDQWVRPH1BI25WLLN1IJN5DWOMSBRGBEK2TMHV55HZBDAMDX2OFN0J">Height Constraint (Min=0mil) (Max=1000mil) (Prefered=500mil) (All)</a></td>
+<td class="column2">0</td>
+</tr>
+<tr>
+<td style="font-weight : bold; text-align : right" class="column1">Total</td>
+<td style="font-weight : bold" class="column2">22</td>
+</tr>
+</table><br><a name="ID4FSSYSMR35TPF3VBK12EBGYCHFWZPJL2P4OAR5BCRI32U4HOAFNG"><table>
+<tr>
+<th style="text-align : left" colspan="1" class="rule">Clearance Constraint (Gap=7mil) (All),(All)</th>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=4002.442mil|Location2.X=4011.143mil|Location1.Y=2664.996mil|Location2.Y=2673.418mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=4002.442mil|Location2.X=4011.143mil|Location1.Y=2664.996mil|Location2.Y=2673.418mil|Absolute=True">Clearance Constraint: (6.322mil &lt; 7mil) Between Arc (3234.467mil,3936.819mil) on Keep-Out Layer And Pad USB1-7(3984.182mil,2702.891mil) on Multi-Layer </acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=1895.628mil|Location2.X=1901.294mil|Location1.Y=3206.724mil|Location2.Y=3212.391mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=1895.628mil|Location2.X=1901.294mil|Location1.Y=3206.724mil|Location2.Y=3212.391mil|Absolute=True">Clearance Constraint: (Collision &lt; 7mil) Between Area Fill (1882.868mil,3107.2mil) (1902.553mil,3311.7mil) on Top Layer And Area Fill (2027.842mil,3066.242mil) (2047.527mil,3352.873mil) on Top Layer </acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2170.743mil|Location2.X=2176.409mil|Location1.Y=3114.209mil|Location2.Y=3119.876mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2170.743mil|Location2.X=2176.409mil|Location1.Y=3114.209mil|Location2.Y=3119.876mil|Absolute=True">Clearance Constraint: (Collision &lt; 7mil) Between Area Fill (2024.792mil,2973.677mil) (2044.477mil,3260.408mil) on Top Layer And Area Fill (2169.152mil,3053mil) (2211mil,3142.179mil) on Top Layer </acronym></a><br></td>
+</tr>
+</table></a><hr color="#EEEEEE"><a href="#top" style="font-size: 0.9em">Back to top</a><br><br><a name="IDQUFWTM2IWHEHDA01ZL4FLXY5FTSR0QBXCXO1YC1DPC3UIUJD4AI"><table>
+<tr>
+<th style="text-align : left" colspan="1" class="rule">Short-Circuit Constraint (Allowed=No) (All),(All)</th>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=1886.301mil|Location2.X=1910.62mil|Location1.Y=3197.398mil|Location2.Y=3221.717mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=1886.301mil|Location2.X=1910.62mil|Location1.Y=3197.398mil|Location2.Y=3221.717mil|Absolute=True">Short-Circuit Constraint: Between Area Fill (1882.868mil,3107.2mil) (1902.553mil,3311.7mil) on Top Layer And Area Fill (2027.842mil,3066.242mil) (2047.527mil,3352.873mil) on Top Layer Location : [X = 1898.461mil][Y = 3209.557mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2161.285mil|Location2.X=2185.867mil|Location1.Y=3104.751mil|Location2.Y=3129.334mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2161.285mil|Location2.X=2185.867mil|Location1.Y=3104.751mil|Location2.Y=3129.334mil|Absolute=True">Short-Circuit Constraint: Between Area Fill (2024.792mil,2973.677mil) (2044.477mil,3260.408mil) on Top Layer And Area Fill (2169.152mil,3053mil) (2211mil,3142.179mil) on Top Layer Location : [X = 2173.576mil][Y = 3117.043mil]</acronym></a><br></td>
+</tr>
+</table></a><hr color="#EEEEEE"><a href="#top" style="font-size: 0.9em">Back to top</a><br><br><a name="IDGEZBJVUMO3RDKCIMT0XZVS04ZP4O15IRG0XT5I0CIOM403XE41C"><table>
+<tr>
+<th style="text-align : left" colspan="1" class="rule">Minimum Solder Mask Sliver (Gap=2mil) (All),(All)</th>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2639.375mil|Location2.X=2642.625mil|Location1.Y=3189.58mil|Location2.Y=3192.83mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2639.375mil|Location2.X=2642.625mil|Location1.Y=3189.58mil|Location2.Y=3192.83mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.842mil &lt; 2mil) Between Pad C10-1(2657.732mil,3208mil) on Top Layer And Pad C10-2(2624.268mil,3208mil) on Top Layer [Top Solder] Mask Sliver [1.842mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2559.58mil|Location2.X=2562.83mil|Location1.Y=3224.375mil|Location2.Y=3227.625mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2559.58mil|Location2.X=2562.83mil|Location1.Y=3224.375mil|Location2.Y=3227.625mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.842mil &lt; 2mil) Between Pad C11-1(2578mil,3242.732mil) on Top Layer And Pad C11-2(2578mil,3209.268mil) on Top Layer [Top Solder] Mask Sliver [1.842mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2431.58mil|Location2.X=2434.83mil|Location1.Y=3223.375mil|Location2.Y=3226.625mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2431.58mil|Location2.X=2434.83mil|Location1.Y=3223.375mil|Location2.Y=3226.625mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.842mil &lt; 2mil) Between Pad C12-1(2450mil,3241.732mil) on Top Layer And Pad C12-2(2450mil,3208.268mil) on Top Layer [Top Solder] Mask Sliver [1.842mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2301.58mil|Location2.X=2304.83mil|Location1.Y=3225.375mil|Location2.Y=3228.625mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2301.58mil|Location2.X=2304.83mil|Location1.Y=3225.375mil|Location2.Y=3228.625mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.842mil &lt; 2mil) Between Pad C13-1(2320mil,3243.732mil) on Top Layer And Pad C13-2(2320mil,3210.268mil) on Top Layer [Top Solder] Mask Sliver [1.842mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2173.58mil|Location2.X=2176.83mil|Location1.Y=3224.375mil|Location2.Y=3227.625mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2173.58mil|Location2.X=2176.83mil|Location1.Y=3224.375mil|Location2.Y=3227.625mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.842mil &lt; 2mil) Between Pad C14-1(2192mil,3242.732mil) on Top Layer And Pad C14-2(2192mil,3209.268mil) on Top Layer [Top Solder] Mask Sliver [1.842mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2516.375mil|Location2.X=2519.625mil|Location1.Y=3189.58mil|Location2.Y=3192.83mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2516.375mil|Location2.X=2519.625mil|Location1.Y=3189.58mil|Location2.Y=3192.83mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.843mil &lt; 2mil) Between Pad L1-1(2534.732mil,3208mil) on Top Layer And Pad L1-2(2501.268mil,3208mil) on Top Layer [Top Solder] Mask Sliver [1.843mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2382.375mil|Location2.X=2385.625mil|Location1.Y=3190.58mil|Location2.Y=3193.83mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2382.375mil|Location2.X=2385.625mil|Location1.Y=3190.58mil|Location2.Y=3193.83mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.843mil &lt; 2mil) Between Pad L2-1(2400.732mil,3209mil) on Top Layer And Pad L2-2(2367.268mil,3209mil) on Top Layer [Top Solder] Mask Sliver [1.843mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2253.375mil|Location2.X=2256.625mil|Location1.Y=3191.58mil|Location2.Y=3194.83mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2253.375mil|Location2.X=2256.625mil|Location1.Y=3191.58mil|Location2.Y=3194.83mil|Absolute=True">Minimum Solder Mask Sliver Constraint: (1.843mil &lt; 2mil) Between Pad L3-1(2271.732mil,3210mil) on Top Layer And Pad L3-2(2238.268mil,3210mil) on Top Layer [Top Solder] Mask Sliver [1.843mil]</acronym></a><br></td>
+</tr>
+</table></a><hr color="#EEEEEE"><a href="#top" style="font-size: 0.9em">Back to top</a><br><br><a name="IDAYWBZVTJVBBOCPIR1W055CJSLGMWCKC2BYXWFXECCV1QDFK4QE4J"><table>
+<tr>
+<th style="text-align : left" colspan="1" class="rule">Silk to Silk (Clearance=2mil) (All),(All)</th>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3487.592mil|Location2.X=3489.925mil|Location1.Y=3330.156mil|Location2.Y=3332.489mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3487.592mil|Location2.X=3489.925mil|Location1.Y=3330.156mil|Location2.Y=3332.489mil|Absolute=True">Silk To Silk Clearance Constraint: (Collision &lt; 2mil) Between Arc (3490.063mil,3312mil) on Top Overlay And Text "R32" (3422mil,3333mil) on Top Overlay Silk Text to Silk Clearance [0mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3578.996mil|Location2.X=3581.329mil|Location1.Y=2957.184mil|Location2.Y=2959.517mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3578.996mil|Location2.X=3581.329mil|Location1.Y=2957.184mil|Location2.Y=2959.517mil|Absolute=True">Silk To Silk Clearance Constraint: (Collision &lt; 2mil) Between Arc (3673mil,2903mil) on Top Overlay And Text "R10" (3518.621mil,2929.291mil) on Top Overlay Silk Text to Silk Clearance [0mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3605.356mil|Location2.X=3607.689mil|Location1.Y=2816.378mil|Location2.Y=2818.711mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3605.356mil|Location2.X=3607.689mil|Location1.Y=2816.378mil|Location2.Y=2818.711mil|Absolute=True">Silk To Silk Clearance Constraint: (Collision &lt; 2mil) Between Arc (3673mil,2903mil) on Top Overlay And Text "R13" (3534mil,2815mil) on Top Overlay Silk Text to Silk Clearance [0mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2686.254mil|Location2.X=2692.239mil|Location1.Y=3237.497mil|Location2.Y=3243.574mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=2686.254mil|Location2.X=2692.239mil|Location1.Y=3237.497mil|Location2.Y=3243.574mil|Absolute=True">Silk To Silk Clearance Constraint: (0.345mil &lt; 2mil) Between Region (0 hole(s)) Top Overlay And Text "C10" (2616mil,3241mil) on Top Overlay Silk Text to Silk Clearance [0.345mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3516.368mil|Location2.X=3518.701mil|Location1.Y=2927.038mil|Location2.Y=2929.371mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3516.368mil|Location2.X=3518.701mil|Location1.Y=2927.038mil|Location2.Y=2929.371mil|Absolute=True">Silk To Silk Clearance Constraint: (Collision &lt; 2mil) Between Text "R10" (3518.621mil,2929.291mil) on Top Overlay And Track (3470.748mil,2926.102mil)(3515.432mil,2926.102mil) on Top Overlay Silk Text to Silk Clearance [0mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3516.368mil|Location2.X=3518.701mil|Location1.Y=2927.038mil|Location2.Y=2929.371mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3516.368mil|Location2.X=3518.701mil|Location1.Y=2927.038mil|Location2.Y=2929.371mil|Absolute=True">Silk To Silk Clearance Constraint: (Collision &lt; 2mil) Between Text "R10" (3518.621mil,2929.291mil) on Top Overlay And Track (3515.432mil,2863.898mil)(3515.432mil,2926.102mil) on Top Overlay Silk Text to Silk Clearance [0mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3487.935mil|Location2.X=3490.268mil|Location1.Y=3330.142mil|Location2.Y=3332.476mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3487.935mil|Location2.X=3490.268mil|Location1.Y=3330.142mil|Location2.Y=3332.476mil|Absolute=True">Silk To Silk Clearance Constraint: (Collision &lt; 2mil) Between Text "R32" (3422mil,3333mil) on Top Overlay And Track (3490.062mil,3327.748mil)(3526.284mil,3327.748mil) on Top Overlay Silk Text to Silk Clearance [0mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_even" onmouseover="className = 'onmouseover_even'" onmouseout="className = 'onmouseout_even'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3317.086mil|Location2.X=3320.336mil|Location1.Y=3646.375mil|Location2.Y=3649.625mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3317.086mil|Location2.X=3320.336mil|Location1.Y=3646.375mil|Location2.Y=3649.625mil|Absolute=True">Silk To Silk Clearance Constraint: (1.597mil &lt; 2mil) Between Text "R34" (3352mil,3648mil) on Top Overlay And Track (3314.913mil,3622.03mil)(3314.913mil,3727.36mil) on Top Overlay Silk Text to Silk Clearance [1.597mil]</acronym></a><br></td>
+</tr>
+<tr class="onmouseout_odd" onmouseover="className = 'onmouseover_odd'" onmouseout="className = 'onmouseout_odd'">
+<td class="column1"><a href="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3353.441mil|Location2.X=3356.691mil|Location1.Y=3666.369mil|Location2.Y=3669.619mil|Absolute=True" class="callback"><acronym title="dxpprocess://PCB:Zoom?document=C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v2\AICat V1.2.PcbDoc;viewname=PCBEditor;Action=AREA_DYNAMICZOOM|Location1.X=3353.441mil|Location2.X=3356.691mil|Location1.Y=3666.369mil|Location2.Y=3669.619mil|Absolute=True">Silk To Silk Clearance Constraint: (1.131mil &lt; 2mil) Between Text "R34" (3352mil,3648mil) on Top Overlay And Track (3359.568mil,3651.898mil)(3359.568mil,3714.102mil) on Top Overlay Silk Text to Silk Clearance [1.131mil]</acronym></a><br></td>
+</tr>
+</table></a><hr color="#EEEEEE"><a href="#top" style="font-size: 0.9em">Back to top</a><br><br></body>
+</html>
