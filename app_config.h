@@ -153,77 +153,57 @@ enum{
 	/**
 	 *  @brief  Definition gpio for led
 	 */
-	#if (EVK)
-	#define	GPIO_LED_BLUE  	GPIO_PA4
-	#define	GPIO_LED_GREEN	GPIO_PA5
-	#define	GPIO_LED_WHITE	GPIO_PA6
-	#define	GPIO_LED_RED	GPIO_PA7
 	#define LED_ON_LEVEL 			1 		//gpio output high voltage to turn on led
-
-	#define PA4_FUNC				AS_GPIO
+	#define	CHARGE_SWITCH  	GPIO_PA0 // 充电模块开关
+	#define	CHARGE_STATE  	GPIO_PA1 // 充电中低电平否则高电平 INPUT
+	#define	CHARGE_STY  	GPIO_PA2 // 充满电低电平否则高电平 INPUT
+	#define	GPIO_LED_BLUE  	GPIO_PA5
+	#define	GPIO_LED_GREEN	GPIO_PA7
+	#define	GPIO_LED_RED	GPIO_PA6
+	#define	GPIO_CHARGE_LED_GREEN	GPIO_PB0
+	#define	GPIO_CHARGE_LED_RED 	GPIO_PB1
+	#define	V_BAT_CON		GPIO_PB3 // 控制电池电压AD检测开关 现在常开即可
+	#define	V_NTC_CON		GPIO_PC5 //控制NTC电压AD检测开关 现在常开即可
+	#define	GPIO_LED_WHITE	GPIO_PC7 // 激光指示灯
+	#define	LEIDA_SWITCH  	GPIO_PD7 // 雷达模块开关
+	#define PA0_FUNC				AS_GPIO
+	#define PA1_FUNC				AS_GPIO
+	#define PA2_FUNC				AS_GPIO
 	#define PA5_FUNC				AS_GPIO
 	#define PA6_FUNC				AS_GPIO
 	#define PA7_FUNC				AS_GPIO
+	#define PB0_FUNC				AS_GPIO
+	#define PB1_FUNC				AS_GPIO
+	#define PB3_FUNC				AS_GPIO
+	#define PC5_FUNC				AS_GPIO
+	#define PC7_FUNC				AS_GPIO
+	#define PD7_FUNC				AS_GPIO
+	#define	PA0_OUTPUT_ENABLE		1
+	#define	PA1_INPUT_ENABLE		1
+	#define PA2_INPUT_ENABLE		1
+	#define	PA5_OUTPUT_ENABLE		1
+	#define	PA6_OUTPUT_ENABLE		1
+	#define	PA7_OUTPUT_ENABLE		1
+	#define PB0_OUTPUT_ENABLE       1
+	#define PB1_OUTPUT_ENABLE       1
+	#define PB3_OUTPUT_ENABLE       1
+	#define PC5_OUTPUT_ENABLE       1
+	#define PC7_OUTPUT_ENABLE       1
+	#define PD7_OUTPUT_ENABLE       1
 
-	#define	PA4_OUTPUT_ENABLE		1
-	#define	PA5_OUTPUT_ENABLE		1
-	#define PA6_OUTPUT_ENABLE		1
-	#define	PA7_OUTPUT_ENABLE		1
-	#else
-	#define	GPIO_LED_BLUE  	GPIO_PA6
-	#define	GPIO_LED_GREEN	GPIO_PA5
-	#define	GPIO_LED_WHITE	GPIO_PA4 // 激光指示灯
-	#define	GPIO_LED_RED	GPIO_PA7
-	#define RADAR_SWITCH    GPIO_PB5
-	#define LED_ON_LEVEL 			1 		//gpio output high voltage to turn on led
-	#define PA4_FUNC				AS_GPIO
-	#define PA5_FUNC				AS_GPIO
-	#define PA6_FUNC				AS_GPIO
-	#define PA7_FUNC				AS_GPIO
-	#define PB5_FUNC          		AS_GPIO
-	#define	PA4_OUTPUT_ENABLE		1
-	#define	PA5_OUTPUT_ENABLE		1
-	#define PA6_OUTPUT_ENABLE		1
-	#define	PA7_OUTPUT_ENABLE		1
-	#define PB5_OUTPUT_ENABLE 1
-	#endif
+	#define	AD_BAT			GPIO_PB2 // 电池电压ADC采样
+	#define	AD_NTC			GPIO_PC4 //NTC电压 ADC采样
+
 #endif
 #if(UI_STEP_MOTOR_ENABLE)
-#if (EVK)
-	#define	GPIO_STEP_MOTOR_1_A		GPIO_PC7
-	#define	GPIO_STEP_MOTOR_1_B		GPIO_PC6
-	#define	GPIO_STEP_MOTOR_1_C		GPIO_PC5
-	#define	GPIO_STEP_MOTOR_1_D		GPIO_PC4
+	#define	GPIO_STEP_MOTOR_1_A		GPIO_PB7
+	#define	GPIO_STEP_MOTOR_1_B		GPIO_PB6
+	#define	GPIO_STEP_MOTOR_1_C		GPIO_PB5
+	#define	GPIO_STEP_MOTOR_1_D		GPIO_PB4
 	#define	GPIO_STEP_MOTOR_2_A		GPIO_PC3
 	#define	GPIO_STEP_MOTOR_2_B		GPIO_PC2
 	#define	GPIO_STEP_MOTOR_2_C		GPIO_PC1
 	#define	GPIO_STEP_MOTOR_2_D		GPIO_PC0
-	#define PC7_FUNC				AS_GPIO
-	#define PC6_FUNC				AS_GPIO
-	#define PC5_FUNC				AS_GPIO
-	#define PC4_FUNC				AS_GPIO
-	#define PC3_FUNC				AS_GPIO
-	#define PC2_FUNC				AS_GPIO
-	#define PC1_FUNC				AS_GPIO
-	#define PC0_FUNC				AS_GPIO
-	#define PC7_OUTPUT_ENABLE		1
-	#define PC6_OUTPUT_ENABLE		1
-	#define PC5_OUTPUT_ENABLE		1
-	#define PC4_OUTPUT_ENABLE		1
-	#define PC3_OUTPUT_ENABLE		1
-	#define PC2_OUTPUT_ENABLE		1
-	#define PC1_OUTPUT_ENABLE		1
-	#define PC0_OUTPUT_ENABLE		1
-#else
-	#define	GPIO_STEP_MOTOR_1_A		GPIO_PD7
-	#define	GPIO_STEP_MOTOR_1_B		GPIO_PD6
-	#define	GPIO_STEP_MOTOR_1_C		GPIO_PD5
-	#define	GPIO_STEP_MOTOR_1_D		GPIO_PD4
-	#define	GPIO_STEP_MOTOR_2_A		GPIO_PD0
-	#define	GPIO_STEP_MOTOR_2_B		GPIO_PD1
-	#define	GPIO_STEP_MOTOR_2_C		GPIO_PD2
-	#define	GPIO_STEP_MOTOR_2_D		GPIO_PD3
-#endif
 #endif
 /**
  *  @brief  Battery_check Configuration

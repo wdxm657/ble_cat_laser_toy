@@ -324,7 +324,7 @@ _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INS
 
 static void app_radar_power_switch(u8 on)
 {
-    gpio_write(RADAR_SWITCH, on ? 1 : 0);
+    // gpio_write(LEIDA_SWITCH, on ? 1 : 0);
     if (!on)
     {
         RadarSessionStop(1);
@@ -2230,7 +2230,7 @@ void app_radar_uart_init(void)
     }
     g_radar_uart_inited = 1;
 
-    uart_gpio_set(GPIO_PB6, GPIO_PB7);
+    uart_gpio_set(GPIO_PD6, GPIO_PD5);
     uart_init_baudrate(256000, CLOCK_SYS_CLOCK_HZ, PARITY_NONE, STOP_BIT_ONE);
     uart_dma_enable(0, 0);
     uart_ndma_irq_triglevel(1, 0);

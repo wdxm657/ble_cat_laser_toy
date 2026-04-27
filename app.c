@@ -97,7 +97,7 @@ const u8 tbl_advData[] = {
     'S',
     'P',
     'N',
-    'B',
+    'C',
     2,
     DT_FLAGS,
     0x05,  // BLE limited discoverable mode and BR/EDR not supported
@@ -128,7 +128,7 @@ u8 tbl_scanRsp[] = {
     'S',
     'P',
     'N',
-    'B',
+    'C',
     17,
     DT_MANUFACTURER_SPECIFIC_DATA,
     0x00,
@@ -593,6 +593,14 @@ _attribute_no_inline_ void user_init_normal(void)
 {
     //////////////////////////// personal hardware Initialization  Begin //////////////////////////////////
     // USART initial for radar (NDMA + IRQ)
+#ifdef UI_LED_ENABLE
+    // 常开NTC电压AD检测开关
+    gpio_write(V_NTC_CON, 1);
+    // 常开电池电压AD检测开关
+    gpio_write(V_BAT_CON, 1);
+    // 常开雷达模块开关
+    gpio_write(LEIDA_SWITCH, 1);
+#endif
 #ifdef UI_RADAR_ENABLE
     app_radar_uart_init();
     app_radar_init();
@@ -975,40 +983,37 @@ void main_loop(void)
         g_time_tick_last = clock_time();
         app_radar_on_time_tick();
     }
-    // 测试三角函数
-    // a_atan2 = lookup_atan2(2, 1) * RAD_TO_DEG;
-    // 测试根号
-    // a_sqrt3 = app_radar_mysqrt_3(3 * 3 + 4 * 4);
+
     if (g_app_power_on)
     {
         // 判断当前是否设置完成高度和逗宠区域
-        if (app_radar_is_install_height_set() && app_radar_is_boundary_set())
+        // if (app_radar_is_install_height_set() && app_radar_is_boundary_set())
+        // {
+        // 判断当前是否为设置状态
+        if (!app_ctrl_is_setting_mode())
         {
-            // 判断当前是否为设置状态
-            if (!app_ctrl_is_setting_mode())
+            app_radar_task_power_schedule();
+            if (app_radar_is_power_on())
             {
-                app_radar_task_power_schedule();
-                if (app_radar_is_power_on())
-                {
-                    app_radar_parse_and_report_frame();
-                }
-                else
-                {
-                    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-                }
+                app_radar_parse_and_report_frame();
             }
             else
             {
-                RadarSessionStop(1);
-                gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
             }
         }
         else
         {
-            // 进入设置状态
-            app_ctrl_radar_boundary_enter();
+            RadarSessionStop(1);
             gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         }
+        // }
+        // else
+        // {
+        //     // 进入设置状态
+        //     app_ctrl_radar_boundary_enter();
+        //     gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        // }
     }
     else
     {
