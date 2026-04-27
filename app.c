@@ -29,6 +29,7 @@
 #include "app_ui.h"
 #include "app_ctrl.h"
 #include "app_buffer.h"
+#include "app_adc_dbg.h"
 #include "StepMotor.h"
 
 #ifdef UI_RADAR_ENABLE
@@ -52,6 +53,7 @@ u32 latest_user_event_tick;
 own_addr_type_t app_own_address_type = OWN_ADDRESS_PUBLIC;
 
 static u8 g_app_power_on = 0;
+_attribute_data_retention_ static u8 s_bat_percent_last_reported = 0xFF;
 
 void app_set_power_state(u8 on)
 {
@@ -640,6 +642,7 @@ _attribute_no_inline_ void user_init_normal(void)
             power, then start to restore the function can be safer.*/
     user_battery_power_check(VBAT_ALARM_THRES_MV);
 #endif
+    app_adc_dbg_init();
 #if (APP_FLASH_PROTECTION_ENABLE)
     app_flash_protection_operation(FLASH_OP_EVT_APP_INITIALIZATION, 0, 0);
     blc_appRegisterStackFlashOperationCallback(app_flash_protection_operation);  // register flash operation callback for stack
@@ -968,6 +971,15 @@ void main_loop(void)
         user_battery_power_check(VBAT_ALARM_THRES_MV);
     }
 #endif
+    app_adc_dbg_poll();
+    {
+        u8 bat_percent_now = app_adc_dbg_get_bat_percent();
+        if (bat_percent_now != s_bat_percent_last_reported)
+        {
+            s_bat_percent_last_reported = bat_percent_now;
+            app_att_battery_update(bat_percent_now);
+        }
+    }
 
 #ifdef UI_RADAR_ENABLE
     app_radar_debug_rx_poll();
@@ -1046,6 +1058,7 @@ void main_loop(void)
 #endif
 
 #if (UI_LED_ENABLE)
+    app_ui_power_led_task();
     if (g_app_power_on)
     {
         app_ui_led_task();

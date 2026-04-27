@@ -1,5 +1,7 @@
 ## 通用控制 Service 协议说明（给 APP 开发）
 
+#### 设备名称 SincereSPNB
+
 ### 1. GATT 结构概览
 
 - **Service：Custom Control Service**
@@ -805,6 +807,14 @@ byte6 : status
 ```
 
 设备行为：清除FLASH中的高度和坐标信息
+
+#### 4.14 电池电量使用电池服务特帧读取
+
+Battery Service
+UUID:0000180F-0000-1000-8000-00805F9B34FB
+Battery Level
+UUID:00002A19-0000-1000-8000-00805F9B34FB
+
 
 ---
 

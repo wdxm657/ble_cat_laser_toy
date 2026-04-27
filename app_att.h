@@ -156,6 +156,7 @@ typedef enum
  */
 void my_gatt_init (void);
 
+void app_att_battery_update(u8 percent);
 
 
 #endif /* APP_ATT_H_ */

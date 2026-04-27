@@ -30,11 +30,22 @@
 #include "app_att.h"
 #include "app_ui.h"
 #include "app_ctrl.h"
+#include "app_adc_dbg.h"
 
 #define LED_BLINK_INTERVAL_US 500000
 
 static u32 g_led_blink_tick = 0;
 static u8  g_led_blink_on   = 0;
+
+static void app_ui_led_blink_update(void)
+{
+    u32 now = clock_time();
+    if (clock_time_exceed(g_led_blink_tick, LED_BLINK_INTERVAL_US))
+    {
+        g_led_blink_tick = now;
+        g_led_blink_on   = !g_led_blink_on;
+    }
+}
 
 static void app_ui_led_all_off(void)
 {
@@ -74,16 +85,24 @@ static void app_ui_led_set_white(u8 on)
 #endif
 }
 
+static void app_ui_power_led_set_green(u8 on)
+{
+#if (UI_LED_ENABLE)
+    gpio_write(GPIO_CHARGE_LED_GREEN, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+#endif
+}
+
+static void app_ui_power_led_set_red(u8 on)
+{
+#if (UI_LED_ENABLE)
+    gpio_write(GPIO_CHARGE_LED_RED, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+#endif
+}
+
 void app_ui_led_task(void)
 {
 #if (UI_LED_ENABLE)
-    u32 now = clock_time();
-
-    if (clock_time_exceed(g_led_blink_tick, LED_BLINK_INTERVAL_US))
-    {
-        g_led_blink_tick = now;
-        g_led_blink_on   = !g_led_blink_on;
-    }
+    app_ui_led_blink_update();
 
     if (app_ctrl_is_setting_mode())
     {
@@ -117,6 +136,33 @@ void app_ui_led_task(void)
     {
         app_ui_led_all_off();
         return;
+    }
+#endif
+}
+
+void app_ui_power_led_task(void)
+{
+#if (UI_LED_ENABLE)
+    app_ui_led_blink_update();
+
+    /* 电源状态灯独立于工作状态灯，不受电源开关影响 */
+    u8 charging    = app_adc_dbg_is_charging();
+    u8 bat_percent = app_adc_dbg_get_bat_percent();
+
+    if (charging)
+    {
+        app_ui_power_led_set_green(g_led_blink_on);
+        app_ui_power_led_set_red(0);
+    }
+    else if (bat_percent <= 20)
+    {
+        app_ui_power_led_set_red(g_led_blink_on);
+        app_ui_power_led_set_green(0);
+    }
+    else
+    {
+        app_ui_power_led_set_green(0);
+        app_ui_power_led_set_red(0);
     }
 #endif
 }

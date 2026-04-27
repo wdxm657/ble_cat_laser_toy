@@ -87,5 +87,6 @@ void app_ota_result(int result);
 void app_get_firmware_version(void);
 
 void app_ui_led_task(void);
+void app_ui_power_led_task(void);
 
 #endif /* APP_UI_H_ */
