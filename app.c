@@ -52,7 +52,7 @@ u32 latest_user_event_tick;
 #endif
 own_addr_type_t app_own_address_type = OWN_ADDRESS_PUBLIC;
 
-static u8 g_app_power_on = 0;
+static u8                            g_app_power_on              = 0;
 _attribute_data_retention_ static u8 s_bat_percent_last_reported = 0xFF;
 
 void app_set_power_state(u8 on)
@@ -596,6 +596,11 @@ _attribute_no_inline_ void user_init_normal(void)
     //////////////////////////// personal hardware Initialization  Begin //////////////////////////////////
     // USART initial for radar (NDMA + IRQ)
 #ifdef UI_LED_ENABLE
+    // 配置上拉输入
+    gpio_setup_up_down_resistor(CHARGE_STATE, PM_PIN_PULLUP_10K);
+    gpio_setup_up_down_resistor(CHARGE_STY, PM_PIN_PULLUP_10K);
+    // 常开充电开关
+    gpio_write(CHARGE_SWITCH, 1);
     // 常开NTC电压AD检测开关
     gpio_write(V_NTC_CON, 1);
     // 常开电池电压AD检测开关
@@ -610,7 +615,6 @@ _attribute_no_inline_ void user_init_normal(void)
 #endif
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_Init();
-    StepMotor_GimbalSetSpeedUs(1200);  // fastest speed limit
     // StepMotor_GimbalHome();
     StepMotor_GimbalResetStart();
 #endif

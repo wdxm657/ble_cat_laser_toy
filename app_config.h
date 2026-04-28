@@ -164,7 +164,7 @@ enum{
 	#define	GPIO_CHARGE_LED_RED 	GPIO_PB1
 	#define	V_BAT_CON		GPIO_PB3 // 控制电池电压AD检测开关 现在常开即可
 	#define	V_NTC_CON		GPIO_PC5 //控制NTC电压AD检测开关 现在常开即可
-	#define	GPIO_LED_WHITE	GPIO_PC7 // 激光指示灯
+	#define	GPIO_LED_WHITE	GPIO_PC6 // 激光指示灯
 	#define	LEIDA_SWITCH  	GPIO_PD7 // 雷达模块开关
 	#define PA0_FUNC				AS_GPIO
 	#define PA1_FUNC				AS_GPIO
@@ -176,7 +176,7 @@ enum{
 	#define PB1_FUNC				AS_GPIO
 	#define PB3_FUNC				AS_GPIO
 	#define PC5_FUNC				AS_GPIO
-	#define PC7_FUNC				AS_GPIO
+	#define PC6_FUNC				AS_GPIO
 	#define PD7_FUNC				AS_GPIO
 	#define	PA0_OUTPUT_ENABLE		1
 	#define	PA1_INPUT_ENABLE		1
@@ -188,7 +188,7 @@ enum{
 	#define PB1_OUTPUT_ENABLE       1
 	#define PB3_OUTPUT_ENABLE       1
 	#define PC5_OUTPUT_ENABLE       1
-	#define PC7_OUTPUT_ENABLE       1
+	#define PC6_OUTPUT_ENABLE       1
 	#define PD7_OUTPUT_ENABLE       1
 
 	#define	AD_BAT			GPIO_PB2 // 电池电压ADC采样
@@ -196,14 +196,14 @@ enum{
 
 #endif
 #if(UI_STEP_MOTOR_ENABLE)
-	#define	GPIO_STEP_MOTOR_1_A		GPIO_PB7
-	#define	GPIO_STEP_MOTOR_1_B		GPIO_PB6
-	#define	GPIO_STEP_MOTOR_1_C		GPIO_PB5
-	#define	GPIO_STEP_MOTOR_1_D		GPIO_PB4
-	#define	GPIO_STEP_MOTOR_2_A		GPIO_PC3
-	#define	GPIO_STEP_MOTOR_2_B		GPIO_PC2
-	#define	GPIO_STEP_MOTOR_2_C		GPIO_PC1
-	#define	GPIO_STEP_MOTOR_2_D		GPIO_PC0
+	#define	GPIO_STEP_MOTOR_1_A		GPIO_PC0
+	#define	GPIO_STEP_MOTOR_1_B		GPIO_PC1
+	#define	GPIO_STEP_MOTOR_1_C		GPIO_PC2
+	#define	GPIO_STEP_MOTOR_1_D		GPIO_PC3
+	#define	GPIO_STEP_MOTOR_2_A		GPIO_PB7
+	#define	GPIO_STEP_MOTOR_2_B		GPIO_PB6
+	#define	GPIO_STEP_MOTOR_2_C		GPIO_PB5
+	#define	GPIO_STEP_MOTOR_2_D		GPIO_PB4
 #endif
 /**
  *  @brief  Battery_check Configuration
