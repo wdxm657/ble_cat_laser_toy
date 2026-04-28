@@ -160,8 +160,8 @@ enum{
 	#define	GPIO_LED_BLUE  	GPIO_PA5
 	#define	GPIO_LED_GREEN	GPIO_PA7
 	#define	GPIO_LED_RED	GPIO_PA6
-	#define	GPIO_CHARGE_LED_GREEN	GPIO_PB0
-	#define	GPIO_CHARGE_LED_RED 	GPIO_PB1
+	#define	GPIO_CHARGE_LED_GREEN	GPIO_PB1
+	#define	GPIO_CHARGE_LED_RED 	GPIO_PB0
 	#define	V_BAT_CON		GPIO_PB3 // 控制电池电压AD检测开关 现在常开即可
 	#define	V_NTC_CON		GPIO_PC5 //控制NTC电压AD检测开关 现在常开即可
 	#define	GPIO_LED_WHITE	GPIO_PC6 // 激光指示灯
