@@ -434,15 +434,15 @@ void app_adc_dbg_poll(void)
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
 
-        BLE_LOG_D("bat=%d bat_pc=%d is_char=%d ntc=%d NTC_R=%d0(ohm) T=%dC n=%d bat_raw=%d",
-                  mv_bat_avg,
-                  bat_percent,
-                  is_charging,
-                  mv_ntc_avg,
-                  ntc_res_10ohm,
-                  ntc_temp_c,
-                  s_sample_cnt,
-                  bat_percent_raw);
+        // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d ntc=%d NTC_R=%d0(ohm) T=%dC n=%d bat_raw=%d",
+        //           mv_bat_avg,
+        //           bat_percent,
+        //           is_charging,
+        //           mv_ntc_avg,
+        //           ntc_res_10ohm,
+        //           ntc_temp_c,
+        //           s_sample_cnt,
+        //           bat_percent_raw);
 
         s_mv_bat_sum      = 0;
         s_mv_ntc_sum      = 0;

@@ -106,6 +106,8 @@ void app_ctrl_motor_dir_task(void);
  * @param[in] len  - data length
  */
 void app_ctrl_onRx(u8 *data, u16 len);
+void app_ctrl_on_ble_connected(void);
+void app_ctrl_notify_play_record_changed(void);
 
 /**
  * @brief   Send one control frame to APP via CTRL_TX characteristic

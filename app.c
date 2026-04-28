@@ -174,6 +174,9 @@ void app_switch_to_undirected_adv(u8 e, u8 *p, int n)
  */
 void task_connect(u8 e, u8 *p, int n)
 {
+    (void)e;
+    (void)p;
+    (void)n;
     bls_l2cap_requestConnParamUpdate(CONN_INTERVAL_10MS, CONN_INTERVAL_10MS, 99, CONN_TIMEOUT_4S);  // 1 S
 #if (PM_DEEPSLEEP_ENABLE)
     latest_user_event_tick     = clock_time();
@@ -183,6 +186,7 @@ void task_connect(u8 e, u8 *p, int n)
     LOG_D("[APP][CONN] Connect request");
     gpio_write(GPIO_LED_RED, LED_ON_LEVEL);
 #endif
+    app_ctrl_on_ble_connected();
 }
 /**
  * @brief      callback function of LinkLayer Event "BLT_EV_FLAG_TERMINATE"

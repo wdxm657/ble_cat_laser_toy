@@ -484,7 +484,7 @@ void StepMotor_GimbalResetTask(void)
 
     case MOTOR_RESET_PAN_RIGHT:
         LOG_D("[MOTOR] reset pan right to -100");
-        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-90), 1);
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-97), 1);
         g_reset_state = MOTOR_RESET_WAIT_PAN_RIGHT;
         break;
 

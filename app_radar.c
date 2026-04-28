@@ -544,6 +544,11 @@ static void radar_play_record_push(u32 start_sec, u32 end_sec)
     }
 }
 
+static inline u8 radar_play_record_is_complete(u32 end_sec)
+{
+    return (end_sec != RADAR_PLAY_END_ONGOING) ? 1 : 0;
+}
+
 static void radar_play_record_start(void)
 {
     if (!g_radar_time_valid)
@@ -576,6 +581,7 @@ static void radar_play_record_end(void)
     g_radar_play_end_sec[(g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - 1) % RADAR_TIME_MAX_RECORDS] = g_radar_time_sec;
     g_radar_play_state                                                                                     = RADAR_PLAY_STATE_IDLE;
     radar_play_records_save_to_flash();
+    app_ctrl_notify_play_record_changed();
 }
 
 void app_radar_set_time_from_epoch(u32 epoch_sec, s8 tz_q15)
@@ -639,6 +645,97 @@ int app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
     }
 
     return count;
+}
+
+int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
+{
+    if (!out_buf || !tz_buf || max_records == 0)
+    {
+        return 0;
+    }
+
+    u8 count = 0;
+    u8 idx   = g_radar_play_record_next;
+    for (u8 i = 0; i < g_radar_play_record_count && count < max_records; i++)
+    {
+        if (idx == 0)
+        {
+            idx = RADAR_TIME_MAX_RECORDS;
+        }
+        idx--;
+
+        if (!radar_play_record_is_complete(g_radar_play_end_sec[idx]))
+        {
+            continue;
+        }
+
+        out_buf[count * 2]     = g_radar_play_start_sec[idx];
+        out_buf[count * 2 + 1] = g_radar_play_end_sec[idx];
+        tz_buf[count]          = (u8)g_radar_play_tz_q15[idx];
+        count++;
+    }
+
+    return count;
+}
+
+u8 app_radar_has_complete_play_records(void)
+{
+    u8 idx = g_radar_play_record_next;
+    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    {
+        if (idx == 0)
+        {
+            idx = RADAR_TIME_MAX_RECORDS;
+        }
+        idx--;
+
+        if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+void app_radar_clear_complete_play_records(void)
+{
+    u32 start_tmp[RADAR_TIME_MAX_RECORDS] = {0};
+    u32 end_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
+    s8  tz_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u8  keep_count                        = 0;
+
+    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
+    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    {
+        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
+        if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
+        {
+            continue;
+        }
+
+        start_tmp[keep_count] = g_radar_play_start_sec[idx];
+        end_tmp[keep_count]   = g_radar_play_end_sec[idx];
+        tz_tmp[keep_count]    = g_radar_play_tz_q15[idx];
+        keep_count++;
+    }
+
+    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
+    {
+        g_radar_play_start_sec[i] = 0;
+        g_radar_play_end_sec[i]   = 0;
+        g_radar_play_tz_q15[i]    = 0;
+    }
+    for (u8 i = 0; i < keep_count; i++)
+    {
+        g_radar_play_start_sec[i] = start_tmp[i];
+        g_radar_play_end_sec[i]   = end_tmp[i];
+        g_radar_play_tz_q15[i]    = tz_tmp[i];
+    }
+
+    g_radar_play_record_count = keep_count;
+    g_radar_play_record_next  = keep_count % RADAR_TIME_MAX_RECORDS;
+    radar_play_records_save_to_flash();
 }
 
 u8 app_radar_is_boundary_set(void)
@@ -856,6 +953,7 @@ void RadarSessionStop(u8 reset)
     g_radar_seq_step_interval_us  = RADAR_GIMBAL_STEP_US_SLOW;
     g_radar_seq_pending_step_us   = RADAR_GIMBAL_STEP_US_SLOW;
     RadarMotionCacheReset();
+    radar_play_record_end();
     (void)reset;
 }
 

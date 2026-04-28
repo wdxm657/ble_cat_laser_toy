@@ -60,6 +60,52 @@ static app_ctrl_cfg_t g_ctrlCfg = {
 };
 
 #if (UI_RADAR_ENABLE)
+static void app_ctrl_try_upload_play_records(void)
+{
+    if (BLS_CONN_HANDLE == 0xFFFF)
+    {
+        return;
+    }
+
+    if (!app_radar_has_complete_play_records())
+    {
+        return;
+    }
+
+    u32 records[RADAR_TIME_MAX_RECORDS * 2] = {0};
+    u8  timezones[RADAR_TIME_MAX_RECORDS]   = {0};
+    int count                               = app_radar_get_complete_play_records(records, timezones, RADAR_TIME_MAX_RECORDS);
+    if (count <= 0)
+    {
+        return;
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        u32 start_sec = records[i * 2];
+        u32 end_sec   = records[i * 2 + 1];
+
+        // payload: [total][idx][start_sec(LE4)][end_sec(LE4)][tz]
+        u8 evt[11] = {0};
+        evt[0]     = (u8)count;
+        evt[1]     = (u8)i;
+        evt[2]     = (u8)(start_sec & 0xFF);
+        evt[3]     = (u8)((start_sec >> 8) & 0xFF);
+        evt[4]     = (u8)((start_sec >> 16) & 0xFF);
+        evt[5]     = (u8)((start_sec >> 24) & 0xFF);
+        evt[6]     = (u8)(end_sec & 0xFF);
+        evt[7]     = (u8)((end_sec >> 8) & 0xFF);
+        evt[8]     = (u8)((end_sec >> 16) & 0xFF);
+        evt[9]     = (u8)((end_sec >> 24) & 0xFF);
+        evt[10]    = timezones[i];
+        app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
+    }
+
+    // 等待 APP ACK 后清理；后续在连接事件或记录变化时再触发上传。
+}
+#endif
+
+#if (UI_RADAR_ENABLE)
 #define RADAR_BOUNDARY_POINT_COUNT 4
 #define RADAR_BOUNDARY_MIN_EDGE_MM 1000
 #define RADAR_BOUNDARY_MIN_DIAG_MM 1000
@@ -1089,56 +1135,24 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
 static int app_ctrl_handle_play_record_get(u8 seq, u8 *payload, u16 len)
 {
 #if (UI_RADAR_ENABLE)
-    (void)payload;
-    if (len < 1)
+    if (len != 0 && len != 1)
     {
         u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
         app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
         return -1;
     }
 
-    u8 max_req = payload[0];
-    if (max_req > RADAR_TIME_MAX_RECORDS)
+    // APP 通知已成功接收当前完整记录批次，设备清理已完成记录（保留进行中的记录）
+    (void)payload;
+    app_radar_clear_complete_play_records();
+
+    u8 remain_complete = app_radar_has_complete_play_records() ? 1 : 0;
+    u8 rsp[2]          = {CTRL_STATUS_OK, remain_complete};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
+    if (remain_complete)
     {
-        max_req = RADAR_TIME_MAX_RECORDS;
+        app_ctrl_try_upload_play_records();
     }
-
-    u32 records[RADAR_TIME_MAX_RECORDS * 2] = {0};
-    u8  timezones[RADAR_TIME_MAX_RECORDS]   = {0};
-    int count                               = app_radar_get_play_records(records, timezones, max_req);
-    if (count <= 0)
-    {
-        u8 rsp[2] = {CTRL_STATUS_OK, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
-        return 0;
-    }
-
-    // u8 payload_len = (u8)(1 + count * 9);
-    // if (payload_len > (CTRL_TX_MAX_LEN - 6))
-    // {
-    //     payload_len = (CTRL_TX_MAX_LEN - 6);
-    // }
-
-    u8 rsp[12] = {0};
-    rsp[0]     = CTRL_STATUS_OK;
-    rsp[1]     = count;
-
-    for (int i = 0; i < count; i++)
-    {
-        rsp[2]        = (u8)i;
-        u32 start_sec = records[i * 2];
-        u32 end_sec   = records[i * 2 + 1];
-        rsp[3]        = (u8)(start_sec & 0xFF);
-        rsp[4]        = (u8)((start_sec >> 8) & 0xFF);
-        rsp[5]        = (u8)((start_sec >> 16) & 0xFF);
-        rsp[6]        = (u8)((start_sec >> 24) & 0xFF);
-        rsp[7]        = (u8)(end_sec & 0xFF);
-        rsp[8]        = (u8)((end_sec >> 8) & 0xFF);
-        rsp[9]        = (u8)((end_sec >> 16) & 0xFF);
-        rsp[10]       = (u8)((end_sec >> 24) & 0xFF);
-        rsp[11]       = timezones[i];
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
-    };
     return 0;
 #else
     (void)payload;
@@ -1562,6 +1576,20 @@ void app_ctrl_init(void)
 #endif
 }
 
+void app_ctrl_on_ble_connected(void)
+{
+#if (UI_RADAR_ENABLE)
+    app_ctrl_try_upload_play_records();
+#endif
+}
+
+void app_ctrl_notify_play_record_changed(void)
+{
+#if (UI_RADAR_ENABLE)
+    app_ctrl_try_upload_play_records();
+#endif
+}
+
 void app_ctrl_onRx(u8 *data, u16 len)
 {
     if (len < 6)
@@ -1614,6 +1642,14 @@ void app_ctrl_onRx(u8 *data, u16 len)
     }
 
     u8 *payload = &data[6];
+
+#if (UI_RADAR_ENABLE)
+    if (cmdId != CTRL_CMD_PLAY_RECORD_GET)
+    {
+        // 收到任意业务命令说明链路可用，补一次未 ACK 的完整逗宠记录上报。
+        app_ctrl_try_upload_play_records();
+    }
+#endif
 
     switch (cmdId)
     {

@@ -1,6 +1,6 @@
 ## 通用控制 Service 协议说明（给 APP 开发）
 
-#### 设备名称 SincereSPNB
+#### 设备名称 SincereSPNC
 
 ### 1. GATT 结构概览
 
@@ -220,7 +220,7 @@ byte6 : 0x01           // evtId=到达限位
 byte7 : direction
 ```
 
-2. 边界点设置模式下触发“越界保护”时：
+1. 边界点设置模式下触发“越界保护”时：
 
 ```
 byte0 : 0x01
@@ -235,7 +235,7 @@ byte8 : pointIndex     // 当前正在设置的点
 byte9 : limitPointIndex// 约束参考点
 ```
 
-3. **仅边界标定模式**下，俯仰“上”达到当前安装高度对应的地面投射最大距离（固件按 6 m 水平距离推算的俯仰上限）时：
+1. **仅边界标定模式**下，俯仰“上”达到当前安装高度对应的地面投射最大距离（固件按 6 m 水平距离推算的俯仰上限）时：
 
 ```
 byte0 : 0x01
@@ -401,42 +401,68 @@ byte6 : status
 byte7 : 0x00
 ```
 
-#### 4.8 逗宠记录读取（PLAY_RECORD_GET，CMD = 0x33）
+#### 4.8 逗宠记录主动上报与 ACK（PLAY_RECORD_GET，CMD = 0x33）
 
-用途：APP 读取设备端缓存的自动逗宠记录（最多 16 条）。每条记录包含开始/结束时间的 Unix 时间戳（秒）。
+用途：设备主动上报“完整逗宠记录”，APP 成功接收后发送 ACK 通知设备清理记录。  
+说明：完整记录指同时有 `start_sec` 和 `end_sec`；仅有开始时间（`end_sec = 0xFFFFFFFF`）的进行中记录不会上报。
 
-**请求帧（APP → 设备）**
+**触发时机（设备 → APP）**
+
+- 每次新增一条完整记录（会话结束）时，若 BLE 已连接，主动上报未 ACK 的完整记录。
+- BLE 首次连接成功或重连成功后，若存在未 ACK 的完整记录，主动补发。
+
+**主动上报帧（设备 → APP，EVENT）**
+
+```
+byte0 : 0x01
+byte1 : 0x03           // msgType = EVENT
+byte2 : 0x33           // cmdId = PLAY_RECORD_GET
+byte3 : seq
+byte4 : 0x0B           // payloadLen = 11
+byte5 : 0x00
+byte6 : total          // 本次批次总条数
+byte7 : index          // 当前条目序号（0..total-1）
+byte8 : start_sec_L0
+byte9 : start_sec_L1
+byte10: start_sec_L2
+byte11: start_sec_L3
+byte12: end_sec_L0
+byte13: end_sec_L1
+byte14: end_sec_L2
+byte15: end_sec_L3
+byte16: tz_q15
+```
+
+**ACK 请求帧（APP → 设备，CMD）**
 
 ```
 byte0 : 0x01
 byte1 : 0x01           // msgType = CMD
 byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
-byte4 : 0x01           // payloadLen = 1
+byte4 : 0x00           // payloadLen = 0（推荐）
 byte5 : 0x00
-byte6 : maxCount       // 1~16
 ```
 
-**示例**：
+兼容：固件也接受 `payloadLen = 1` 的 ACK 帧。
 
-```
-01 01 33 01 01 00 10
-```
-
-**响应帧（设备 → APP）**
+**ACK 响应帧（设备 → APP，RSP）**
 
 ```
 byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
 byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
-byte4 : payloadLen L
-byte5 : payloadLen H
-byte6 : status
-byte7 : count
-byte8 : index
-byte9.. : records      // 每条 9 字节：start_sec(u32 LE) + end_sec(u32 LE) + tz
+byte4 : 0x02           // payloadLen = 2
+byte5 : 0x00
+byte6 : status         // 0x00=成功，其它为错误码
+byte7 : remain_complete// 0:无剩余完整记录, 1:仍有完整记录
 ```
+
+**清理策略**
+
+- 设备仅在收到有效 ACK 后清理完整记录，并持久化到 flash。
+- 进行中记录（仅开始时间）始终保留，不会因 ACK 被清理。
 
 #### 4.9 读取 SN（UID_GET，CMD = 0x34）
 
@@ -775,6 +801,7 @@ APP 侧发送完整长文本的推荐流程：
 4. 对于每个 `chunkIndex`（0..chunkTotal-1）：
 
 - 
+
 - 构造请求帧，填入对应片段的数据；
 - 写入 Ctrl RX；
 - 等待 Ctrl TX 返回的响应，确认该片 `status == 0x00`；
@@ -815,7 +842,6 @@ UUID:0000180F-0000-1000-8000-00805F9B34FB
 Battery Level
 UUID:00002A19-0000-1000-8000-00805F9B34FB
 
-
 ---
 
 ### 5. 长数据与 APP 侧处理建议
@@ -823,12 +849,14 @@ UUID:00002A19-0000-1000-8000-00805F9B34FB
 1. **单帧最大长度**
 
 - 
+
 - 当前实现按默认 MTU=23 设计：`6 + payloadLen ≤ 20`；
 - 如果 APP 写入或设备试图发送超过 20 字节的帧，设备侧会返回长度错误（不会静默截断）。
 
 1. **需要发送超过 20 字节的业务数据时**
 
 - 
+
 - 必须在应用层做**分片协议设计**，例如：
 - 自定义一个新的命令（例如 `DATA_CHUNK`，cmdId 由双方约定），payload 中增加：
 - `chunkIndex`（当前分片序号）、`chunkTotal`（总分片数）、`offset`、`chunkLen` 等字段；
@@ -846,12 +874,14 @@ UUID:00002A19-0000-1000-8000-00805F9B34FB
 4. 每次发送命令时：
 
 - 
+
 - 维护一个本地 `seq`（0~255 循环）；
 - 按「帧格式 + 命令定义」组装数据后，写入 `Ctrl RX`；
 
 1. 在 `Ctrl TX` 的 Notify 回调中：
 
 - 
+
 - 解析 `version / msgType / cmdId / seq / payloadLen`；
 - 校验 `version == 0x01`，`msgType == 0x02`；
 - 根据 `cmdId + seq` 找到对应的请求，读取 `payload[0]` 判断是否成功，然后按各命令的 payload 协议解析剩余内容。
