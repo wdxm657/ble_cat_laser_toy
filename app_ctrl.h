@@ -108,6 +108,7 @@ void app_ctrl_motor_dir_task(void);
 void app_ctrl_onRx(u8 *data, u16 len);
 void app_ctrl_on_ble_connected(void);
 void app_ctrl_notify_play_record_changed(void);
+void app_ctrl_task(void);
 
 /**
  * @brief   Send one control frame to APP via CTRL_TX characteristic
@@ -160,6 +161,7 @@ void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw
 void app_ctrl_radar_dbg_send_pred_sta(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm);
 void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm);
 void app_ctrl_radar_dbg_send_boundary_quad_all(void);
+void app_ctrl_status_notify_task(void);
 #endif
 
 u8 app_ctrl_is_setting_mode(void);

@@ -187,6 +187,7 @@ void task_connect(u8 e, u8 *p, int n)
     gpio_write(GPIO_LED_RED, LED_ON_LEVEL);
 #endif
     app_ctrl_on_ble_connected();
+    BLE_LOG_D("[APP][CONN] Connect request");
 }
 /**
  * @brief      callback function of LinkLayer Event "BLT_EV_FLAG_TERMINATE"
@@ -980,6 +981,7 @@ void main_loop(void)
     }
 #endif
     app_adc_dbg_poll();
+    app_ctrl_status_notify_task();
     {
         u8 bat_percent_now = app_adc_dbg_get_bat_percent();
         if (bat_percent_now != s_bat_percent_last_reported)
@@ -991,6 +993,7 @@ void main_loop(void)
 
 #ifdef UI_RADAR_ENABLE
     app_radar_debug_rx_poll();
+    app_ctrl_task();
     if (!g_time_tick_last)
     {
         g_time_tick_last = clock_time();

@@ -60,9 +60,40 @@ static app_ctrl_cfg_t g_ctrlCfg = {
 };
 
 #if (UI_RADAR_ENABLE)
+#define PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US 2000000u
+
+static u8  g_play_record_delay_active  = 0;
+static u32 g_play_record_delay_start_tick = 0;
+
+static u8 app_ctrl_play_record_upload_allowed(void)
+{
+    if (!g_play_record_delay_active)
+    {
+        return 1;
+    }
+
+    if (BLS_CONN_HANDLE == 0xFFFF)
+    {
+        return 0;
+    }
+
+    if (!clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US))
+    {
+        return 0;
+    }
+
+    g_play_record_delay_active = 0;
+    BLE_LOG_D("play record upload delay done");
+    return 1;
+}
+
 static void app_ctrl_try_upload_play_records(void)
 {
     if (BLS_CONN_HANDLE == 0xFFFF)
+    {
+        return;
+    }
+    if (!app_ctrl_play_record_upload_allowed())
     {
         return;
     }
@@ -86,18 +117,20 @@ static void app_ctrl_try_upload_play_records(void)
         u32 end_sec   = records[i * 2 + 1];
 
         // payload: [total][idx][start_sec(LE4)][end_sec(LE4)][tz]
-        u8 evt[11] = {0};
-        evt[0]     = (u8)count;
-        evt[1]     = (u8)i;
-        evt[2]     = (u8)(start_sec & 0xFF);
-        evt[3]     = (u8)((start_sec >> 8) & 0xFF);
-        evt[4]     = (u8)((start_sec >> 16) & 0xFF);
-        evt[5]     = (u8)((start_sec >> 24) & 0xFF);
-        evt[6]     = (u8)(end_sec & 0xFF);
-        evt[7]     = (u8)((end_sec >> 8) & 0xFF);
-        evt[8]     = (u8)((end_sec >> 16) & 0xFF);
-        evt[9]     = (u8)((end_sec >> 24) & 0xFF);
-        evt[10]    = timezones[i];
+        u8 evt[12] = {0};
+        evt[0]     = 0;
+        evt[1]     = (u8)count;
+        evt[2]     = (u8)i;
+        evt[3]     = (u8)(start_sec & 0xFF);
+        evt[4]     = (u8)((start_sec >> 8) & 0xFF);
+        evt[5]     = (u8)((start_sec >> 16) & 0xFF);
+        evt[6]     = (u8)((start_sec >> 24) & 0xFF);
+        evt[7]     = (u8)(end_sec & 0xFF);
+        evt[8]     = (u8)((end_sec >> 8) & 0xFF);
+        evt[9]     = (u8)((end_sec >> 16) & 0xFF);
+        evt[10]     = (u8)((end_sec >> 24) & 0xFF);
+        evt[11]    = timezones[i];
+        BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d", i, start_sec, end_sec, timezones[i]);
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
     }
 
@@ -257,6 +290,36 @@ static u8 app_ctrl_radar_boundary_commit(u8 *errDetail, u8 *shortPairMask)
     return 1;
 }
 
+static u8 g_last_charge_state = 0xFF;
+void      app_ctrl_status_notify_task(void)
+{
+#if (UI_GEN_MOTOR_ENABLE) || (UI_RADAR_ENABLE)
+    u8 charging = 0;
+    u8 changed  = 0;
+
+    charging    = app_adc_dbg_is_charging() ? 1 : 0;
+    u8 power_on = app_get_power_state() ? 1 : 0;
+    /* 首次仅建立基线，不上报 */
+    if (g_last_charge_state == 0xFF)
+    {
+        g_last_charge_state = charging;
+        return;
+    }
+
+    if (charging != g_last_charge_state)
+    {
+        g_last_charge_state = charging;
+        changed             = 1;
+    }
+    if (changed)
+    {
+        // BLE_LOG_D("app_ctrl_status_notify_task: charging: %d, power_on: %d", charging, power_on);
+        u8 pl[3] = {CTRL_STATUS_OK, power_on, charging};
+        app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
+    }
+#endif
+}
+
 #define APP_CTRL_BOUNDARY_MOVE_SPEED_US        1200
 #define APP_CTRL_BOUNDARY_MOVE_TOLERANCE_DEG10 5
 #define APP_CTRL_BOUNDARY_PAN_GUARD_MM         300
@@ -389,6 +452,7 @@ int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen)
         // tl_printf("\r\n");
     }
 #endif
+    sleep_us(10000);
     if (BLS_CONN_HANDLE != 0xFFFF)
     {
         blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_READ_DP_H, g_ctrlTxBuf, totalLen);
@@ -1118,7 +1182,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
         return -1;
     }
 
-    u8 rsp[5] = {CTRL_STATUS_OK, 0, 0, 0, 0};
+    u8 rsp[6] = {CTRL_STATUS_OK, 0, 0, 0, 0, 0};
     rsp[1]    = app_get_power_state() ? 1 : 0;
 #if (UI_RADAR_ENABLE)
     rsp[2]        = app_radar_is_boundary_set() ? 1 : 0;
@@ -1126,6 +1190,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     app_radar_get_install_height_mm(&height_mm);
     rsp[3] = app_radar_is_install_height_set() ? (U16_LO((s16)height_mm)) : 0;
     rsp[4] = app_radar_is_install_height_set() ? (U16_HI((s16)height_mm)) : 0;
+    rsp[5] = app_adc_dbg_is_charging() ? 1 : 0;
 #endif
 
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_STATUS_GET, seq, rsp, sizeof(rsp));
@@ -1579,14 +1644,28 @@ void app_ctrl_init(void)
 void app_ctrl_on_ble_connected(void)
 {
 #if (UI_RADAR_ENABLE)
-    app_ctrl_try_upload_play_records();
+    BLE_LOG_D("app_ctrl_on_ble_connected");
+    g_play_record_delay_active     = 1;
+    g_play_record_delay_start_tick = clock_time();
 #endif
 }
 
 void app_ctrl_notify_play_record_changed(void)
 {
 #if (UI_RADAR_ENABLE)
+    BLE_LOG_D("app_ctrl_notify_play_record_changed");
     app_ctrl_try_upload_play_records();
+#endif
+}
+
+void app_ctrl_task(void)
+{
+#if (UI_RADAR_ENABLE)
+    if (g_play_record_delay_active && BLS_CONN_HANDLE != 0xFFFF &&
+        clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US))
+    {
+        app_ctrl_try_upload_play_records();
+    }
 #endif
 }
 
@@ -1642,14 +1721,6 @@ void app_ctrl_onRx(u8 *data, u16 len)
     }
 
     u8 *payload = &data[6];
-
-#if (UI_RADAR_ENABLE)
-    if (cmdId != CTRL_CMD_PLAY_RECORD_GET)
-    {
-        // 收到任意业务命令说明链路可用，补一次未 ACK 的完整逗宠记录上报。
-        app_ctrl_try_upload_play_records();
-    }
-#endif
 
     switch (cmdId)
     {

@@ -21,7 +21,7 @@
 #define RADAR_RX_IRQ_DEBUG 0
 #endif
 
-#define RADAR_INSTALL_HEIGHT_DEFAULT_MM (2.5f * 1000.0f)
+#define RADAR_INSTALL_HEIGHT_DEFAULT_MM (1.5f * 1000.0f)
 #define RADAR_FRAME_LEN                 30
 #define SAMPLE_COUNT                    1
 #define STATIONARY_DXY_THRESHOLD_MM     5
@@ -562,7 +562,7 @@ static void radar_play_record_start(void)
         g_radar_play_active_start = g_radar_time_sec;
         radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
         radar_play_records_save_to_flash();
-        LOG_D("radar_play_record_push");
+        BLE_LOG_D("radar_play_record_push");
     }
     else
     {
@@ -576,7 +576,7 @@ static void radar_play_record_end(void)
     {
         return;
     }
-    LOG_D("radar_play_record_end");
+    BLE_LOG_D("radar_play_record_end");
 
     g_radar_play_end_sec[(g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - 1) % RADAR_TIME_MAX_RECORDS] = g_radar_time_sec;
     g_radar_play_state                                                                                     = RADAR_PLAY_STATE_IDLE;
@@ -2204,13 +2204,13 @@ void app_radar_task_power_schedule(void)
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_REST)
         {
             radar_play_record_end();
-            LOG_D("radar rest mode");
+            BLE_LOG_D("radar rest mode");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
         }
         app_radar_power_switch(0);
         if (clock_time_exceed(g_radar_rest_start_tick, RADAR_REST_EXIT_US))
         {
-            LOG_D("radar rest mode exit");
+            BLE_LOG_D("radar rest mode exit");
             g_radar_rest_mode         = 0;
             g_radar_work_acc_tick     = now_tick;
             g_radar_work_acc_sec      = 0;
@@ -2251,7 +2251,7 @@ void app_radar_task_power_schedule(void)
     {
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
         {
-            LOG_D("radar hold on mode");
+            BLE_LOG_D("radar hold on mode");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_HOLD_ON;
             app_radar_power_switch(1);
             u32 now_tick = clock_time();
@@ -2261,7 +2261,7 @@ void app_radar_task_power_schedule(void)
         if (!app_radar_has_recent_motion(RADAR_HOLD_ON_NO_MOTION_US))
         {
             radar_play_record_end();
-            LOG_D("radar hold on mode exit");
+            BLE_LOG_D("radar hold on mode exit");
             g_radar_hold_on_mode      = 0;
             g_radar_low_freq_phase_on = 0;
             g_radar_phase_tick        = now_tick;
@@ -2279,7 +2279,7 @@ void app_radar_task_power_schedule(void)
     {
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_ON)
         {
-            LOG_D("radar low freq phase on");
+            BLE_LOG_D("radar low freq phase on");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_ON;
         }
         app_radar_power_switch(1);
@@ -2291,7 +2291,7 @@ void app_radar_task_power_schedule(void)
 
         if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_ON_US))
         {
-            LOG_D("radar low freq phase on exit");
+            BLE_LOG_D("radar low freq phase on exit");
             g_radar_low_freq_phase_on = 0;
             g_radar_phase_tick        = now_tick;
             app_radar_power_switch(0);
@@ -2301,13 +2301,13 @@ void app_radar_task_power_schedule(void)
     {
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_OFF)
         {
-            LOG_D("radar low freq phase off");
+            BLE_LOG_D("radar low freq phase off");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_OFF;
         }
         app_radar_power_switch(0);
         if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_OFF_US))
         {
-            LOG_D("radar low freq phase off exit");
+            BLE_LOG_D("radar low freq phase off exit");
             g_radar_low_freq_phase_on = 1;
             g_radar_phase_tick        = now_tick;
             app_radar_power_switch(1);
