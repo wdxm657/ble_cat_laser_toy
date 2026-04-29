@@ -972,6 +972,7 @@ u8 app_radar_is_working_mode(void)
 static void RadarSessionOnMotion(u32 now_tick)
 {
     g_radar_last_motion_tick = now_tick;
+    g_radar_hold_on_mode     = 1;
     radar_play_record_start();
     gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
 }
@@ -2212,19 +2213,20 @@ void app_radar_task_power_schedule(void)
         {
             radar_play_record_end();
             BLE_LOG_D("radar rest mode");
-            g_radar_working_mode        = 0;
-            g_radar_rest_mode           = 1;
+            g_radar_working_mode         = 0;
+            g_radar_rest_mode            = 1;
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
         }
         app_radar_power_switch(0);
         if (clock_time_exceed(g_radar_rest_start_tick, RADAR_REST_EXIT_US))
         {
             BLE_LOG_D("radar rest mode exit");
-            g_radar_rest_mode         = 0;
-            g_radar_work_acc_tick     = now_tick;
-            g_radar_work_acc_sec      = 0;
-            g_radar_phase_tick        = now_tick;
-            g_radar_low_freq_phase_on = 1;
+            g_radar_working_mode  = 1;
+            g_radar_rest_mode     = 0;
+            g_radar_work_acc_tick = now_tick;
+            g_radar_work_acc_sec  = 0;
+            g_radar_phase_tick    = now_tick;
+            g_radar_hold_on_mode  = 1;
             app_radar_power_switch(1);
         }
         return;
@@ -2261,8 +2263,8 @@ void app_radar_task_power_schedule(void)
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
         {
             BLE_LOG_D("radar hold on mode");
-            g_radar_working_mode        = 1;
-            g_radar_rest_mode           = 0;
+            g_radar_working_mode         = 1;
+            g_radar_rest_mode            = 0;
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_HOLD_ON;
             app_radar_power_switch(1);
             u32 now_tick = clock_time();

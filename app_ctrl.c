@@ -326,7 +326,7 @@ static void app_ctrl_calc_exclusive_mode_flags(u8 *working_mode, u8 *resting_mod
     *setting_mode = setting;
 }
 
-void      app_ctrl_status_notify_task(void)
+void app_ctrl_status_notify_task(void)
 {
 #if (UI_GEN_MOTOR_ENABLE) || (UI_RADAR_ENABLE)
     u8 changed = 0;
@@ -374,7 +374,7 @@ void      app_ctrl_status_notify_task(void)
     }
     if (changed)
     {
-        // BLE_LOG_D("app_ctrl_status_notify_task: charging: %d, power_on: %d", charging, power_on);
+        BLE_LOG_D("charging: %d, power_on: %d, setting_mode: %d, working_mode: %d, resting_mode: %d", charging, power_on, setting_mode, working_mode, resting_mode);
         u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
     }
