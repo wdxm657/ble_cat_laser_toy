@@ -333,7 +333,7 @@ byte7 : on             // 回显 0x00/0x01
 
 #### 4.6 设备状态查询（STATUS_GET，CMD = 0x13）
 
-用途：获取设备开关机、逗宠区域是否设置、安装高度是否设置。
+用途：获取设备开关机、逗宠区域是否设置、安装高度、充电状态以及模式状态（设置中/工作中/休息中）。
 
 **请求帧（APP → 设备）**
 
@@ -353,13 +353,39 @@ byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
 byte2 : 0x13           // cmdId = STATUS_GET
 byte3 : seq
-byte4 : 0x04           // payloadLen = 4
+byte4 : 0x09           // payloadLen = 9
 byte5 : 0x00
 byte6 : status
 byte7 : power_on       // 0x00=关, 0x01=开
 byte8 : play_zone_set  // 0x00=未设置, 0x01=已设置
 byte9 : height_lo      // 高度 低位
 byte10 : height_hi     // 高度 高位
+byte11 : charging      // 充电状态
+byte12 : setting_mode  // 设置中：0x00/0x01
+byte13 : working_mode  // 工作中：0x00/0x01
+byte14 : resting_mode  // 休息中：0x00/0x01
+```
+
+`setting_mode`、`working_mode`、`resting_mode` 三者互斥，任意时刻最多只有一个为 `1`。
+
+**事件帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x03           // msgType = EVENT
+byte2 : 0x13           // cmdId = STATUS_GET
+byte3 : seq
+byte4 : 0x09           // payloadLen = 9
+byte5 : 0x00
+byte6 : status
+byte7 : power_on       // 0x00=关, 0x01=开
+byte8 : play_zone_set  // 0x00=未设置, 0x01=已设置
+byte9 : height_lo      // 高度 低位
+byte10 : height_hi     // 高度 高位
+byte11 : charging      // 充电状态
+byte12 : setting_mode  // 设置中：0x00/0x01
+byte13 : working_mode  // 工作中：0x00/0x01
+byte14 : resting_mode  // 休息中：0x00/0x01
 ```
 
 #### 4.7 设置设备时间（TIME_SET，CMD = 0x32）

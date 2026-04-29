@@ -62,7 +62,7 @@ static app_ctrl_cfg_t g_ctrlCfg = {
 #if (UI_RADAR_ENABLE)
 #define PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US 2000000u
 
-static u8  g_play_record_delay_active  = 0;
+static u8  g_play_record_delay_active     = 0;
 static u32 g_play_record_delay_start_tick = 0;
 
 static u8 app_ctrl_play_record_upload_allowed(void)
@@ -128,7 +128,7 @@ static void app_ctrl_try_upload_play_records(void)
         evt[7]     = (u8)(end_sec & 0xFF);
         evt[8]     = (u8)((end_sec >> 8) & 0xFF);
         evt[9]     = (u8)((end_sec >> 16) & 0xFF);
-        evt[10]     = (u8)((end_sec >> 24) & 0xFF);
+        evt[10]    = (u8)((end_sec >> 24) & 0xFF);
         evt[11]    = timezones[i];
         BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d", i, start_sec, end_sec, timezones[i]);
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
@@ -290,19 +290,65 @@ static u8 app_ctrl_radar_boundary_commit(u8 *errDetail, u8 *shortPairMask)
     return 1;
 }
 
-static u8 g_last_charge_state = 0xFF;
+static u8 g_last_charge_state  = 0xFF;
+static u8 g_last_setting_state = 0xFF;
+static u8 g_last_working_state = 0xFF;
+static u8 g_last_resting_state = 0xFF;
+
+static void app_ctrl_calc_exclusive_mode_flags(u8 *working_mode, u8 *resting_mode, u8 *setting_mode)
+{
+    u8 setting = app_ctrl_is_setting_mode() ? 1 : 0;
+#if (UI_RADAR_ENABLE)
+    u8 resting = RadarSessionIsResting() ? 1 : 0;
+    u8 working = app_radar_is_working_mode() ? 1 : 0;
+#else
+    u8 resting = 0;
+    u8 working = 0;
+#endif
+
+    // 三种状态互斥：设置中 > 工作中 > 休息中
+    if (setting)
+    {
+        working = 0;
+        resting = 0;
+    }
+    else if (working)
+    {
+        resting = 0;
+    }
+    else if (resting)
+    {
+        working = 0;
+    }
+
+    *working_mode = working;
+    *resting_mode = resting;
+    *setting_mode = setting;
+}
+
 void      app_ctrl_status_notify_task(void)
 {
 #if (UI_GEN_MOTOR_ENABLE) || (UI_RADAR_ENABLE)
-    u8 charging = 0;
-    u8 changed  = 0;
+    u8 changed = 0;
 
-    charging    = app_adc_dbg_is_charging() ? 1 : 0;
-    u8 power_on = app_get_power_state() ? 1 : 0;
+    u8  power_on     = app_get_power_state() ? 1 : 0;
+    u8  boundary_set = app_radar_is_boundary_set() ? 1 : 0;
+    s32 height_mm    = 0;
+    app_radar_get_install_height_mm(&height_mm);
+    u16 install_height    = app_radar_is_install_height_set() ? (U16_LO((s16)height_mm)) : 0;
+    u16 install_height_hi = app_radar_is_install_height_set() ? (U16_HI((s16)height_mm)) : 0;
+    u8  charging          = app_adc_dbg_is_charging() ? 1 : 0;
+    u8  setting_mode      = 0;
+    u8  working_mode      = 0;
+    u8  resting_mode      = 0;
+    app_ctrl_calc_exclusive_mode_flags(&working_mode, &resting_mode, &setting_mode);
     /* 首次仅建立基线，不上报 */
     if (g_last_charge_state == 0xFF)
     {
-        g_last_charge_state = charging;
+        g_last_charge_state  = charging;
+        g_last_setting_state = setting_mode;
+        g_last_working_state = working_mode;
+        g_last_resting_state = resting_mode;
         return;
     }
 
@@ -311,10 +357,25 @@ void      app_ctrl_status_notify_task(void)
         g_last_charge_state = charging;
         changed             = 1;
     }
+    if (setting_mode != g_last_setting_state)
+    {
+        g_last_setting_state = setting_mode;
+        changed              = 1;
+    }
+    if (working_mode != g_last_working_state)
+    {
+        g_last_working_state = working_mode;
+        changed              = 1;
+    }
+    if (resting_mode != g_last_resting_state)
+    {
+        g_last_resting_state = resting_mode;
+        changed              = 1;
+    }
     if (changed)
     {
         // BLE_LOG_D("app_ctrl_status_notify_task: charging: %d, power_on: %d", charging, power_on);
-        u8 pl[3] = {CTRL_STATUS_OK, power_on, charging};
+        u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
     }
 #endif
@@ -1182,7 +1243,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
         return -1;
     }
 
-    u8 rsp[6] = {CTRL_STATUS_OK, 0, 0, 0, 0, 0};
+    u8 rsp[9] = {CTRL_STATUS_OK, 0, 0, 0, 0, 0, 0, 0, 0};
     rsp[1]    = app_get_power_state() ? 1 : 0;
 #if (UI_RADAR_ENABLE)
     rsp[2]        = app_radar_is_boundary_set() ? 1 : 0;
@@ -1191,6 +1252,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     rsp[3] = app_radar_is_install_height_set() ? (U16_LO((s16)height_mm)) : 0;
     rsp[4] = app_radar_is_install_height_set() ? (U16_HI((s16)height_mm)) : 0;
     rsp[5] = app_adc_dbg_is_charging() ? 1 : 0;
+    app_ctrl_calc_exclusive_mode_flags(&rsp[7], &rsp[8], &rsp[6]);
 #endif
 
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_STATUS_GET, seq, rsp, sizeof(rsp));

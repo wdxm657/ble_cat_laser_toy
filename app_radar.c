@@ -234,6 +234,7 @@ _attribute_data_retention_ static u8    g_radar_uart_warmup_done      = 0;
 _attribute_data_retention_ static u32   g_radar_uart_warmup_tick      = 0;
 _attribute_data_retention_ static u8    g_radar_hold_on_mode          = 1;
 _attribute_data_retention_ static u8    g_radar_rest_mode             = 0;
+_attribute_data_retention_ static u8    g_radar_working_mode          = 0;
 _attribute_data_retention_ static u32   g_radar_phase_tick            = 0;
 _attribute_data_retention_ static u32   g_radar_rest_start_tick       = 0;
 _attribute_data_retention_ static u32   g_radar_work_acc_tick         = 0;
@@ -337,6 +338,7 @@ static void app_radar_power_state_reset(void)
     g_radar_low_freq_phase_on    = 0;
     g_radar_hold_on_mode         = 1;
     g_radar_rest_mode            = 0;
+    g_radar_working_mode         = 0;
     g_radar_phase_tick           = 0;
     g_radar_rest_start_tick      = 0;
     g_radar_work_acc_tick        = 0;
@@ -960,6 +962,11 @@ void RadarSessionStop(u8 reset)
 u8 RadarSessionIsResting(void)
 {
     return g_radar_rest_mode;
+}
+
+u8 app_radar_is_working_mode(void)
+{
+    return g_radar_working_mode;
 }
 
 static void RadarSessionOnMotion(u32 now_tick)
@@ -2205,6 +2212,8 @@ void app_radar_task_power_schedule(void)
         {
             radar_play_record_end();
             BLE_LOG_D("radar rest mode");
+            g_radar_working_mode        = 0;
+            g_radar_rest_mode           = 1;
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
         }
         app_radar_power_switch(0);
@@ -2252,6 +2261,8 @@ void app_radar_task_power_schedule(void)
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
         {
             BLE_LOG_D("radar hold on mode");
+            g_radar_working_mode        = 1;
+            g_radar_rest_mode           = 0;
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_HOLD_ON;
             app_radar_power_switch(1);
             u32 now_tick = clock_time();

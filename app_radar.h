@@ -45,6 +45,7 @@ int  app_radar_save_boundary_quad_to_flash(const s32 x_mm[4], const s32 y_mm[4])
 u8 app_radar_is_boundary_set(void);
 u8 app_radar_is_install_height_set(void);
 u8 RadarSessionIsResting(void);
+u8 app_radar_is_working_mode(void);
 
 // Optional debug helper (used by commented test code in app.c)
 float app_radar_mysqrt_3(float x);
