@@ -32,7 +32,7 @@ u8 g_ctrlRxBuf[CTRL_RX_MAX_LEN] = {0};
 u8 g_ctrlTxBuf[CTRL_TX_MAX_LEN] = {0};
 
 // simple sequence generator for events/async notifications
-static u8 g_ctrlSeq = 0;
+static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
@@ -1017,7 +1017,7 @@ void app_ctrl_motor_dir_task(void)
             }
 
             s16 tilt_deg10 = StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
-            if (app_radar_is_install_height_set() && g_motor_dir_state.axis == STEP_MOTOR_AXIS_TILT &&
+            if (g_motor_dir_state.axis == STEP_MOTOR_AXIS_TILT &&
                 g_motor_dir_state.direction == 0x00 && tilt_deg10 > g_hieght_angle_10)
             {
                 StepMotor_Stop(g_motor_dir_state.axis);
@@ -1288,7 +1288,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
         {
             if (g_power_off_tick && !clock_time_exceed(g_power_off_tick, POWER_CTRL_OFF_COOLDOWN_US))
             {
-                status       = CTRL_STATUS_INTERNAL_ERROR;
+                status       = CTRL_STATUS_REJECT_ERROR;
                 reason       = CTRL_REASON_POWER_ON_COOLDOWN_30S;
                 on_effective = cur_on;  // 被拒绝则回显当前真实状态
             }
@@ -1297,7 +1297,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
         {
             if (g_power_on_tick && !clock_time_exceed(g_power_on_tick, POWER_CTRL_OFF_COOLDOWN_US))
             {
-                status       = CTRL_STATUS_INTERNAL_ERROR;
+                status       = CTRL_STATUS_REJECT_ERROR;
                 reason       = CTRL_REASON_POWER_OFF_COOLDOWN_30S;
                 on_effective = cur_on;  // 被拒绝则回显当前真实状态
             }
@@ -1789,17 +1789,15 @@ void app_ctrl_init(void)
 #endif
 #if (UI_RADAR_ENABLE)
     radar_boundary_load_from_flash(g_radar_boundary_x, g_radar_boundary_y);
-    if (app_radar_is_install_height_set())
+
+    s32 h_mm = 0;
+    app_radar_get_install_height_mm(&h_mm);
+    if (h_mm <= 0)
     {
-        s32 h_mm = 0;
-        app_radar_get_install_height_mm(&h_mm);
-        if (h_mm <= 0)
-        {
-            h_mm = 2500;
-        }
-        g_hieght_angle_10 =
-            (s16)(lookup_atan2(6000, h_mm) * RAD_TO_DEG * 10.0f - 900.0f);
+        h_mm = 2500;
     }
+    g_hieght_angle_10 =
+        (s16)(lookup_atan2(6000, h_mm) * RAD_TO_DEG * 10.0f - 900.0f);
 #endif
 }
 

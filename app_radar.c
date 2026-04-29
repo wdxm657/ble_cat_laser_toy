@@ -2282,7 +2282,6 @@ void app_radar_task_power_schedule(void)
             g_radar_hold_on_mode      = 0;
             g_radar_low_freq_phase_on = 0;
             g_radar_phase_tick        = now_tick;
-            app_radar_power_switch(0);
         }
         return;
     }
