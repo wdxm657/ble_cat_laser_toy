@@ -610,11 +610,11 @@ _attribute_no_inline_ void user_init_normal(void)
     gpio_write(V_NTC_CON, 1);
     // 常开电池电压AD检测开关
     gpio_write(V_BAT_CON, 1);
-    // 常开雷达模块开关
-    gpio_write(LEIDA_SWITCH, 1);
+    // 关闭雷达模块开关
+    gpio_write(LEIDA_SWITCH, 0);
 #endif
 #ifdef UI_RADAR_ENABLE
-    app_radar_uart_init();
+    // app_radar_uart_init();
     app_radar_init();
     app_ctrl_init();
 #endif

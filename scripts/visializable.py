@@ -564,6 +564,8 @@ class RadarVisualizer:
         pld = fr.payload
         if fr.msg_type == CTRL_MSG_TYPE_RSP:
             st = pld[0] if len(pld) >= 1 else -1
+            if fr.cmd_id == cp.CTRL_CMD_POWER_CTRL and len(pld) >= 3:
+                return f"[RSP][0x12] status={st} on_effective={pld[1]} reason={pld[2]}"
             if fr.cmd_id == cp.CTRL_CMD_POWER_CTRL and len(pld) >= 2:
                 return f"[RSP][0x12] status={st} on={pld[1]}"
             if fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL and len(pld) >= 3:

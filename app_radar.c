@@ -325,10 +325,14 @@ _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INS
 
 static void app_radar_power_switch(u8 on)
 {
-    // gpio_write(LEIDA_SWITCH, on ? 1 : 0);
     if (!on)
     {
+        app_radar_uart_deinit();
         RadarSessionStop(1);
+    }
+    else
+    {
+        app_radar_uart_init();
     }
     g_radar_power_on = on ? 1 : 0;
 }
@@ -2283,49 +2287,49 @@ void app_radar_task_power_schedule(void)
         return;
     }
 
-    if (g_radar_phase_tick == 0)
-    {
-        g_radar_phase_tick = now_tick;
-    }
+    // if (g_radar_phase_tick == 0)
+    // {
+    //     g_radar_phase_tick = now_tick;
+    // }
 
-    if (g_radar_low_freq_phase_on)
-    {
-        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_ON)
-        {
-            BLE_LOG_D("radar low freq phase on");
-            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_ON;
-        }
-        app_radar_power_switch(1);
-        if (app_radar_has_recent_motion(RADAR_LOW_FREQ_ON_US))
-        {
-            g_radar_hold_on_mode = 1;
-            return;
-        }
+    // if (g_radar_low_freq_phase_on)
+    // {
+    //     if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_ON)
+    //     {
+    //         BLE_LOG_D("radar low freq phase on");
+    //         g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_ON;
+    //     }
+    //     app_radar_power_switch(1);
+    //     if (app_radar_has_recent_motion(RADAR_LOW_FREQ_ON_US))
+    //     {
+    //         g_radar_hold_on_mode = 1;
+    //         return;
+    //     }
 
-        if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_ON_US))
-        {
-            BLE_LOG_D("radar low freq phase on exit");
-            g_radar_low_freq_phase_on = 0;
-            g_radar_phase_tick        = now_tick;
-            app_radar_power_switch(0);
-        }
-    }
-    else
-    {
-        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_OFF)
-        {
-            BLE_LOG_D("radar low freq phase off");
-            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_OFF;
-        }
-        app_radar_power_switch(0);
-        if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_OFF_US))
-        {
-            BLE_LOG_D("radar low freq phase off exit");
-            g_radar_low_freq_phase_on = 1;
-            g_radar_phase_tick        = now_tick;
-            app_radar_power_switch(1);
-        }
-    }
+    //     if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_ON_US))
+    //     {
+    //         BLE_LOG_D("radar low freq phase on exit");
+    //         g_radar_low_freq_phase_on = 0;
+    //         g_radar_phase_tick        = now_tick;
+    //         app_radar_power_switch(0);
+    //     }
+    // }
+    // else
+    // {
+    //     if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_OFF)
+    //     {
+    //         BLE_LOG_D("radar low freq phase off");
+    //         g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_OFF;
+    //     }
+    //     app_radar_power_switch(0);
+    //     if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_OFF_US))
+    //     {
+    //         BLE_LOG_D("radar low freq phase off exit");
+    //         g_radar_low_freq_phase_on = 0;
+    //         g_radar_phase_tick        = now_tick;
+    //         app_radar_power_switch(1);
+    //     }
+    // }
 }
 
 u8 app_radar_is_power_on(void)
@@ -2341,6 +2345,7 @@ void app_radar_uart_init(void)
     }
     g_radar_uart_inited = 1;
 
+    gpio_write(LEIDA_SWITCH, 1);
     uart_gpio_set(GPIO_PD6, GPIO_PD5);
     uart_init_baudrate(256000, CLOCK_SYS_CLOCK_HZ, PARITY_NONE, STOP_BIT_ONE);
     uart_dma_enable(0, 0);
@@ -2367,12 +2372,13 @@ void app_radar_uart_deinit(void)
     radar_uart_hw_drain_and_clear();
 
     // 关闭雷达串口,将串口引脚设置为GPIO并拉低以降低断电后功耗
-    gpio_set_func(GPIO_PB6, AS_GPIO);
-    gpio_set_func(GPIO_PB7, AS_GPIO);
-    gpio_set_output_en(GPIO_PB6, 1);
-    gpio_set_output_en(GPIO_PB7, 1);
-    gpio_write(GPIO_PB6, 0);
-    gpio_write(GPIO_PB7, 0);
+    gpio_write(LEIDA_SWITCH, 0);
+    gpio_set_func(GPIO_PD6, AS_GPIO);
+    gpio_set_func(GPIO_PD5, AS_GPIO);
+    gpio_set_output_en(GPIO_PD6, 1);
+    gpio_set_output_en(GPIO_PD5, 1);
+    gpio_write(GPIO_PD6, 0);
+    gpio_write(GPIO_PD5, 0);
 
     g_radar_uart_warmup_done = 0;
     g_radar_uart_warmup_tick = 0;

@@ -33,6 +33,41 @@ u8 g_ctrlTxBuf[CTRL_TX_MAX_LEN] = {0};
 
 // simple sequence generator for events/async notifications
 static u8 g_ctrlSeq = 0;
+static u32 g_power_on_tick  = 0;
+static u32 g_power_off_tick = 0;
+
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u)  // 30s
+
+static u8 app_ctrl_can_change_power(u8 target_on)
+{
+    u8 cur_on = app_get_power_state() ? 1 : 0;
+
+    if (target_on)
+    {
+        // 开机不做额外限制
+        return 1;
+    }
+
+    // target_on == 0: 关机限制
+    if (cur_on)
+    {
+        // 开机后 30s 内禁止关机
+        if (g_power_on_tick && !clock_time_exceed(g_power_on_tick, POWER_CTRL_OFF_COOLDOWN_US))
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        // 关机后 30s 内禁止重复关机
+        if (g_power_off_tick && !clock_time_exceed(g_power_off_tick, POWER_CTRL_OFF_COOLDOWN_US))
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
 
 #if (UI_STEP_MOTOR_ENABLE)
 typedef struct
@@ -1217,18 +1252,83 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
 {
     if (len < 1)
     {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
+        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_REASON_NONE};
         app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_POWER_CTRL, seq, rsp, sizeof(rsp));
         return -1;
     }
 
-    u8 on = payload[0] ? 1 : 0;
-    LOG_D("pc: %d  payload: %d", on, payload[0]);
-    LOG_D("pc: %d  payload: %d", on, payload[0]);
-    LOG_D("pc: %d  payload: %d", on, payload[0]);
-    app_set_power_state(on);
+    u8 target_on = payload[0] ? 1 : 0;
+    u8 cur_on    = app_get_power_state() ? 1 : 0;
 
-    u8 rsp[2] = {CTRL_STATUS_OK, on};
+    // payload: [0]=status, [1]=on_effective, [2]=reason
+    u8 status       = CTRL_STATUS_OK;
+    u8 on_effective = target_on;
+    u8 reason       = CTRL_REASON_NONE;
+
+    // 低电量禁止开机：bat_percent < 15 且未充电
+    if (target_on && !cur_on)
+    {
+        u8 bat_percent = app_adc_dbg_get_bat_percent();
+        u8 is_charging = app_adc_dbg_is_charging() ? 1 : 0;
+        if (bat_percent < 15 && !is_charging)
+        {
+            status       = CTRL_STATUS_REJECT_ERROR;
+            reason       = CTRL_REASON_LOW_BATTERY;
+            on_effective = 0;
+        }
+    }
+
+    // 冷却限制：开机/关机都限制 30s
+    // 仅在“实际要改变电源状态”时生效：
+    // - cur_on=0 且 target_on=1：禁止在离上次关机不足 30s 内开机
+    // - cur_on=1 且 target_on=0：禁止在离上次开机不足 30s 内关机
+    if (status == CTRL_STATUS_OK && target_on != cur_on)
+    {
+        if (target_on)
+        {
+            if (g_power_off_tick && !clock_time_exceed(g_power_off_tick, POWER_CTRL_OFF_COOLDOWN_US))
+            {
+                status       = CTRL_STATUS_INTERNAL_ERROR;
+                reason       = CTRL_REASON_POWER_ON_COOLDOWN_30S;
+                on_effective = cur_on;  // 被拒绝则回显当前真实状态
+            }
+        }
+        else
+        {
+            if (g_power_on_tick && !clock_time_exceed(g_power_on_tick, POWER_CTRL_OFF_COOLDOWN_US))
+            {
+                status       = CTRL_STATUS_INTERNAL_ERROR;
+                reason       = CTRL_REASON_POWER_OFF_COOLDOWN_30S;
+                on_effective = cur_on;  // 被拒绝则回显当前真实状态
+            }
+        }
+    }
+
+    if (status != CTRL_STATUS_OK)
+    {
+        u8 rsp[3] = {status, on_effective, reason};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_POWER_CTRL, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+
+    // 允许：执行切换
+    if (on_effective != cur_on)
+    {
+        if (on_effective)
+        {
+            g_power_on_tick  = clock_time();
+            g_power_off_tick = 0;
+        }
+        else
+        {
+            g_power_off_tick = clock_time();
+        }
+    }
+
+    LOG_D("pc: %d  payload: %d", on_effective, payload[0]);
+    app_set_power_state(on_effective);
+
+    u8 rsp[3] = {CTRL_STATUS_OK, on_effective, CTRL_REASON_NONE};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_POWER_CTRL, seq, rsp, sizeof(rsp));
     return 0;
 }

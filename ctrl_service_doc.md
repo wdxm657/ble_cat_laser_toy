@@ -297,6 +297,16 @@ byte9 : 0x00           // 预留
 
 用途：APP 控制自动逗宠开关。`1` 开启，`0` 关闭。
 
+限制/冷却规则：
+- 当设备处于“开机后”状态时，在首次开机后的 `30s` 冷却期内禁止发送 `on=0` 关机请求。
+- 当设备处于“关机后”状态时，在最近一次关机后的 `30s` 冷却期内禁止重复发送 `on=0` 关机请求。
+- 若请求被拒绝：
+  - 冷却限制：`status` 为非 `0`（当前实现使用 `CTRL_STATUS_INTERNAL_ERROR`），并在 `reason` 中区分：
+    - `reason=0x02`：开机失败（开机请求时处于离上次关机不足 30s 的冷却中）
+    - `reason=0x03`：关机失败（关机请求时处于离上次开机不足 30s 的冷却中）
+    - `byte7 (on_effective)` 中回显设备当前真实电源状态
+  - 低电量禁止开机：当 `on=1` 且 `电量<15% 且未充电` 时，`status=CTRL_STATUS_REJECT_ERROR (0x05)`，`reason=0x01`（LOW_BATTERY），并回显 `on_effective=0`。
+
 **示例**：
 
 ```
@@ -325,10 +335,11 @@ byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
 byte2 : 0x12           // cmdId = POWER_CTRL
 byte3 : seq
-byte4 : 0x02           // payloadLen = 2
+byte4 : 0x03           // payloadLen = 3
 byte5 : 0x00
 byte6 : status
-byte7 : on             // 回显 0x00/0x01
+byte7 : on_effective  // 回显 0x00/0x01（是否实际生效）
+byte8 : reason         // 0x00=NONE, 0x01=LOW_BATTERY, 0x02=POWER_ON_COOLDOWN_30S, 0x03=POWER_OFF_COOLDOWN_30S
 ```
 
 #### 4.6 设备状态查询（STATUS_GET，CMD = 0x13）

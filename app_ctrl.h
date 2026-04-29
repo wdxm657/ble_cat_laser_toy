@@ -75,6 +75,15 @@ enum{
     CTRL_STATUS_UNSUPPORTED_CMD = 0x02,
     CTRL_STATUS_PARAM_ERROR     = 0x03,
     CTRL_STATUS_INTERNAL_ERROR  = 0x04,
+    CTRL_STATUS_REJECT_ERROR  = 0x05,
+};
+
+// power ctrl reason field (RSP payload[2])
+enum{
+    CTRL_REASON_NONE        = 0x00,
+    CTRL_REASON_LOW_BATTERY = 0x01,
+    CTRL_REASON_POWER_ON_COOLDOWN_30S  = 0x02,  // 30s 冷却中，禁止开机
+    CTRL_REASON_POWER_OFF_COOLDOWN_30S = 0x03,  // 30s 冷却中，禁止关机
 };
 
 // ATT value max length for RX/TX.
