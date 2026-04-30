@@ -2241,12 +2241,13 @@ void app_radar_task_power_schedule(void)
         g_radar_work_acc_tick = now_tick;
     }
 
-    if (clock_time_exceed(g_radar_work_acc_tick, 1000000u))
+    if (clock_time_exceed(g_radar_work_acc_tick, 10000000u))
     {
         g_radar_work_acc_tick = now_tick;
         if (g_radar_work_acc_sec < 0xFFFFu)
         {
-            g_radar_work_acc_sec++;
+            g_radar_work_acc_sec += 10;
+            BLE_LOG_D("radar work acc sec: %d", g_radar_work_acc_sec);
         }
     }
 

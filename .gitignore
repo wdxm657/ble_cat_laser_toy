@@ -8,3 +8,4 @@ hardware/*/__Previews
 hardware/*/zip
 hardware/*.htm*
 __Previews
+test/

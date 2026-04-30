@@ -186,17 +186,27 @@ static const bat_point_t g_bat_table[] = {
     {4200, 100},
     {4150, 95},
     {4100, 90},
-    {4050, 80},
-    {3980, 70},
-    {3920, 60},
-    {3860, 50},
+    {4060, 85},
+    {4020, 80},
+    {3980, 75},
+    {3950, 70},
+    {3920, 65},
+    {3890, 60},
+    {3860, 55},
+    {3840, 50},
+    {3820, 45},
     {3800, 40},
-    {3740, 30},
-    {3680, 20},
-    {3600, 10},
+    {3780, 35},
+    {3760, 30},
+    {3740, 25},
+    {3710, 20},
+    {3670, 15},
+    {3630, 10},
+    {3580, 8},
     {3500, 5},
-    {3200, 0},
-};
+    {3400, 3},
+    {3200, 1},
+    {3000, 0}};
 
 static u32 s_adc_sample_tick;
 static u32 s_adc_report_tick;
@@ -430,7 +440,9 @@ void app_adc_dbg_poll(void)
 
         u8 bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
         u8 is_charging     = app_adc_dbg_is_charging();
-        u8 bat_percent     = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
+        // u8 bat_percent     = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
+        u8 bat_percent = bat_percent_raw;
+        s_bat_percent  = bat_percent;
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
 
