@@ -252,6 +252,7 @@ _attribute_data_retention_ static u8 g_radar_power_log_last_state = RADAR_POWER_
 
 _attribute_data_retention_ static u32 g_radar_time_sec          = 0;
 _attribute_data_retention_ static u32 g_radar_time_tick_acc_us  = 0;
+_attribute_data_retention_ static u32 g_radar_time_last_tick    = 0;
 _attribute_data_retention_ static u8  g_radar_time_valid        = 0;
 _attribute_data_retention_ static s8  g_radar_time_tz_q15       = 0;
 _attribute_data_retention_ static u8  g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
@@ -602,6 +603,7 @@ void app_radar_set_time_from_epoch(u32 epoch_sec, s8 tz_q15)
     g_radar_time_sec         = epoch_sec;
     g_radar_time_tz_q15      = tz_q15;
     g_radar_time_tick_acc_us = 0;
+    g_radar_time_last_tick   = clock_time();
     g_radar_time_valid       = 1;
 
     u16 year  = 0;
@@ -623,8 +625,18 @@ void app_radar_on_time_tick(void)
         return;
     }
 
-    g_radar_time_tick_acc_us += 1000000u;
-    if (g_radar_time_tick_acc_us >= 1000000u)
+    u32 now_tick = clock_time();
+    if (g_radar_time_last_tick == 0)
+    {
+        g_radar_time_last_tick = now_tick;
+        return;
+    }
+
+    u32 elapsed_us = (now_tick - g_radar_time_last_tick) >> 4;
+    g_radar_time_last_tick = now_tick;
+
+    g_radar_time_tick_acc_us += elapsed_us;
+    while (g_radar_time_tick_acc_us >= 1000000u)
     {
         g_radar_time_tick_acc_us -= 1000000u;
         g_radar_time_sec++;
