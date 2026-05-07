@@ -1094,6 +1094,7 @@ void app_ctrl_motor_dir_task(void)
                 if (direction == 0x03)
                 {
                     s32 limit_x_mm = g_radar_boundary_x[limit_index];
+                    BLE_LOG_D("cur_x_mm: %d, limit_x_mm: %d", cur_x_mm, limit_x_mm);
                     if (cur_x_mm >= (limit_x_mm - APP_CTRL_BOUNDARY_PAN_GUARD_MM))
                     {
                         need_stop = 1;
@@ -1112,6 +1113,7 @@ void app_ctrl_motor_dir_task(void)
                 {
                     s32 limit_y_mm = g_radar_boundary_y[limit_index];
                     if (cur_y_mm >= (limit_y_mm - APP_CTRL_BOUNDARY_PAN_GUARD_MM))
+                    BLE_LOG_D("cur_y_mm: %d, limit_y_mm: %d", cur_y_mm, limit_y_mm);
                     {
                         need_stop = 1;
                     }
@@ -1660,8 +1662,9 @@ static int app_ctrl_handle_radar_boundary_exit(u8 seq, u8 *payload, u16 len)
     g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
     app_ctrl_radar_boundary_reset();
     BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
-    BLE_LOG_D("g_radar_boundary_y: %d, %d, %d, %d", g_radar_boundary_y[0], g_radar_boundary_y[1], g_radar_boundary_y[2], g_radar_boundary_y[3]);
 
+    // 退出设置状态时与刚开机情况一样，直接进入holdon模式
+    app_radar_set_enabled(1);
     u8 rsp[2] = {CTRL_STATUS_OK, 0};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_EXIT, seq, rsp, sizeof(rsp));
     return 0;
@@ -1813,7 +1816,6 @@ void app_ctrl_on_ble_connected(void)
 void app_ctrl_notify_play_record_changed(void)
 {
 #if (UI_RADAR_ENABLE)
-    BLE_LOG_D("app_ctrl_notify_play_record_changed");
     app_ctrl_try_upload_play_records();
 #endif
 }

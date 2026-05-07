@@ -27,6 +27,7 @@ This script reconnects in a loop and prints errors to stderr.
 
 import argparse
 import asyncio
+import datetime
 import math
 import queue
 import sys
@@ -881,28 +882,42 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         g.addWidget(b_power_on, 0, 1)
         g.addWidget(b_power_off, 0, 2)
 
+        # Time set
+        g.addWidget(QtWidgets.QLabel("时间同步 (0x32)"), 1, 0)
+        self.time_use_local_tz = QtWidgets.QCheckBox("本机时区")
+        self.time_use_local_tz.setChecked(True)
+        g.addWidget(self.time_use_local_tz, 1, 1)
+        self.time_tz = QtWidgets.QSpinBox()
+        self.time_tz.setRange(-128, 127)
+        self.time_tz.setValue(0)
+        self.time_tz.setToolTip("tz_q15（s8）。通常为时区偏移(UTC)的 15 分钟单位。")
+        g.addWidget(self.time_tz, 1, 2)
+        self.time_btn = QtWidgets.QPushButton("同步PC时间")
+        self.time_btn.clicked.connect(self._on_time_sync)
+        g.addWidget(self.time_btn, 1, 3)
+
         # Direction control: press move, release stop
-        g.addWidget(QtWidgets.QLabel("电机方向 (0x22, 按下动/松开停)"), 1, 0, 1, 4)
+        g.addWidget(QtWidgets.QLabel("电机方向 (0x22, 按下动/松开停)"), 2, 0, 1, 4)
         self.dir_speed = QtWidgets.QSpinBox()
         self.dir_speed.setRange(0, 3)
         self.dir_speed.setValue(2)
-        g.addWidget(QtWidgets.QLabel("speed"), 2, 0)
-        g.addWidget(self.dir_speed, 2, 1)
+        g.addWidget(QtWidgets.QLabel("speed"), 3, 0)
+        g.addWidget(self.dir_speed, 3, 1)
         self.btn_up = QtWidgets.QPushButton("↑")
         self.btn_down = QtWidgets.QPushButton("↓")
         self.btn_left = QtWidgets.QPushButton("←")
         self.btn_right = QtWidgets.QPushButton("→")
-        g.addWidget(self.btn_up, 3, 1)
-        g.addWidget(self.btn_left, 4, 0)
-        g.addWidget(self.btn_down, 4, 1)
-        g.addWidget(self.btn_right, 4, 2)
+        g.addWidget(self.btn_up, 4, 1)
+        g.addWidget(self.btn_left, 5, 0)
+        g.addWidget(self.btn_down, 5, 1)
+        g.addWidget(self.btn_right, 5, 2)
         self._bind_press_release(self.btn_up, 0)
         self._bind_press_release(self.btn_down, 1)
         self._bind_press_release(self.btn_left, 2)
         self._bind_press_release(self.btn_right, 3)
 
         # Height
-        g.addWidget(QtWidgets.QLabel("安装高度 (0x50, mm)"), 5, 0, 1, 2)
+        g.addWidget(QtWidgets.QLabel("安装高度 (0x50, mm)"), 6, 0, 1, 2)
         self.h_mm = QtWidgets.QSpinBox()
         self.h_mm.setRange(500, 10000)
         self.h_mm.setValue(2500)
@@ -910,11 +925,11 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         b_h.clicked.connect(
             lambda: self._send(*vc.cmd_radar_set_height(self.h_mm.value()))
         )
-        g.addWidget(self.h_mm, 6, 0)
-        g.addWidget(b_h, 6, 1)
+        g.addWidget(self.h_mm, 7, 0)
+        g.addWidget(b_h, 7, 1)
 
         # Boundary flow
-        g.addWidget(QtWidgets.QLabel("边界流程 (0x51/52/53/55 + 0x56)"), 7, 0, 1, 5)
+        g.addWidget(QtWidgets.QLabel("边界流程 (0x51/52/53/55 + 0x56)"), 8, 0, 1, 5)
         self.b_idx = QtWidgets.QSpinBox()
         self.b_idx.setRange(0, 3)
         b_enter = QtWidgets.QPushButton("进入")
@@ -933,14 +948,39 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         b_commit.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_commit()))
         b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
         b_exit.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_exit()))
-        g.addWidget(QtWidgets.QLabel("point"), 8, 0)
-        g.addWidget(self.b_idx, 8, 1)
-        g.addWidget(b_enter, 9, 0)
-        g.addWidget(b_sel, 9, 1)
-        g.addWidget(b_save, 9, 2)
-        g.addWidget(b_commit, 9, 3)
-        g.addWidget(b_reset, 9, 4)
-        g.addWidget(b_exit, 9, 5)
+        g.addWidget(QtWidgets.QLabel("point"), 9, 0)
+        g.addWidget(self.b_idx, 9, 1)
+        g.addWidget(b_enter, 10, 0)
+        g.addWidget(b_sel, 10, 1)
+        g.addWidget(b_save, 10, 2)
+        g.addWidget(b_commit, 10, 3)
+        g.addWidget(b_reset, 10, 4)
+        g.addWidget(b_exit, 10, 5)
+
+        if self.vis._transport != "ble":
+            self.time_use_local_tz.setEnabled(False)
+            self.time_tz.setEnabled(False)
+            self.time_btn.setEnabled(False)
+            self.time_btn.setToolTip("仅 BLE 模式可下发")
+
+    def _on_time_sync(self) -> None:
+        # tz_q15: 15-minute units of UTC offset (common convention in this project doc).
+        tz_q15 = self.time_tz.value()
+        if self.time_use_local_tz.isChecked():
+            try:
+                now = datetime.datetime.now(datetime.timezone.utc).astimezone()
+                off = now.utcoffset()
+                off_sec = int(off.total_seconds()) if off else 0
+                tz_q15 = int(round(off_sec / 900.0))
+                tz_q15 = max(-128, min(127, tz_q15))
+                self.time_tz.setValue(tz_q15)
+            except Exception:
+                pass
+
+        epoch_sec = int(time.time())
+        ok = self.vis.send_cmd(*vc.cmd_time_set(epoch_sec, tz_q15))
+        if not ok:
+            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
 
     def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
         btn.pressed.connect(

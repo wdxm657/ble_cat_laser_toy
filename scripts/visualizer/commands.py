@@ -1,3 +1,5 @@
+import struct
+
 from . import protocol as p
 
 
@@ -45,6 +47,18 @@ def cmd_radar_boundary_commit() -> tuple[int, bytes, str]:
 
 def cmd_radar_reset_flash() -> tuple[int, bytes, str]:
     return p.CTRL_CMD_RADAR_RESET_FLASH_CONFIG, b"", "RADAR_RESET_FLASH_CONFIG"
+
+
+def cmd_time_set(epoch_sec: int, tz_q15: int) -> tuple[int, bytes, str]:
+    """TIME_SET (0x32): payload = u32 epoch seconds (LE) + s8 tz_q15."""
+    ep = int(epoch_sec) & 0xFFFFFFFF
+    tz = int(tz_q15)
+    if tz < -128:
+        tz = -128
+    if tz > 127:
+        tz = 127
+    payload = struct.pack("<Ib", ep, tz)
+    return p.CTRL_CMD_TIME_SET, payload, f"TIME_SET epoch={ep} tz_q15={tz}"
 
 
 def cmd_motor_dir(op: int, direction: int, speed_lv: int) -> tuple[int, bytes, str]:

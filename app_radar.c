@@ -256,6 +256,7 @@ _attribute_data_retention_ static u8  g_radar_time_valid        = 0;
 _attribute_data_retention_ static s8  g_radar_time_tz_q15       = 0;
 _attribute_data_retention_ static u8  g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
 _attribute_data_retention_ static u32 g_radar_play_active_start = 0;
+_attribute_data_retention_ static u8  g_radar_play_active_idx   = 0;
 
 _attribute_data_retention_ static u32 g_radar_play_start_sec[RADAR_TIME_MAX_RECORDS] = {0};
 _attribute_data_retention_ static u32 g_radar_play_end_sec[RADAR_TIME_MAX_RECORDS]   = {0};
@@ -342,7 +343,7 @@ static void app_radar_power_state_reset(void)
     g_radar_low_freq_phase_on    = 0;
     g_radar_hold_on_mode         = 1;
     g_radar_rest_mode            = 0;
-    g_radar_working_mode         = 0;
+    g_radar_working_mode         = 1;
     g_radar_phase_tick           = 0;
     g_radar_rest_start_tick      = 0;
     g_radar_work_acc_tick        = 0;
@@ -388,6 +389,7 @@ static void radar_play_records_reset_ram(void)
     g_radar_play_record_next  = 0;
     g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start = 0;
+    g_radar_play_active_idx   = 0;
 }
 
 static void radar_play_records_save_to_flash(void)
@@ -455,6 +457,7 @@ static void radar_play_records_load_from_flash(void)
     }
     g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start = 0;
+    g_radar_play_active_idx   = 0;
 }
 
 static u8 radar_is_leap_year(u16 year)
@@ -533,11 +536,13 @@ static void radar_epoch_to_datetime(u32  epoch_sec,
     }
 }
 
-static void radar_play_record_push(u32 start_sec, u32 end_sec)
+static u8 radar_play_record_push(u32 start_sec, u32 end_sec)
 {
-    g_radar_play_start_sec[g_radar_play_record_next] = start_sec;
-    g_radar_play_end_sec[g_radar_play_record_next]   = end_sec;
-    g_radar_play_tz_q15[g_radar_play_record_next]    = g_radar_time_tz_q15;
+    u8 idx = g_radar_play_record_next;
+
+    g_radar_play_start_sec[idx] = start_sec;
+    g_radar_play_end_sec[idx]   = end_sec;
+    g_radar_play_tz_q15[idx]    = g_radar_time_tz_q15;
 
     g_radar_play_record_next++;
     if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
@@ -548,6 +553,8 @@ static void radar_play_record_push(u32 start_sec, u32 end_sec)
     {
         g_radar_play_record_count++;
     }
+
+    return idx;
 }
 
 static inline u8 radar_play_record_is_complete(u32 end_sec)
@@ -566,7 +573,7 @@ static void radar_play_record_start(void)
     {
         g_radar_play_state        = RADAR_PLAY_STATE_ACTIVE;
         g_radar_play_active_start = g_radar_time_sec;
-        radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
+        g_radar_play_active_idx   = radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
         radar_play_records_save_to_flash();
         BLE_LOG_D("radar_play_record_push");
     }
@@ -584,8 +591,8 @@ static void radar_play_record_end(void)
     }
     BLE_LOG_D("radar_play_record_end");
 
-    g_radar_play_end_sec[(g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - 1) % RADAR_TIME_MAX_RECORDS] = g_radar_time_sec;
-    g_radar_play_state                                                                                     = RADAR_PLAY_STATE_IDLE;
+    g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
+    g_radar_play_state                            = RADAR_PLAY_STATE_IDLE;
     radar_play_records_save_to_flash();
     app_ctrl_notify_play_record_changed();
 }
@@ -605,8 +612,8 @@ void app_radar_set_time_from_epoch(u32 epoch_sec, s8 tz_q15)
     u8  sec   = 0;
     radar_epoch_to_datetime(epoch_sec, &year, &month, &day, &hour, &min, &sec);
 
-    LOG_D("epoch_sec: %d, tz_q15: %d", epoch_sec, tz_q15);
-    LOG_D("datetime: %04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec);
+    BLE_LOG_D("epoch_sec: %d, tz_q15: %d", epoch_sec, tz_q15);
+    BLE_LOG_D("datetime: %04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec);
 }
 
 void app_radar_on_time_tick(void)
@@ -655,13 +662,16 @@ int app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
 
 int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
 {
+#define RADAR_PLAY_MIN_DURATION_SEC 30u
+
     if (!out_buf || !tz_buf || max_records == 0)
     {
         return 0;
     }
 
-    u8 count = 0;
-    u8 idx   = g_radar_play_record_next;
+    u8 count     = 0;
+    u8 need_save = 0;
+    u8 idx       = g_radar_play_record_next;
     for (u8 i = 0; i < g_radar_play_record_count && count < max_records; i++)
     {
         if (idx == 0)
@@ -675,10 +685,27 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records
             continue;
         }
 
-        out_buf[count * 2]     = g_radar_play_start_sec[idx];
-        out_buf[count * 2 + 1] = g_radar_play_end_sec[idx];
+        u32 start = g_radar_play_start_sec[idx];
+        u32 end   = g_radar_play_end_sec[idx];
+
+        /* 持续时间不足 30 s 或时间戳回绕/异常：标记为无效并跳过，下次 clear 会清除 */
+        if (end <= start || (end - start) < (RADAR_PLAY_MIN_DURATION_SEC - 1))
+        {
+            g_radar_play_end_sec[idx] = 0;
+            need_save                 = 1;
+            continue;
+        }
+
+        out_buf[count * 2]     = start;
+        out_buf[count * 2 + 1] = end;
         tz_buf[count]          = (u8)g_radar_play_tz_q15[idx];
         count++;
+        BLE_LOG_D("count: %d, start: %d, end: %d", count, start, end);
+    }
+
+    if (need_save)
+    {
+        radar_play_records_save_to_flash();
     }
 
     return count;
@@ -2280,6 +2307,7 @@ void app_radar_task_power_schedule(void)
         {
             radar_play_record_end();
             BLE_LOG_D("radar hold on mode exit");
+            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_NONE;
             g_radar_hold_on_mode      = 0;
             g_radar_low_freq_phase_on = 0;
             g_radar_phase_tick        = now_tick;
