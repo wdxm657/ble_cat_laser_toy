@@ -1094,18 +1094,18 @@ void app_ctrl_motor_dir_task(void)
                 if (direction == 0x03)
                 {
                     s32 limit_x_mm = g_radar_boundary_x[limit_index];
-                    BLE_LOG_D("cur_x_mm: %d, limit_x_mm: %d", cur_x_mm, limit_x_mm);
                     if (cur_x_mm >= (limit_x_mm - APP_CTRL_BOUNDARY_PAN_GUARD_MM))
                     {
+                        BLE_LOG_D("cur_x_mm: %d, limit_x_mm: %d", cur_x_mm, limit_x_mm);
                         need_stop = 1;
                     }
                 }
                 else if (direction == 0x02)
                 {
                     s32 limit_x_mm = g_radar_boundary_x[limit_index];
-                    BLE_LOG_D("cur_x_mm: %d, limit_x_mm: %d", cur_x_mm, limit_x_mm);
                     if (cur_x_mm <= (limit_x_mm + APP_CTRL_BOUNDARY_PAN_GUARD_MM))
                     {
+                        BLE_LOG_D("cur_x_mm: %d, limit_x_mm: %d", cur_x_mm, limit_x_mm);
                         need_stop = 1;
                     }
                 }
@@ -1113,17 +1113,17 @@ void app_ctrl_motor_dir_task(void)
                 {
                     s32 limit_y_mm = g_radar_boundary_y[limit_index];
                     if (cur_y_mm >= (limit_y_mm - APP_CTRL_BOUNDARY_PAN_GUARD_MM))
-                    BLE_LOG_D("cur_y_mm: %d, limit_y_mm: %d", cur_y_mm, limit_y_mm);
                     {
+                        BLE_LOG_D("cur_y_mm: %d, limit_y_mm: %d", cur_y_mm, limit_y_mm);
                         need_stop = 1;
                     }
                 }
                 else if (direction == 0x01)
                 {
                     s32 limit_y_mm = g_radar_boundary_y[limit_index];
-                    BLE_LOG_D("cur_y_mm: %d, limit_y_mm: %d", cur_y_mm, limit_y_mm);
                     if (cur_y_mm <= (limit_y_mm + APP_CTRL_BOUNDARY_PAN_GUARD_MM))
                     {
+                        BLE_LOG_D("cur_y_mm: %d, limit_y_mm: %d", cur_y_mm, limit_y_mm);
                         need_stop = 1;
                     }
                 }
@@ -1139,6 +1139,7 @@ void app_ctrl_motor_dir_task(void)
                     evt[1]    = direction;
                     evt[2]    = point_index;
                     evt[3]    = limit_index;
+                    BLE_LOG_D("evt: %d, %d, %d, %d", evt[0], evt[1], evt[2], evt[3]);
                     app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_MOTOR_DIR_CTRL, g_ctrlSeq++, evt, 4);
                 }
             }
