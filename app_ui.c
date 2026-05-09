@@ -281,6 +281,16 @@ void proc_keyboard(u8 e, u8 *p, int n)
 void task_sleep_enter(u8 e, u8 *p, int n)
 {
 #if (BLE_APP_PM_ENABLE)
+    (void)e;
+    (void)p;
+    (void)n;
+
+    /* 记录每次准备进入 suspend 的上下文，便于定位“莫名其妙冷启动重启”前发生了什么 */
+    // LOG_D("[APP][PM] SUSPEND_ENTER state=0x%02x, wakeupTickIn=%dus, power_on=%d",
+    //       blc_ll_getCurrentState(),
+    //       (int)(bls_pm_getSystemWakeupTick() - clock_time()),
+    //       app_get_power_state());
+
     if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN && ((u32)(bls_pm_getSystemWakeupTick() - clock_time())) > 80 * CLOCK_16M_SYS_TIMER_CLK_1MS)
     {                                           // suspend time > 30ms.add gpio wakeup
         bls_pm_setWakeupSource(PM_WAKEUP_PAD);  // gpio CORE wakeup suspend

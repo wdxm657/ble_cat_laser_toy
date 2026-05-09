@@ -184,8 +184,18 @@ void task_connect(u8 e, u8 *p, int n)
 #endif
 #if (UI_LED_ENABLE)
     LOG_D("[APP][CONN] Connect request");
-    gpio_write(GPIO_LED_RED, LED_ON_LEVEL);
+    // gpio_write(GPIO_LED_RED, LED_ON_LEVEL);
+    // 开启NTC电压AD检测开关
+    gpio_write(V_NTC_CON, 1);
+    // 开启电池电压AD检测开关
+    gpio_write(V_BAT_CON, 1);
 #endif
+#if (UI_STEP_MOTOR_ENABLE)
+    LOG_D("[APP][CONN] power_on=%d, motor_reset_busy=%d", app_get_power_state(), StepMotor_GimbalResetBusy());
+#else
+    LOG_D("[APP][CONN] power_on=%d", app_get_power_state());
+#endif
+
     app_ctrl_on_ble_connected();
     BLE_LOG_D("[APP][CONN] Connect request");
 }
@@ -204,15 +214,19 @@ void task_terminate(u8 e, u8 *p, int n)  //*p is terminate reason
     tlk_contr_evt_terminate_t *pEvt = (tlk_contr_evt_terminate_t *)p;
     if (pEvt->terminate_reason == HCI_ERR_CONN_TIMEOUT)
     {
+        LOG_D("[APP][TERMINATE] reason=HCI_ERR_CONN_TIMEOUT");
     }
     else if (pEvt->terminate_reason == HCI_ERR_REMOTE_USER_TERM_CONN)
     {
+        LOG_D("[APP][TERMINATE] reason=HCI_ERR_REMOTE_USER_TERM_CONN");
     }
     else if (pEvt->terminate_reason == HCI_ERR_CONN_TERM_MIC_FAILURE)
     {
+        LOG_D("[APP][TERMINATE] reason=HCI_ERR_CONN_TERM_MIC_FAILURE");
     }
     else
     {
+        LOG_D("[APP][TERMINATE] reason=0x%02x", pEvt->terminate_reason);
     }
 #if (PM_DEEPSLEEP_ENABLE)
     // user has push terminate pkt to ble TX buffer before deepsleep
@@ -226,6 +240,15 @@ void task_terminate(u8 e, u8 *p, int n)  //*p is terminate reason
     gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);  // light off
 #endif
     advertise_begin_tick = clock_time();
+
+#if (BLE_APP_PM_ENABLE)
+    /* 断开后恢复 PM mask：由 blt_pm_proc() 动态控制，但这里先恢复到“允许 adv retention”的默认值 */
+#if (PM_DEEPSLEEP_RETENTION_ENABLE)
+    bls_pm_setSuspendMask(SUSPEND_ADV | DEEPSLEEP_RETENTION_ADV | SUSPEND_CONN | DEEPSLEEP_RETENTION_CONN);
+#else
+    bls_pm_setSuspendMask(SUSPEND_ADV | SUSPEND_CONN);
+#endif
+#endif
 }
 /**
  * @brief      callback function of LinkLayer Event "BLT_EV_FLAG_SUSPEND_EXIT"
@@ -286,11 +309,32 @@ void blt_pm_proc(void)
         bls_pm_setSuspendMask(SUSPEND_ADV | DEEPSLEEP_RETENTION_ADV | SUSPEND_CONN | DEEPSLEEP_RETENTION_CONN);
     }
 #else
-    // 直接进入睡眠状态
-    bls_pm_setSuspendMask(SUSPEND_ADV | DEEPSLEEP_RETENTION_ADV | SUSPEND_CONN | DEEPSLEEP_RETENTION_CONN);
+    // 电机复位时不进低功耗
+    // 蓝牙连接后不进低功耗
+    if (StepMotor_GimbalResetBusy() || (blc_ll_getCurrentState() & BLS_LINK_STATE_CONN) || g_app_power_on)
+    {
+        // LOG_D("busy %d, conn %d, power %d", StepMotor_GimbalResetBusy(), blc_ll_getCurrentState() & BLS_LINK_STATE_CONN, g_app_power_on);
+        bls_pm_setSuspendMask(SUSPEND_DISABLE);
+    }
+    else
+    {
+        // 关闭NTC电压AD检测开关
+        gpio_write(V_NTC_CON, 0);
+        // 关闭电池电压AD检测开关
+        gpio_write(V_BAT_CON, 0);
+        // LOG_D("enter sleep");
+        bls_pm_setSuspendMask(SUSPEND_ADV | DEEPSLEEP_RETENTION_ADV);
+    }
 #endif
 #else
-    bls_pm_setSuspendMask(SUSPEND_ADV | SUSPEND_CONN);
+    if (StepMotor_GimbalResetBusy() || (blc_ll_getCurrentState() & BLS_LINK_STATE_CONN) || g_app_power_on)
+    {
+        bls_pm_setSuspendMask(SUSPEND_DISABLE);
+    }
+    else
+    {
+        bls_pm_setSuspendMask(SUSPEND_ADV | SUSPEND_CONN);
+    }
 #endif
 #if (BLE_OTA_SERVER_ENABLE)
     if (ota_is_working)
@@ -942,15 +986,6 @@ void                           app_flash_protection_operation(u8 flash_op_evt, u
 }
 #endif
 
-float a_ang   = 0;
-float a_sin   = 0;
-float a_cos   = 0;
-float a_tan   = 0;
-float a_cot   = 0;
-float a_atan2 = 0;
-float a_sqrt3 = 0;
-
-#define FUNC_ELAPSED_TEST 0
 /**
  * @brief     BLE main loop
  * @param[in]  none.
@@ -958,16 +993,8 @@ float a_sqrt3 = 0;
  */
 void main_loop(void)
 {
-#if FUNC_ELAPSED_TEST
-    u32 start_time = clock_time() >> 4;
-#endif
     ////////////////////////////////////// BLE entry /////////////////////////////////
     blc_sdk_main_loop();
-#if FUNC_ELAPSED_TEST
-    u32 end_time = clock_time() >> 4;
-    u32 elapsed  = end_time - start_time;
-    LOG_D("blc_sdk_main_loop_elapsed: %d", elapsed);
-#endif
 
 ////////////////////////////////////// UI entry /////////////////////////////////
 ///////////////////////////////////// Battery Check ////////////////////////////////
@@ -980,20 +1007,23 @@ void main_loop(void)
         user_battery_power_check(VBAT_ALARM_THRES_MV);
     }
 #endif
-    app_adc_dbg_poll();
-    app_ctrl_status_notify_task();
-    u8 bat_percent_now = app_adc_dbg_get_bat_percent();
+    // 蓝牙连接成功后开始采样
+    if ((blc_ll_getCurrentState() & BLS_LINK_STATE_CONN))
     {
-        if (bat_percent_now != s_bat_percent_last_reported)
+        app_adc_dbg_poll();
+        app_ctrl_status_notify_task();
+        u8 bat_percent_now = app_adc_dbg_get_bat_percent();
         {
-            s_bat_percent_last_reported = bat_percent_now;
-            // BLE_LOG_D("bat: %d", bat_percent_now);
-            // app_att_battery_update(bat_percent_now);
+            if (bat_percent_now != s_bat_percent_last_reported)
+            {
+                s_bat_percent_last_reported = bat_percent_now;
+                // BLE_LOG_D("bat: %d", bat_percent_now);
+                app_att_battery_update(bat_percent_now);
+            }
         }
     }
-
 #ifdef UI_RADAR_ENABLE
-    app_radar_debug_rx_poll();
+    // app_radar_debug_rx_poll();
     app_ctrl_task();
     if (!g_time_tick_last)
     {
@@ -1031,25 +1061,11 @@ void main_loop(void)
             RadarSessionStop(1);
             gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         }
-        // }
-        // else
-        // {
-        //     // 进入设置状态
-        //     app_ctrl_radar_boundary_enter();
-        //     gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
-        // }
     }
     else
     {
         app_radar_set_enabled(0);
-        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-        RadarSessionStop(1);
     }
-#if FUNC_ELAPSED_TEST
-    end_time = clock_time() >> 4;
-    elapsed  = end_time - start_time;
-    LOG_D("ParseAndReportRadarFrame_elapsed: %d", elapsed);
-#endif
 #endif
 
 #if (UI_STEP_MOTOR_ENABLE)
@@ -1062,15 +1078,19 @@ void main_loop(void)
     }
     // StepMotor_GimbalDemoTask();
 #endif
-#if FUNC_ELAPSED_TEST
-    end_time = clock_time() >> 4;
-    elapsed  = end_time - start_time;
-    LOG_D("StepMotor_GimbalRadarTrackTask_elapsed: %d", elapsed);
-#endif
 #endif
 
 #if (UI_LED_ENABLE)
-    app_ui_power_led_task();
+    // 开机成功一次后才亮灯
+    static u8 g_app_power_on_once = 0;
+    if (!g_app_power_on_once && g_app_power_on)
+    {
+        g_app_power_on_once = 1;
+    }
+    if (g_app_power_on_once)
+    {
+        app_ui_power_led_task();
+    }
     if (g_app_power_on)
     {
         app_ui_led_task();
@@ -1082,9 +1102,6 @@ void main_loop(void)
         gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
         gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
     }
-#endif
-#if (UI_KEYBOARD_ENABLE)
-    proc_keyboard(0, 0, 0);
 #endif
     // ////////////////////////////////////// PM Process /////////////////////////////////
     blt_pm_proc();

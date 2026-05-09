@@ -341,6 +341,7 @@ static void app_radar_power_switch(u8 on)
 
 static void app_radar_power_state_reset(void)
 {
+    BLE_LOG_D("app_radar_power_state_reset");
     g_radar_low_freq_phase_on    = 0;
     g_radar_hold_on_mode         = 1;
     g_radar_rest_mode            = 0;
@@ -2234,7 +2235,7 @@ void app_radar_set_enabled(u8 on)
 {
     if (!on)
     {
-        app_radar_power_state_reset();
+        // app_radar_power_state_reset();
         app_radar_power_switch(0);
     }
     else

@@ -384,32 +384,38 @@ void app_ctrl_status_notify_task(void)
         g_last_setting_state = setting_mode;
         g_last_working_state = working_mode;
         g_last_resting_state = resting_mode;
+        LOG_D(" %d,  %d,  %d,  %d", g_last_charge_state, g_last_setting_state, g_last_working_state, g_last_resting_state);
+        LOG_D(" %d,  %d,  %d,  %d", g_last_charge_state, g_last_setting_state, g_last_working_state, g_last_resting_state);
+        LOG_D(" %d,  %d,  %d,  %d", g_last_charge_state, g_last_setting_state, g_last_working_state, g_last_resting_state);
         return;
     }
 
     if (charging != g_last_charge_state)
     {
+        BLE_LOG_D("charging changed: %d -> %d", g_last_charge_state, charging);
         g_last_charge_state = charging;
         changed             = 1;
     }
     if (setting_mode != g_last_setting_state)
     {
+        BLE_LOG_D("setting_mode changed: %d -> %d", g_last_setting_state, setting_mode);
         g_last_setting_state = setting_mode;
         changed              = 1;
     }
     if (working_mode != g_last_working_state)
     {
+        BLE_LOG_D("working_mode changed: %d -> %d", g_last_working_state, working_mode);
         g_last_working_state = working_mode;
         changed              = 1;
     }
     if (resting_mode != g_last_resting_state)
     {
+        BLE_LOG_D("resting_mode changed: %d -> %d", g_last_resting_state, resting_mode);
         g_last_resting_state = resting_mode;
         changed              = 1;
     }
     if (changed)
     {
-        BLE_LOG_D("charging: %d, power_on: %d, setting_mode: %d, working_mode: %d, resting_mode: %d", charging, power_on, setting_mode, working_mode, resting_mode);
         u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
     }
@@ -626,7 +632,21 @@ void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm)
 
 static void app_ctrl_radar_dbg_send_boundary_pt(u8 corner_idx, s32 x_mm, s32 y_mm)
 {
-    BLE_LOG_D("BND,%d,%d,%d", corner_idx, x_mm, y_mm);
+    /* 避免在 BLE/ATT 回调上下文里做大栈格式化输出导致异常复位：
+     * 改为用二进制 EVENT 上报（sub=BOUNDARY_PT），由上位机/APP解析。 */
+    s16 x16 = (x_mm > 32767) ? 32767 : (x_mm < -32768 ? -32768 : (s16)x_mm);
+    s16 y16 = (y_mm > 32767) ? 32767 : (y_mm < -32768 ? -32768 : (s16)y_mm);
+
+    /* payload[0]=sub, [1]=corner, [2..3]=x_mm(s16 LE), [4..5]=y_mm(s16 LE) */
+    u8 pl[6];
+    pl[0] = CTRL_RADAR_DBG_SUB_BOUNDARY_PT;
+    pl[1] = corner_idx;
+    pl[2] = (u8)(x16 & 0xFF);
+    pl[3] = (u8)((x16 >> 8) & 0xFF);
+    pl[4] = (u8)(y16 & 0xFF);
+    pl[5] = (u8)((y16 >> 8) & 0xFF);
+
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
 void app_ctrl_radar_dbg_send_boundary_quad_all(void)
@@ -663,24 +683,6 @@ u8 app_ctrl_is_setting_mode(void)
 }
 
 // ----------------------- command handlers -----------------------
-static int app_ctrl_handle_led_ctrl(u8 seq, u8 *payload, u16 len)
-{
-    if (len < 2)
-    {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_LED_CTRL, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    u8 ledId = payload[0];
-    u8 state = payload[1];  // 0: off, 1: on
-
-    app_ctrl_led_set(ledId, state);
-
-    u8 rsp[2] = {CTRL_STATUS_OK, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_LED_CTRL, seq, rsp, sizeof(rsp));
-    return 0;
-}
 
 static u32 app_ctrl_speed_to_interval_us(u8 speedLv, u32 defaultIntervalUs)
 {
@@ -1147,84 +1149,6 @@ void app_ctrl_motor_dir_task(void)
     }
 #endif
 #endif
-}
-
-static int app_ctrl_handle_cfg_set(u8 seq, u8 *payload, u16 len)
-{
-    if (len < 2)
-    {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_CFG_SET, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    u8 key  = payload[0];
-    u8 vLen = payload[1];
-
-    if ((u16)(2 + vLen) > len)
-    {
-        u8 rsp[2] = {CTRL_STATUS_LEN_ERROR, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_CFG_SET, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    u8 *val = &payload[2];
-
-    switch (key)
-    {
-    case 0x01:  // workMode
-        g_ctrlCfg.workMode = val[0];
-        break;
-    case 0x02:  // motorDefaultOnMs (u16)
-        if (vLen >= 2)
-        {
-            g_ctrlCfg.motorDefaultOnMs = val[0] | (val[1] << 8);
-        }
-        break;
-    default:
-        // unsupported key
-        break;
-    }
-
-    u8 rsp[2] = {CTRL_STATUS_OK, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_CFG_SET, seq, rsp, sizeof(rsp));
-    return 0;
-}
-
-static int app_ctrl_handle_cfg_get(u8 seq, u8 *payload, u16 len)
-{
-    (void)payload;
-    if (len < 1)
-    {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_CFG_GET, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    u8 key    = payload[0];
-    u8 rsp[5] = {CTRL_STATUS_OK, key, 0, 0, 0};
-    u8 rspLen = 2;
-
-    switch (key)
-    {
-    case 0x01:       // workMode
-        rsp[2] = 1;  // value length
-        rsp[3] = g_ctrlCfg.workMode;
-        rspLen = 4;
-        break;
-    case 0x02:       // motorDefaultOnMs
-        rsp[2] = 2;  // value length
-        rsp[3] = U16_LO(g_ctrlCfg.motorDefaultOnMs);
-        rsp[4] = U16_HI(g_ctrlCfg.motorDefaultOnMs);
-        rspLen = 5;
-        break;
-    default:
-        rsp[0] = CTRL_STATUS_PARAM_ERROR;
-        break;
-    }
-
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_CFG_GET, seq, rsp, rspLen);
-    return 0;
 }
 
 static int app_ctrl_handle_time_set(u8 seq, u8 *payload, u16 len)
@@ -1827,6 +1751,7 @@ void app_ctrl_task(void)
     if (g_play_record_delay_active && BLS_CONN_HANDLE != 0xFFFF &&
         clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US))
     {
+        LOG_D("app_ctrl_task upload play records");
         app_ctrl_try_upload_play_records();
     }
 #endif
@@ -1887,10 +1812,6 @@ void app_ctrl_onRx(u8 *data, u16 len)
 
     switch (cmdId)
     {
-    case CTRL_CMD_LED_CTRL:
-        BLE_LOG_D("CTRL_CMD_LED_CTRL");
-        app_ctrl_handle_led_ctrl(seq, payload, payLen);
-        break;
     case CTRL_CMD_MOTOR_CTRL:
         BLE_LOG_D("CTRL_CMD_MOTOR_CTRL");
         app_ctrl_handle_motor_ctrl(seq, payload, payLen);
@@ -1902,14 +1823,6 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_MOTOR_DIR_CTRL:
         BLE_LOG_D("CTRL_CMD_MOTOR_DIR_CTRL");
         app_ctrl_handle_motor_dir_ctrl(seq, payload, payLen);
-        break;
-    case CTRL_CMD_CFG_SET:
-        BLE_LOG_D("CTRL_CMD_CFG_SET");
-        app_ctrl_handle_cfg_set(seq, payload, payLen);
-        break;
-    case CTRL_CMD_CFG_GET:
-        BLE_LOG_D("CTRL_CMD_CFG_GET");
-        app_ctrl_handle_cfg_get(seq, payload, payLen);
         break;
     case CTRL_CMD_TIME_SET:
         BLE_LOG_D("CTRL_CMD_TIME_SET");

@@ -73,6 +73,18 @@ _attribute_ram_code_sec_noinline_
 
     gpio_init(!deepRetWakeUp);  // analog resistance will keep available in deepSleep mode, so no need initialize again
 
+#if (DEBUG_MODE)
+    /* 用于定位“异常重启”原因：
+     * - deepRetWakeUp: 是否 deep retention 回来
+     * - wakeup_src/pad_wakeup: 唤醒源
+     * - DEEP_ANA_REG0 bit1: 晶振启动失败导致的重启标志（见 pm.h 注释）
+     */
+    extern unsigned char analog_read(unsigned char addr);
+    unsigned char deep_ana0 = analog_read(DEEP_ANA_REG0);
+    LOG_D("[BOOT] deepRetWakeUp=%d, wakeup_src=%d, pad=%d, DEEP_ANA0=0x%02x",
+          deepRetWakeUp, pm_get_wakeup_src(), pm_is_deepPadWakeup(), deep_ana0);
+#endif
+
 #if (PM_DEEPSLEEP_RETENTION_ENABLE)
     if (deepRetWakeUp)
     {

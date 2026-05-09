@@ -28,8 +28,6 @@ enum{
 
 // Command IDs (can be extended freely)
 enum{
-    CTRL_CMD_LED_CTRL   = 0x10,   // control LED on/off/mode
-    CTRL_CMD_LED_QUERY  = 0x11,   // query LED status
     CTRL_CMD_POWER_CTRL = 0x12,   // power on/off for auto play
     CTRL_CMD_STATUS_GET = 0x13,   // get device status (power/boundary/height)
 
@@ -37,8 +35,6 @@ enum{
     CTRL_CMD_MOTOR_SET_ZERO  = 0x21,   // set motor logical zero (origin)
     CTRL_CMD_MOTOR_DIR_CTRL  = 0x22,   // direction control (up/down/left/right, optional speed, threshold notify)
 
-    CTRL_CMD_CFG_SET         = 0x30,   // set configuration parameter
-	CTRL_CMD_CFG_GET         = 0x31,   // get configuration parameter
     CTRL_CMD_TIME_SET        = 0x32,   // set device time (YYYY-MM-DD HH:MM:SS)
     CTRL_CMD_PLAY_RECORD_GET = 0x33,   // get play records (start/end time)
     CTRL_CMD_UID_GET         = 0x34,   // get flash UID (16 bytes, split into 2 responses)
@@ -155,10 +151,13 @@ static inline void app_ctrl_text_send_str(const char *s)
  * @note    Buffer is limited (local stack). Long lines will be truncated.
  *          Payload is chunked internally to fit 20-byte ATT values.
  */
+char _ble_log_buf[96];
 #define BLE_LOG_D(fmt, ...)                                                                 \
     do                                                                                      \
     {                                                                                       \
-        char _ble_log_buf[96];                                                              \
+        /* 注意：该宏可能在 BLE/ATT 回调上下文触发，回调栈较小。                                \
+         * 之前使用栈上 96B buffer + sprintf，存在栈溢出导致“冷启动式重启”的风险。            \
+         * 这里改为静态 buffer（非线程安全，但足够用于调试输出）。 */                         \
         tl_sprintf(_ble_log_buf, fmt "\r\n", ##__VA_ARGS__);                                \
         app_ctrl_text_send_bytes((const u8 *)_ble_log_buf, (u16)strlen(_ble_log_buf));      \
     } while (0)
