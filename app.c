@@ -405,20 +405,20 @@ void blt_pm_proc(void)
         usb_unplug_pending = 0;
     }
 
-    // 60s 广播未连接也进入低功耗
-    if (!blc_ll_isControllerEventPending())
-    {  // no controller event pending
-        // adv 60s, deepsleep
-        if (blc_ll_getCurrentState() == BLS_LINK_STATE_ADV && !sendTerminate_before_enterDeep &&
-            clock_time_exceed(advertise_begin_tick, ADV_IDLE_ENTER_DEEP_TIME * 1000000))
-        {
-            LOG_D("adv 60s ok deep sleep");
-            // 配置USB插入检测唤醒  有一个低电平就是插入了
-            cpu_set_gpio_wakeup(CHARGE_STATE, Level_Low, 1);
-            cpu_set_gpio_wakeup(CHARGE_STY, Level_Low, 1);
-            cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepsleep
-        }
-    }
+    // // 60s 广播未连接也进入低功耗
+    // if (!blc_ll_isControllerEventPending())
+    // {  // no controller event pending
+    //     // adv 60s, deepsleep
+    //     if (blc_ll_getCurrentState() == BLS_LINK_STATE_ADV && !sendTerminate_before_enterDeep &&
+    //         clock_time_exceed(advertise_begin_tick, ADV_IDLE_ENTER_DEEP_TIME * 1000000))
+    //     {
+    //         LOG_D("adv 60s ok deep sleep");
+    //         // 配置USB插入检测唤醒  有一个低电平就是插入了
+    //         cpu_set_gpio_wakeup(CHARGE_STATE, Level_Low, 1);
+    //         cpu_set_gpio_wakeup(CHARGE_STY, Level_Low, 1);
+    //         cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepsleep
+    //     }
+    // }
 
 #endif  // end of PM_DEEPSLEEP_ENABLE
 #endif  // END of  BLE_APP_PM_ENABLE
