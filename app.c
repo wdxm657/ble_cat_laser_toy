@@ -374,6 +374,16 @@ void blt_pm_proc(void)
                 cpu_set_gpio_wakeup(CHARGE_STATE, Level_Low, 1);
                 cpu_set_gpio_wakeup(CHARGE_STY, Level_Low, 1);
                 gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
+                // 关闭所有灯
+                gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
+                gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
+                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+                gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
+                gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
+                gpio_write(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
+                // 关闭所有AD采样开关
+                gpio_write(V_NTC_CON, 0);
+                gpio_write(V_BAT_CON, 0);
                 if (sendTerminate_before_enterDeep == 2)
                 {  // Terminate OK
                     LOG_D("usb plug out deep sleep conn");
@@ -1129,27 +1139,8 @@ void main_loop(void)
 #endif
 
 #if (UI_LED_ENABLE)
-    // 开机成功一次后才亮灯
-    static u8 g_app_power_on_once = 0;
-    if (!g_app_power_on_once && g_app_power_on)
-    {
-        g_app_power_on_once = 1;
-    }
-    if (g_app_power_on_once)
-    {
-        app_ui_power_led_task();
-    }
-    if (g_app_power_on)
-    {
-        app_ui_led_task();
-    }
-    else
-    {
-        gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
-        gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
-        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-        gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
-    }
+    app_ui_power_led_task();
+    app_ui_led_task();
 #endif
     // ////////////////////////////////////// PM Process /////////////////////////////////
     blt_pm_proc();

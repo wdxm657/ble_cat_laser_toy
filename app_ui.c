@@ -101,42 +101,70 @@ static void app_ui_power_led_set_red(u8 on)
 
 void app_ui_led_task(void)
 {
+// - 工作状态灯（白/蓝/黄）
+// - 熄灭
+//     - 代表物理关机状态
 #if (UI_LED_ENABLE)
     app_ui_led_blink_update();
 
+    // - 黄色灯闪烁
+    //     - 代表处在设置模式
     if (app_ctrl_is_setting_mode())
     {
         app_ui_led_all_off();
+        app_ui_led_set_red(g_led_blink_on);
         app_ui_led_set_green(g_led_blink_on);
         return;
     }
 
+    // - 黄色灯常亮
+    //     - 代表连续逗宠满10分钟自动进入临时60秒休息状态
     if (RadarSessionIsResting())
     {
-        app_ui_led_set_green(g_led_blink_on);
-        app_ui_led_set_blue(g_led_blink_on);
-        app_ui_led_set_red(g_led_blink_on);
+        app_ui_led_all_off();
+        app_ui_led_set_red(1);
+        app_ui_led_set_green(1);
         return;
     }
-
-    if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
+    if (app_get_power_state())
     {
-        app_ui_led_all_off();
-        app_ui_led_set_blue(1);
-        return;
+        // - 蓝色灯常亮
+        //     - 代表有蓝牙连接的软件开机状态
+        if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_blue(1);
+        }
+        // - 蓝色灯闪烁
+        //     - 代表没有蓝牙连接的软件开机状态
+        else
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_blue(g_led_blink_on);
+        }
     }
     else
     {
-        app_ui_led_all_off();
-        app_ui_led_set_blue(g_led_blink_on);
-        return;
+        // - 白色灯常亮
+        //     - 代表软件关机状态，且有蓝牙连接
+        if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_red(1);
+            app_ui_led_set_green(1);
+            app_ui_led_set_blue(1);
+        }
+        // - 白色灯闪烁
+        //     - 代表软件关机状态，且没有蓝牙连接
+        else
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_red(g_led_blink_on);
+            app_ui_led_set_green(g_led_blink_on);
+            app_ui_led_set_blue(g_led_blink_on);
+        }
     }
 
-    if (!app_get_power_state())
-    {
-        app_ui_led_all_off();
-        return;
-    }
 #endif
 }
 
