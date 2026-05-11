@@ -370,11 +370,11 @@ void app_ctrl_status_notify_task(void)
     u8 changed = 0;
 
     u8  power_on     = app_get_power_state() ? 1 : 0;
-    u8  boundary_set = app_radar_is_boundary_set() ? 1 : 0;
+    u8  boundary_set = 1;
     s32 height_mm    = 0;
     app_radar_get_install_height_mm(&height_mm);
-    u16 install_height    = app_radar_is_install_height_set() ? (U16_LO((s16)height_mm)) : 0;
-    u16 install_height_hi = app_radar_is_install_height_set() ? (U16_HI((s16)height_mm)) : 0;
+    u16 install_height    = (U16_LO((s16)height_mm));
+    u16 install_height_hi = (U16_HI((s16)height_mm));
     u8  charging          = app_adc_dbg_is_charging() ? 1 : 0;
     u8  setting_mode      = 0;
     u8  working_mode      = 0;
@@ -416,6 +416,7 @@ void app_ctrl_status_notify_task(void)
     }
     if (changed)
     {
+        BLE_LOG_D("power_on: %d, boundary_set: %d, install_height: %d, install_height_hi: %d", power_on, boundary_set, install_height, install_height_hi);
         u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
     }
@@ -1273,11 +1274,11 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     u8 rsp[9] = {CTRL_STATUS_OK, 0, 0, 0, 0, 0, 0, 0, 0};
     rsp[1]    = app_get_power_state() ? 1 : 0;
 #if (UI_RADAR_ENABLE)
-    rsp[2]        = app_radar_is_boundary_set() ? 1 : 0;
+    rsp[2]        = 1;
     s32 height_mm = 0;
     app_radar_get_install_height_mm(&height_mm);
-    rsp[3] = app_radar_is_install_height_set() ? (U16_LO((s16)height_mm)) : 0;
-    rsp[4] = app_radar_is_install_height_set() ? (U16_HI((s16)height_mm)) : 0;
+    rsp[3] = (U16_LO((s16)height_mm));
+    rsp[4] = (U16_HI((s16)height_mm));
     rsp[5] = app_adc_dbg_is_charging() ? 1 : 0;
     app_ctrl_calc_exclusive_mode_flags(&rsp[7], &rsp[8], &rsp[6]);
 #endif
