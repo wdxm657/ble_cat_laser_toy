@@ -36,7 +36,10 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u)  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (1000000u)  // 30s
+
+static volatile u8  s_ctrl_reboot_pending = 0;
+static volatile u32 s_ctrl_reboot_tick    = 0;
 
 static u8 app_ctrl_can_change_power(u8 target_on)
 {
@@ -384,9 +387,6 @@ void app_ctrl_status_notify_task(void)
         g_last_setting_state = setting_mode;
         g_last_working_state = working_mode;
         g_last_resting_state = resting_mode;
-        LOG_D(" %d,  %d,  %d,  %d", g_last_charge_state, g_last_setting_state, g_last_working_state, g_last_resting_state);
-        LOG_D(" %d,  %d,  %d,  %d", g_last_charge_state, g_last_setting_state, g_last_working_state, g_last_resting_state);
-        LOG_D(" %d,  %d,  %d,  %d", g_last_charge_state, g_last_setting_state, g_last_working_state, g_last_resting_state);
         return;
     }
 
@@ -1755,6 +1755,13 @@ void app_ctrl_task(void)
         app_ctrl_try_upload_play_records();
     }
 #endif
+
+    // Soft reboot requested by BLE control command.
+    // Do not reboot inside ATT write callback; respond first, then reboot shortly after.
+    if (s_ctrl_reboot_pending && clock_time_exceed(s_ctrl_reboot_tick, 120000))
+    {
+        start_reboot();
+    }
 }
 
 void app_ctrl_onRx(u8 *data, u16 len)
@@ -1916,6 +1923,21 @@ void app_ctrl_onRx(u8 *data, u16 len)
         app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
     }
 #endif
+        break;
+    case CTRL_CMD_DEVICE_REBOOT:
+        BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");
+        if (payLen != 0)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            u8 rsp[1] = {CTRL_STATUS_OK};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
+            s_ctrl_reboot_pending = 1;
+            s_ctrl_reboot_tick    = clock_time();
+        }
         break;
     default: {
         u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};

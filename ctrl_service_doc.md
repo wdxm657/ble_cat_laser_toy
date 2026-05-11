@@ -873,7 +873,37 @@ byte6 : status
 
 设备行为：清除FLASH中的高度和坐标信息
 
-#### 4.14 电池电量使用电池服务特帧读取
+#### 4.14 设备软复位（DEVICE_REBOOT，CMD = 0x5A）
+
+用途：APP 请求设备执行 MCU 软复位（重启）。  
+注意：设备会尽量先回复一帧 RSP，但随后会很快复位，因此 **APP 不应依赖一定能收到响应**；链路会断开，设备会重新广播/可被重新连接。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x5A           // cmdId = DEVICE_REBOOT
+byte3 : seq
+byte4 : 0x00           // payloadLen = 0
+byte5 : 0x00
+```
+
+**响应帧（设备 → APP）**（best-effort）
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x5A           // cmdId = DEVICE_REBOOT
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : status         // 0x00=OK，其它为错误码
+```
+
+设备行为：回复 RSP 后在 `app_ctrl_task()` 中延时约 120ms 触发 `start_reboot()`。
+
+#### 4.15 电池电量使用电池服务特帧读取
 
 Battery Service
 UUID:0000180F-0000-1000-8000-00805F9B34FB

@@ -190,12 +190,6 @@ void task_connect(u8 e, u8 *p, int n)
     // 开启电池电压AD检测开关
     gpio_write(V_BAT_CON, 1);
 #endif
-#if (UI_STEP_MOTOR_ENABLE)
-    LOG_D("[APP][CONN] power_on=%d, motor_reset_busy=%d", app_get_power_state(), StepMotor_GimbalResetBusy());
-#else
-    LOG_D("[APP][CONN] power_on=%d", app_get_power_state());
-#endif
-
     app_ctrl_on_ble_connected();
     BLE_LOG_D("[APP][CONN] Connect request");
 }
@@ -264,6 +258,16 @@ void task_suspend_exit(u8 e, u8 *p, int n)
     (void)n;
     rf_set_power_level_index(MY_RF_POWER_INDEX);
 }
+
+#if defined(CHARGE_STATE) && defined(CHARGE_STY)
+static inline u8 app_is_usb_plug_in(void)
+{
+    // 有一个低电平就代表插入
+    u8 state = gpio_read(CHARGE_STATE);
+    u8 sty   = gpio_read(CHARGE_STY);
+    return (state == 0 || sty == 0) ? 1 : 0;
+}
+#endif
 /**
  * @brief     uart ndma interrupt process
  * @param[in] none.
@@ -288,6 +292,9 @@ u8                                    scan_pm_disable = 0;
 void blt_pm_proc(void)
 {
 #if (BLE_APP_PM_ENABLE)
+    static u8  usb_unplug_pending = 0;
+    static u32 usb_unplug_tick    = 0;
+
 #if (PM_DEEPSLEEP_RETENTION_ENABLE)
 #if (SCAN_ENABLE)
     if (scan_cycle_tick == 0)
@@ -331,10 +338,10 @@ void blt_pm_proc(void)
     {
         bls_pm_setSuspendMask(SUSPEND_DISABLE);
     }
-    else
-    {
-        bls_pm_setSuspendMask(SUSPEND_ADV | SUSPEND_CONN);
-    }
+    // else
+    // {
+    //     bls_pm_setSuspendMask(SUSPEND_ADV | SUSPEND_CONN);
+    // }
 #endif
 #if (BLE_OTA_SERVER_ENABLE)
     if (ota_is_working)
@@ -349,27 +356,70 @@ void blt_pm_proc(void)
     }
 #endif
 #if (PM_DEEPSLEEP_ENABLE)  // test connection power, should disable deepSleep
-    if (sendTerminate_before_enterDeep == 2)
-    {                                                        // Terminate OK
-        cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepSleep
+    // 检测USB拔出：需要持续1秒仍为拔出，才认为真的拔出
+    if (!app_is_usb_plug_in())
+    {
+        if (!usb_unplug_pending)
+        {
+            usb_unplug_pending = 1;
+            usb_unplug_tick    = clock_time();
+        }
+
+        if (clock_time_exceed(usb_unplug_tick, 1000 * 1000))
+        {
+            // 二次确认仍为拔出
+            if (!app_is_usb_plug_in())
+            {
+                // 配置USB插入检测唤醒  有一个低电平就是插入了
+                cpu_set_gpio_wakeup(CHARGE_STATE, Level_Low, 1);
+                cpu_set_gpio_wakeup(CHARGE_STY, Level_Low, 1);
+                gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
+                if (sendTerminate_before_enterDeep == 2)
+                {  // Terminate OK
+                    LOG_D("usb plug out deep sleep conn");
+                    LOG_D("usb plug out deep sleep conn");
+                    cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepSleep
+                }
+                // 如果蓝牙连接中，先断开蓝牙
+                if (device_in_connection_state)
+                {
+                    bls_ll_terminateConnection(HCI_ERR_REMOTE_USER_TERM_CONN);  // push terminate cmd into ble TX buffer
+                    bls_ll_setAdvEnable(0);                                     // disable adv
+                    sendTerminate_before_enterDeep = 1;
+                }
+                else
+                {
+                    LOG_D("usb plug out deep sleep no conn");
+                    LOG_D("usb plug out deep sleep no conn");
+                    cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepSleep
+                }
+            }
+            else
+            {
+                usb_unplug_pending = 0;
+            }
+        }
     }
+    else
+    {
+        usb_unplug_pending = 0;
+    }
+
+    // 60s 广播未连接也进入低功耗
     if (!blc_ll_isControllerEventPending())
     {  // no controller event pending
         // adv 60s, deepsleep
         if (blc_ll_getCurrentState() == BLS_LINK_STATE_ADV && !sendTerminate_before_enterDeep &&
             clock_time_exceed(advertise_begin_tick, ADV_IDLE_ENTER_DEEP_TIME * 1000000))
         {
+            LOG_D("adv 60s ok deep sleep");
+            // 配置USB插入检测唤醒  有一个低电平就是插入了
+            cpu_set_gpio_wakeup(CHARGE_STATE, Level_Low, 1);
+            cpu_set_gpio_wakeup(CHARGE_STY, Level_Low, 1);
             cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepsleep
         }
-        // conn 60s no event(key/voice/led), enter deepsleep
-        else if (device_in_connection_state &&
-                 clock_time_exceed(latest_user_event_tick, CONN_IDLE_ENTER_DEEP_TIME * 1000000))
-        {
-            bls_ll_terminateConnection(HCI_ERR_REMOTE_USER_TERM_CONN);  // push terminate cmd into ble TX buffer
-            bls_ll_setAdvEnable(0);                                     // disable adv
-            sendTerminate_before_enterDeep = 1;
-        }
     }
+
 #endif  // end of PM_DEEPSLEEP_ENABLE
 #endif  // END of  BLE_APP_PM_ENABLE
 }
@@ -664,7 +714,6 @@ _attribute_no_inline_ void user_init_normal(void)
 #endif
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_Init();
-    // StepMotor_GimbalHome();
     StepMotor_GimbalResetStart();
 #endif
     //////////////////////////// peripheral hardware Initialization  End //////////////////////////////////
@@ -1038,7 +1087,7 @@ void main_loop(void)
         app_radar_on_time_tick();
     }
 
-    if (g_app_power_on)
+    if (!StepMotor_GimbalResetBusy() && g_app_power_on)
     {
         // 判断当前是否设置完成高度和逗宠区域
         // if (app_radar_is_install_height_set() && app_radar_is_boundary_set())
@@ -1076,7 +1125,6 @@ void main_loop(void)
         app_radar_gimbal_track_task(); /* StepMotor_GimbalTask；雷达目标在 parse 中直接 SetTarget */
         app_ctrl_motor_dir_task();
     }
-    // StepMotor_GimbalDemoTask();
 #endif
 #endif
 

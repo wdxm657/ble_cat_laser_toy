@@ -49,9 +49,9 @@
 /* firmware signature check */
 #define FIRMWARES_SIGNATURE_ENABLE     		 		0
 /* Power Management */
-#define BLE_APP_PM_ENABLE							0
-#define PM_DEEPSLEEP_ENABLE            				0 		//test connection power, should disable deepSleep
-#define PM_DEEPSLEEP_RETENTION_ENABLE               1
+#define BLE_APP_PM_ENABLE							1
+#define PM_DEEPSLEEP_ENABLE            				1 		//test connection power, should disable deepSleep
+#define PM_DEEPSLEEP_RETENTION_ENABLE               0
 /* scan setting */
 #define SCAN_ENABLE									0
 /* Flash Protection:

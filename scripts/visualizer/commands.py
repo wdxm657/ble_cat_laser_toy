@@ -92,3 +92,7 @@ def cmd_radar_boundary_exit() -> tuple[int, bytes, str]:
 def cmd_radar_reset_flash() -> tuple[int, bytes, str]:
     return p.CTRL_CMD_RADAR_RESET_FLASH_CONFIG, b"", "RADAR_RESET_FLASH_CONFIG"
 
+
+def cmd_device_reboot() -> tuple[int, bytes, str]:
+    return p.CTRL_CMD_DEVICE_REBOOT, b"", "DEVICE_REBOOT"
+

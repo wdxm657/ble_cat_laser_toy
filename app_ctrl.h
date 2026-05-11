@@ -52,6 +52,9 @@ enum{
     CTRL_CMD_RADAR_TRACK_SPEED         = 0x58,
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
+
+    /** APP -> device: request a soft reboot (MCU reset). */
+    CTRL_CMD_DEVICE_REBOOT            = 0x5A,
 };
 
 /** payload[0] for CTRL_CMD_RADAR_PRED_DEBUG events */

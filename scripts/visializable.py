@@ -184,6 +184,7 @@ CTRL_MSG_TYPE_RSP = cp.CTRL_MSG_TYPE_RSP
 CTRL_CMD_TEXT_CHUNK = cp.CTRL_CMD_TEXT_CHUNK
 CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = cp.CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY
 CTRL_CMD_RADAR_TRACK_SPEED = cp.CTRL_CMD_RADAR_TRACK_SPEED
+CTRL_CMD_DEVICE_REBOOT = cp.CTRL_CMD_DEVICE_REBOOT
 
 # x: [-1100, 1100], y: [100, 4100]
 X_MIN, X_MAX = -2500, 2500
@@ -590,6 +591,8 @@ class RadarVisualizer:
                 return f"[RSP][0x55] status={st} apply={apply_ok} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')}) pairMask=0x{pair_mask:02X}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
                 return f"[RSP][0x56] status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_DEVICE_REBOOT:
+                return f"[RSP][0x5A] status={st} (rebooting)"
             return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
 
         if (
@@ -956,6 +959,13 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         g.addWidget(b_commit, 10, 3)
         g.addWidget(b_reset, 10, 4)
         g.addWidget(b_exit, 10, 5)
+
+        # Device reboot
+        g.addWidget(QtWidgets.QLabel("设备软复位 (0x5A)"), 11, 0, 1, 2)
+        b_reboot = QtWidgets.QPushButton("重启 MCU")
+        b_reboot.clicked.connect(lambda: self._send(*vc.cmd_device_reboot()))
+        b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
+        g.addWidget(b_reboot, 11, 2, 1, 2)
 
         if self.vis._transport != "ble":
             self.time_use_local_tz.setEnabled(False)
