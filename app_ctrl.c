@@ -1798,7 +1798,7 @@ void app_ctrl_task(void)
 {
 #if (UI_RADAR_ENABLE)
     if (g_play_record_delay_active && BLS_CONN_HANDLE != 0xFFFF &&
-        clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US))
+        clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US) && !StepMotor_GimbalResetBusy())
     {
         LOG_D("app_ctrl_task upload play records");
         app_ctrl_try_upload_play_records();
