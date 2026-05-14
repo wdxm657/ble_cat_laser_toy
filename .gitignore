@@ -6,6 +6,8 @@ docs/PROJECT_JOURNAL.md
 hardware/*/History
 hardware/*/__Previews
 hardware/*/zip
-hardware/*.htm*
+hardware/*/*.htm*
 __Previews
 test/
+
+发票/

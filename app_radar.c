@@ -341,6 +341,10 @@ static void app_radar_power_switch(u8 on)
 
 static void app_radar_power_state_reset(void)
 {
+    if(g_radar_power_log_last_state == RADAR_POWER_LOG_STATE_NONE)
+    {
+        return;
+    }
     BLE_LOG_D("app_radar_power_state_reset");
     g_radar_low_freq_phase_on    = 0;
     g_radar_hold_on_mode         = 1;
@@ -568,6 +572,7 @@ static void radar_play_record_start(void)
 {
     if (!g_radar_time_valid)
     {
+        // BLE_LOG_D("radar_play_record_start failed");
         return;
     }
 
@@ -578,6 +583,7 @@ static void radar_play_record_start(void)
         g_radar_play_active_idx   = radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
         radar_play_records_save_to_flash();
         BLE_LOG_D("radar_play_record_push");
+        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
     }
     else
     {
@@ -589,10 +595,12 @@ static void radar_play_record_end(void)
 {
     if (!g_radar_time_valid || g_radar_play_state != RADAR_PLAY_STATE_ACTIVE)
     {
+        // BLE_LOG_D("radar_play_record_end failed");
         return;
     }
     BLE_LOG_D("radar_play_record_end");
 
+    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
     g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
     g_radar_play_state                            = RADAR_PLAY_STATE_IDLE;
     radar_play_records_save_to_flash();
@@ -633,7 +641,7 @@ void app_radar_on_time_tick(void)
         return;
     }
 
-    u32 elapsed_us = (now_tick - g_radar_time_last_tick) >> 4;
+    u32 elapsed_us         = (now_tick - g_radar_time_last_tick) >> 4;
     g_radar_time_last_tick = now_tick;
 
     g_radar_time_tick_acc_us += elapsed_us;
@@ -2066,8 +2074,8 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             }
             motion_dir_deg10 = (s16)d;
         }
-        // app_ctrl_radar_dbg_send_prev_raw(
-        //     g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
+        app_ctrl_radar_dbg_send_prev_raw(
+            g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
     }
     g_radar_pred.prev_x_mm = x_mm;
     g_radar_pred.prev_y_mm = y_mm;
@@ -2096,7 +2104,8 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         RadarGimbalCancelSequence();
         // app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
 #if (UI_STEP_MOTOR_ENABLE)
-        RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+        if (g_radar_hold_on_mode)
+            RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
 #else
         (void)track_x;
         (void)track_y;
@@ -2235,7 +2244,7 @@ void app_radar_set_enabled(u8 on)
 {
     if (!on)
     {
-        // app_radar_power_state_reset();
+        app_radar_power_state_reset();
         app_radar_power_switch(0);
     }
     else
@@ -2276,21 +2285,6 @@ void app_radar_task_power_schedule(void)
         return;
     }
 
-    if (g_radar_work_acc_tick == 0)
-    {
-        g_radar_work_acc_tick = now_tick;
-    }
-
-    if (clock_time_exceed(g_radar_work_acc_tick, 10000000u))
-    {
-        g_radar_work_acc_tick = now_tick;
-        if (g_radar_work_acc_sec < 0xFFFFu)
-        {
-            g_radar_work_acc_sec += 10;
-            BLE_LOG_D("radar work acc sec: %d", g_radar_work_acc_sec);
-        }
-    }
-
     if (g_radar_work_acc_sec >= 600u)
     {
         g_radar_rest_mode       = 1;
@@ -2305,6 +2299,21 @@ void app_radar_task_power_schedule(void)
 
     if (g_radar_hold_on_mode)
     {
+        if (g_radar_work_acc_tick == 0)
+        {
+            g_radar_work_acc_tick = now_tick;
+        }
+
+        if (clock_time_exceed(g_radar_work_acc_tick, 2000000u))
+        {
+            g_radar_work_acc_tick = now_tick;
+            if (g_radar_work_acc_sec < 0xFFFFu)
+            {
+                g_radar_work_acc_sec += 2;
+                BLE_LOG_D("radar work acc sec: %d", g_radar_work_acc_sec);
+            }
+        }
+
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
         {
             BLE_LOG_D("radar hold on mode");
@@ -2321,9 +2330,10 @@ void app_radar_task_power_schedule(void)
             radar_play_record_end();
             BLE_LOG_D("radar hold on mode exit");
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_NONE;
-            g_radar_hold_on_mode      = 0;
-            g_radar_low_freq_phase_on = 0;
-            g_radar_phase_tick        = now_tick;
+            g_radar_hold_on_mode         = 0;
+            g_radar_low_freq_phase_on    = 0;
+            g_radar_work_acc_tick        = 0;
+            g_radar_phase_tick           = now_tick;
         }
         return;
     }

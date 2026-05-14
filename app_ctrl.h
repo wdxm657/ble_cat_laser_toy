@@ -57,7 +57,7 @@ enum{
     CTRL_CMD_DEVICE_REBOOT            = 0x5A,
 };
 
-/** payload[0] for CTRL_CMD_RADAR_PRED_DEBUG events */
+/** payload[0] for radar debug EVENTs (cmdId=0x57) */
 enum{
     /** prev,raw 4xs16 + motion_valid(u8) + motion_dir_deg10(s16 LE), deg10=degrees*10, 0 if invalid -> 12 B */
     CTRL_RADAR_DBG_SUB_PREV_RAW = 0x01,

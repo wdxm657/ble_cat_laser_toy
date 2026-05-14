@@ -3,10 +3,10 @@ Radar prediction debug visualizer.
 
 - Serial: text lines after 8-char log prefix, e.g. PREV,...,RAW,... / PRED,STA,... / PREDSEQ,...
 - BLE: binary EVENT on Ctrl TX (cmd 0x57): prediction debug + BOUNDARY_PT (0x04).
-  BOUNDARY_PT is **not** streamed: device sends 4 NOTIFY only after CMD **0x58** on Ctrl RX.
-  **CMD 0x59** (RADAR_TRACK_SPEED): APP writes Ctrl RX with payload u16 LE ``interval_us`` (µs)
+  BOUNDARY_PT is **not** streamed: device sends 4 NOTIFY only after CMD **0x57** on Ctrl RX.
+  **CMD 0x58** (RADAR_TRACK_SPEED): APP writes Ctrl RX with payload u16 LE ``interval_us`` (µs)
   to set radar track gimbal step interval (same as ``StepMotor_GimbalSetSpeedUs``).
-  The night-mode UI can send 0x59 from the right panel.
+  The night-mode UI can send 0x58 from the right panel.
   Script defaults to requesting the quad on connect; use --no-ble-request-boundary to skip.
   The UI updates the black quad only after **all four** corners are received.
   pip install bleak
@@ -277,7 +277,7 @@ class RadarVisualizer:
             self._ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.1)
 
     def send_radar_track_interval_us(self, interval_us: int) -> bool:
-        """下发 CTRL_CMD_RADAR_TRACK_SPEED (0x59)，payload u16 LE interval_us。仅 BLE。"""
+        """下发 CTRL_CMD_RADAR_TRACK_SPEED (0x58)，payload u16 LE interval_us。仅 BLE。"""
         if self._transport != "ble":
             return False
         v = max(TRACK_INTERVAL_US_MIN, min(TRACK_INTERVAL_US_MAX, int(interval_us)))
@@ -391,6 +391,43 @@ class RadarVisualizer:
                         )
                     print(f"[BLE] notify on {ctrl_tx.uuid}", file=sys.stderr)
                     await client.start_notify(ctrl_tx, on_notify)
+
+                    # Auto time sync on every successful connect.
+                    # This makes firmware print app_radar_set_time_from_epoch() logs immediately after connect.
+                    if rx_ch is not None:
+                        try:
+                            epoch_sec = int(time.time())
+                            tz_q15 = 0
+                            try:
+                                now = datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ).astimezone()
+                                off = now.utcoffset()
+                                off_sec = int(off.total_seconds()) if off else 0
+                                tz_q15 = int(round(off_sec / 900.0))
+                                tz_q15 = max(-128, min(127, tz_q15))
+                            except Exception:
+                                pass
+
+                            self._ble_tx_seq = (self._ble_tx_seq + 1) & 0xFF
+                            payload = vc.cmd_time_set(epoch_sec, tz_q15)[1]
+                            frame = build_ctrl_cmd_frame(
+                                cp.CTRL_CMD_TIME_SET, self._ble_tx_seq, payload
+                            )
+                            try:
+                                await client.write_gatt_char(
+                                    rx_ch, frame, response=True
+                                )
+                            except Exception:
+                                await client.write_gatt_char(
+                                    rx_ch, frame, response=False
+                                )
+                            with self._lock:
+                                self.ctrl_lines.append(
+                                    f"[TX] cmd=0x32 seq={self._ble_tx_seq} TIME_SET epoch={epoch_sec} tz_q15={tz_q15}"
+                                )
+                        except Exception as ex:
+                            print("[BLE] TIME_SET write failed:", ex, file=sys.stderr)
                     if self._ble_request_boundary:
 
                         async def _write_get_boundary(rx_char) -> None:
@@ -422,7 +459,7 @@ class RadarVisualizer:
                                 )
                             else:
                                 await _write_get_boundary(rx_ch)
-                                print("[BLE] sent GET_BOUNDARY (0x58)", file=sys.stderr)
+                                print("[BLE] sent GET_BOUNDARY (0x57)", file=sys.stderr)
                                 await asyncio.sleep(1.0)
                                 with self._lock:
                                     need_retry = self.boundary_epoch == 0
@@ -558,6 +595,55 @@ class RadarVisualizer:
             if parse_hex_line is not None:
                 self._parse_line(parse_hex_line)
             return
+
+        # Radar prediction debug / boundary quad (binary event channel, cmd=0x57).
+        if (
+            fr.msg_type == CTRL_MSG_TYPE_EVENT
+            and cmd_id == cp.CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY
+        ):
+            if not payload:
+                return
+            sub = int(payload[0])
+
+            def _s16le(lo: int, hi: int) -> int:
+                v = (int(lo) & 0xFF) | ((int(hi) & 0xFF) << 8)
+                return v - 0x10000 if v >= 0x8000 else v
+
+            # 0x01: prev/raw + motion
+            if sub == 0x01 and len(payload) >= 12:
+                prev_x = _s16le(payload[1], payload[2])
+                prev_y = _s16le(payload[3], payload[4])
+                raw_x = _s16le(payload[5], payload[6])
+                raw_y = _s16le(payload[7], payload[8])
+                m_valid = int(payload[9])
+                m_deg10 = _s16le(payload[10], payload[11])
+                self._apply_prev_raw(prev_x, prev_y, raw_x, raw_y, m_valid, m_deg10)
+                return
+
+            # 0x02: pred sta (A,B)
+            if sub == 0x02 and len(payload) >= 9:
+                ax = _s16le(payload[1], payload[2])
+                ay = _s16le(payload[3], payload[4])
+                bx = _s16le(payload[5], payload[6])
+                by = _s16le(payload[7], payload[8])
+                self._apply_pred_sta(ax, ay, bx, by)
+                return
+
+            # 0x03: pred seq
+            if sub == 0x03 and len(payload) >= 6:
+                idx = int(payload[1])
+                x = _s16le(payload[2], payload[3])
+                y = _s16le(payload[4], payload[5])
+                self._apply_predseq(idx, x, y)
+                return
+
+            # 0x04: boundary point
+            if sub == 0x04 and len(payload) >= 6:
+                corner_idx = int(payload[1])
+                x_mm = _s16le(payload[2], payload[3])
+                y_mm = _s16le(payload[4], payload[5])
+                self._apply_boundary_pt(corner_idx, x_mm, y_mm)
+                return
 
         with self._lock:
             self.ctrl_lines.append(self._decode_ctrl_line(fr))
@@ -712,7 +798,7 @@ QLabel { color: #bac2de; }
 
 
 class RadarNightWindow(QtWidgets.QMainWindow):
-    """夜间模式：左侧坐标图，右侧雷达数据 + 跟踪步间隔下发 (0x59)。"""
+    """夜间模式：左侧坐标图，右侧雷达数据 + 跟踪步间隔下发 (0x58)。"""
 
     def __init__(self, vis: RadarVisualizer, title: str):
         super().__init__()
@@ -787,7 +873,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.speed_spin.setSingleStep(25)
         row.addWidget(self.speed_spin, 1)
         speed_l.addLayout(row)
-        self.speed_btn = QtWidgets.QPushButton("下发 CMD 0x59 (RADAR_TRACK_SPEED)")
+        self.speed_btn = QtWidgets.QPushButton("下发 CMD 0x58 (RADAR_TRACK_SPEED)")
         self.speed_btn.clicked.connect(self._on_send_speed)
         speed_l.addWidget(self.speed_btn)
         if vis._transport != "ble":
@@ -1167,7 +1253,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"Boundary epoch: {bepoch}",
             f"Quad: {bquad}",
             "",
-            f"UI 待下发 interval: {self.speed_spin.value()} µs  (CMD 0x59)",
+            f"UI 待下发 interval: {self.speed_spin.value()} µs  (CMD 0x58)",
         ]
         self.radar_text.setPlainText("\n".join(lines))
 

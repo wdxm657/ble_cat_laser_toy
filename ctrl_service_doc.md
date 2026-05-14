@@ -779,6 +779,52 @@ byte7 : 0x00
 01 01 54 04 00 00
 ```
 
+##### 4.11.6 雷达调试数据上报（EVENT，cmdId = 0x57）
+
+用途：设备以 **二进制**事件方式高频上报雷达调试数据，供上位机可视化使用（比走 `TEXT_CHUNK` 文本日志更省带宽、更易解析）。
+
+通用帧头（设备 → APP，上报）：
+
+```
+byte0 : 0x01            // version
+byte1 : 0x03            // msgType = EVENT
+byte2 : 0x57            // cmdId = RADAR_DEBUG channel（与 RADAR_DEBUG_GET_BOUNDARY 复用同一 cmdId）
+byte3 : seq
+byte4 : payloadLen L
+byte5 : payloadLen H
+payload...
+```
+
+payload[0] 为 `subType`，其余字段按 subType 解析（均为 **LE**）：
+
+- **subType = 0x01（PREV_RAW）**：`payloadLen = 12`
+  - byte0  : 0x01
+  - byte1..2  : prev_x (s16, mm)
+  - byte3..4  : prev_y (s16, mm)
+  - byte5..6  : raw_x  (s16, mm)
+  - byte7..8  : raw_y  (s16, mm)
+  - byte9     : motion_valid (u8, 0/1)
+  - byte10..11: motion_dir_deg10 (s16, deg*10；若 motion_valid==0 则为 0)
+
+- **subType = 0x02（PRED_STA）**：`payloadLen = 9`
+  - byte0  : 0x02
+  - byte1..2  : ax_mm (s16)
+  - byte3..4  : ay_mm (s16)
+  - byte5..6  : bx_mm (s16)
+  - byte7..8  : by_mm (s16)
+
+- **subType = 0x03（PREDSEQ）**：`payloadLen = 6`
+  - byte0  : 0x03
+  - byte1  : idx (u8，从 1 开始；idx==1 表示新序列)
+  - byte2..3  : x_mm (s16)
+  - byte4..5  : y_mm (s16)
+
+- **subType = 0x04（BOUNDARY_PT）**：`payloadLen = 6`
+  - byte0  : 0x04
+  - byte1  : corner_idx (u8, 0..3；顺序：左上0 → 右上1 → 右下2 → 左下3)
+  - byte2..3  : x_mm (s16)
+  - byte4..5  : y_mm (s16)
+
 #### 4.12 文本分片传输（TEXT_CHUNK，CMD = 0x40）
 
 用于发送长文本，设备端最多缓存 `CTRL_TEXT_MAX_TOTAL_LEN = 100` 字节文本，每帧最多携带 `CTRL_TEXT_CHUNK_DATA_MAX = 10` 字节纯文本。

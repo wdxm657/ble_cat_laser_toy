@@ -36,7 +36,7 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
-#define POWER_CTRL_OFF_COOLDOWN_US (1000000u)  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u)  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -618,17 +618,56 @@ void app_ctrl_text_send_bytes(const u8 *data, u16 len)
 
 void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw_y, u8 motion_valid, s16 motion_dir_deg10)
 {
-    BLE_LOG_D("PREV,%d,%d,RAW,%d,%d,M,%d,%d", prev_x, prev_y, raw_x, raw_y, motion_valid ? 1 : 0, motion_valid ? motion_dir_deg10 : 0);
+    /* Binary EVENT on ctrl TX:
+     * cmdId = CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY (0x57), payload:
+     * [0]=sub(CTRL_RADAR_DBG_SUB_PREV_RAW),
+     * [1..2]=prev_x(s16 LE), [3..4]=prev_y(s16 LE),
+     * [5..6]=raw_x(s16 LE),  [7..8]=raw_y(s16 LE),
+     * [9]=motion_valid(u8),  [10..11]=motion_dir_deg10(s16 LE, 0 if invalid). */
+    u8  pl[12];
+    s16 mdir = motion_valid ? motion_dir_deg10 : 0;
+    pl[0]    = CTRL_RADAR_DBG_SUB_PREV_RAW;
+    pl[1]    = (u8)(prev_x & 0xFF);
+    pl[2]    = (u8)((prev_x >> 8) & 0xFF);
+    pl[3]    = (u8)(prev_y & 0xFF);
+    pl[4]    = (u8)((prev_y >> 8) & 0xFF);
+    pl[5]    = (u8)(raw_x & 0xFF);
+    pl[6]    = (u8)((raw_x >> 8) & 0xFF);
+    pl[7]    = (u8)(raw_y & 0xFF);
+    pl[8]    = (u8)((raw_y >> 8) & 0xFF);
+    pl[9]    = motion_valid ? 1 : 0;
+    pl[10]   = (u8)(mdir & 0xFF);
+    pl[11]   = (u8)((mdir >> 8) & 0xFF);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
 void app_ctrl_radar_dbg_send_pred_sta(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm)
 {
-    BLE_LOG_D("PRED,STA,%d,%d,%d,%d", ax_mm, ay_mm, bx_mm, by_mm);
+    /* payload: [0]=sub, [1..8]=ax,ay,bx,by (s16 LE) */
+    u8 pl[9];
+    pl[0] = CTRL_RADAR_DBG_SUB_PRED_STA;
+    pl[1] = (u8)(ax_mm & 0xFF);
+    pl[2] = (u8)((ax_mm >> 8) & 0xFF);
+    pl[3] = (u8)(ay_mm & 0xFF);
+    pl[4] = (u8)((ay_mm >> 8) & 0xFF);
+    pl[5] = (u8)(bx_mm & 0xFF);
+    pl[6] = (u8)((bx_mm >> 8) & 0xFF);
+    pl[7] = (u8)(by_mm & 0xFF);
+    pl[8] = (u8)((by_mm >> 8) & 0xFF);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
 void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm)
 {
-    BLE_LOG_D("PREDSEQ,%d,%d,%d", idx, x_mm, y_mm);
+    /* payload: [0]=sub, [1]=idx, [2..3]=x_mm(s16 LE), [4..5]=y_mm(s16 LE) */
+    u8 pl[6];
+    pl[0] = CTRL_RADAR_DBG_SUB_PREDSEQ;
+    pl[1] = idx;
+    pl[2] = (u8)(x_mm & 0xFF);
+    pl[3] = (u8)((x_mm >> 8) & 0xFF);
+    pl[4] = (u8)(y_mm & 0xFF);
+    pl[5] = (u8)((y_mm >> 8) & 0xFF);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
 static void app_ctrl_radar_dbg_send_boundary_pt(u8 corner_idx, s32 x_mm, s32 y_mm)

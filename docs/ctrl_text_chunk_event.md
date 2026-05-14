@@ -49,6 +49,6 @@ payload 字节布局：
 
 ### 兼容性说明
 
-- 现有雷达调试 `CTRL_CMD_RADAR_PRED_DEBUG (0x57)` 不变
+- 雷达调试数据（cmdId=0x57）建议走二进制 EVENT（见 `ctrl_service_doc.md` 的雷达调试数据上报小节），避免占用 `TEXT_CHUNK`
 - 上位机旧版本忽略 `cmdId != 0x57` 的 EVENT；升级后即可显示 `0x40` 文本
 
