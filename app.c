@@ -1067,20 +1067,20 @@ void main_loop(void)
     }
 #endif
     // 蓝牙连接成功后开始采样
-    if ((blc_ll_getCurrentState() & BLS_LINK_STATE_CONN))
+    // if ((blc_ll_getCurrentState() & BLS_LINK_STATE_CONN))
+    // {
+    app_adc_dbg_poll();
+    app_ctrl_status_notify_task();
+    u8 bat_percent_now = app_adc_dbg_get_bat_percent();
     {
-        app_adc_dbg_poll();
-        app_ctrl_status_notify_task();
-        u8 bat_percent_now = app_adc_dbg_get_bat_percent();
+        if (bat_percent_now != s_bat_percent_last_reported)
         {
-            if (bat_percent_now != s_bat_percent_last_reported)
-            {
-                s_bat_percent_last_reported = bat_percent_now;
-                // BLE_LOG_D("bat: %d", bat_percent_now);
-                app_att_battery_update(bat_percent_now);
-            }
+            s_bat_percent_last_reported = bat_percent_now;
+            // BLE_LOG_D("bat: %d", bat_percent_now);
+            app_att_battery_update(bat_percent_now);
         }
     }
+    // }
 #ifdef UI_RADAR_ENABLE
     // app_radar_debug_rx_poll();
     app_ctrl_task();
