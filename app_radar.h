@@ -30,7 +30,7 @@ void app_radar_init(void);
 void app_radar_on_time_tick(void);
 void app_radar_set_time_from_epoch(u32 epoch_sec, s8 tz_q15);
 int  app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records);
-int  app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records);
+int  app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out, u16 *avg_speed_cms_out, u8 max_records);
 u8   app_radar_has_complete_play_records(void);
 void app_radar_clear_complete_play_records(void);
 void app_radar_set_install_height_mm(s32 height_mm);

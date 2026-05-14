@@ -21,17 +21,19 @@
 #define RADAR_RX_IRQ_DEBUG 0
 #endif
 
-#define RADAR_INSTALL_HEIGHT_DEFAULT_MM (1.5f * 1000.0f)
-#define RADAR_FRAME_LEN                 30
-#define SAMPLE_COUNT                    1
-#define STATIONARY_DXY_THRESHOLD_MM     5
-#define RADAR_IDLE_TIMEOUT_US           (1000000u * 30u)  // 30s
+#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.5f * 1000.0f)
+#define RADAR_FRAME_LEN                   30
+#define SAMPLE_COUNT                      1
+#define STATIONARY_DXY_THRESHOLD_MM       5
+#define RADAR_IDLE_TIMEOUT_US             (1000000u * 30u)  // 30s
+/** 与帧解析中「目标在移动」判定一致 (cm/s) */
+#define RADAR_TARGET_MOVING_SPEED_THR_CMS 5
 
-#define RADAR_TIME_SEC_PER_DAY          86400u
+#define RADAR_TIME_SEC_PER_DAY            86400u
 
-#define RADAR_PLAY_STATE_IDLE           0
-#define RADAR_PLAY_STATE_ACTIVE         1
-#define RADAR_PLAY_END_ONGOING          0xFFFFFFFFu
+#define RADAR_PLAY_STATE_IDLE             0
+#define RADAR_PLAY_STATE_ACTIVE           1
+#define RADAR_PLAY_END_ONGOING            0xFFFFFFFFu
 
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte[RADAR_FRAME_LEN];
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte_cnt = 0;
@@ -259,13 +261,20 @@ _attribute_data_retention_ static u8  g_radar_play_state        = RADAR_PLAY_STA
 _attribute_data_retention_ static u32 g_radar_play_active_start = 0;
 _attribute_data_retention_ static u8  g_radar_play_active_idx   = 0;
 
-_attribute_data_retention_ static u32 g_radar_play_start_sec[RADAR_TIME_MAX_RECORDS] = {0};
-_attribute_data_retention_ static u32 g_radar_play_end_sec[RADAR_TIME_MAX_RECORDS]   = {0};
-_attribute_data_retention_ static s8  g_radar_play_tz_q15[RADAR_TIME_MAX_RECORDS]    = {0};
-_attribute_data_retention_ static u8  g_radar_play_record_count                      = 0;
-_attribute_data_retention_ static u8  g_radar_play_record_next                       = 0;
-_attribute_data_retention_ static u8  g_radar_boundary_configured                    = 0;
-_attribute_data_retention_ static u8  g_radar_install_height_set                     = 0;
+_attribute_data_retention_ static u32 g_radar_play_start_sec[RADAR_TIME_MAX_RECORDS]     = {0};
+_attribute_data_retention_ static u32 g_radar_play_end_sec[RADAR_TIME_MAX_RECORDS]       = {0};
+_attribute_data_retention_ static s8  g_radar_play_tz_q15[RADAR_TIME_MAX_RECORDS]        = {0};
+_attribute_data_retention_ static u32 g_radar_play_motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
+_attribute_data_retention_ static u16 g_radar_play_avg_speed_cms[RADAR_TIME_MAX_RECORDS] = {0};
+_attribute_data_retention_ static u8  g_radar_play_record_count                          = 0;
+_attribute_data_retention_ static u8  g_radar_play_record_next                           = 0;
+/** 最近一次雷达速度 (cm/s)，供每秒统计采样 */
+_attribute_data_retention_ static s16 g_radar_last_speed_cms = 0;
+/** 当前进行中逗宠段：工作模式下每秒「目标在移动」的累计秒数与速度绝对值之和 */
+_attribute_data_retention_ static u32 g_radar_sess_motion_sec     = 0;
+_attribute_data_retention_ static u32 g_radar_sess_speed_sum      = 0;
+_attribute_data_retention_ static u8  g_radar_boundary_configured = 0;
+_attribute_data_retention_ static u8  g_radar_install_height_set  = 0;
 
 /* 边界多边形：默认是矩形，但支持修改为任意凸四边形（点顺序需为逆时针或顺时针一致） */
 static const radar_boundary_point_t g_radar_boundary_quad_default[4] = {
@@ -284,7 +293,7 @@ _attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4
 
 #define RADAR_BOUNDARY_FLASH_MAGIC       0x52424452u  // "RBDR"
 #define RADAR_INSTALL_HEIGHT_FLASH_MAGIC 0x52444948u  // "RDIH"
-#define RADAR_PLAY_RECORD_FLASH_MAGIC    0x5244504Cu  // "RDPL"
+#define RADAR_PLAY_RECORD_FLASH_MAGIC    0x5244504Du  // "RDPM" 含运动统计，与旧 RDPL 布局不兼容
 
 typedef struct
 {
@@ -313,6 +322,8 @@ typedef struct
     u32 end_sec[RADAR_TIME_MAX_RECORDS];
     s8  tz_q15[RADAR_TIME_MAX_RECORDS];
     u8  tz_reserved[3];
+    u32 motion_sec[RADAR_TIME_MAX_RECORDS];
+    u16 avg_speed_cms[RADAR_TIME_MAX_RECORDS];
     u32 crc;
 } radar_play_record_flash_t;
 
@@ -341,7 +352,7 @@ static void app_radar_power_switch(u8 on)
 
 static void app_radar_power_state_reset(void)
 {
-    if(g_radar_power_log_last_state == RADAR_POWER_LOG_STATE_NONE)
+    if (g_radar_power_log_last_state == RADAR_POWER_LOG_STATE_NONE)
     {
         return;
     }
@@ -387,15 +398,20 @@ static void radar_play_records_reset_ram(void)
 {
     for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
     {
-        g_radar_play_start_sec[i] = 0;
-        g_radar_play_end_sec[i]   = 0;
-        g_radar_play_tz_q15[i]    = 0;
+        g_radar_play_start_sec[i]     = 0;
+        g_radar_play_end_sec[i]       = 0;
+        g_radar_play_tz_q15[i]        = 0;
+        g_radar_play_motion_sec[i]    = 0;
+        g_radar_play_avg_speed_cms[i] = 0;
     }
     g_radar_play_record_count = 0;
     g_radar_play_record_next  = 0;
     g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start = 0;
     g_radar_play_active_idx   = 0;
+    g_radar_sess_motion_sec   = 0;
+    g_radar_sess_speed_sum    = 0;
+    g_radar_last_speed_cms    = 0;
 }
 
 static void radar_play_records_save_to_flash(void)
@@ -409,9 +425,11 @@ static void radar_play_records_save_to_flash(void)
 
     for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
     {
-        stored.start_sec[i] = g_radar_play_start_sec[i];
-        stored.end_sec[i]   = g_radar_play_end_sec[i];
-        stored.tz_q15[i]    = g_radar_play_tz_q15[i];
+        stored.start_sec[i]     = g_radar_play_start_sec[i];
+        stored.end_sec[i]       = g_radar_play_end_sec[i];
+        stored.tz_q15[i]        = g_radar_play_tz_q15[i];
+        stored.motion_sec[i]    = g_radar_play_motion_sec[i];
+        stored.avg_speed_cms[i] = g_radar_play_avg_speed_cms[i];
     }
 
     stored.tz_reserved[0] = 0;
@@ -450,9 +468,11 @@ static void radar_play_records_load_from_flash(void)
 
     for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
     {
-        g_radar_play_start_sec[i] = stored.start_sec[i];
-        g_radar_play_end_sec[i]   = stored.end_sec[i];
-        g_radar_play_tz_q15[i]    = stored.tz_q15[i];
+        g_radar_play_start_sec[i]     = stored.start_sec[i];
+        g_radar_play_end_sec[i]       = stored.end_sec[i];
+        g_radar_play_tz_q15[i]        = stored.tz_q15[i];
+        g_radar_play_motion_sec[i]    = stored.motion_sec[i];
+        g_radar_play_avg_speed_cms[i] = stored.avg_speed_cms[i];
     }
 
     g_radar_play_record_count = stored.record_count;
@@ -546,9 +566,11 @@ static u8 radar_play_record_push(u32 start_sec, u32 end_sec)
 {
     u8 idx = g_radar_play_record_next;
 
-    g_radar_play_start_sec[idx] = start_sec;
-    g_radar_play_end_sec[idx]   = end_sec;
-    g_radar_play_tz_q15[idx]    = g_radar_time_tz_q15;
+    g_radar_play_start_sec[idx]     = start_sec;
+    g_radar_play_end_sec[idx]       = end_sec;
+    g_radar_play_tz_q15[idx]        = g_radar_time_tz_q15;
+    g_radar_play_motion_sec[idx]    = 0;
+    g_radar_play_avg_speed_cms[idx] = 0;
 
     g_radar_play_record_next++;
     if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
@@ -578,6 +600,8 @@ static void radar_play_record_start(void)
 
     if (g_radar_play_state != RADAR_PLAY_STATE_ACTIVE)
     {
+        g_radar_sess_motion_sec   = 0;
+        g_radar_sess_speed_sum    = 0;
         g_radar_play_state        = RADAR_PLAY_STATE_ACTIVE;
         g_radar_play_active_start = g_radar_time_sec;
         g_radar_play_active_idx   = radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
@@ -601,6 +625,18 @@ static void radar_play_record_end(void)
     BLE_LOG_D("radar_play_record_end");
 
     gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+    {
+        u32 mot = g_radar_sess_motion_sec;
+        u16 av  = 0;
+        if (mot != 0u)
+        {
+            av = (u16)((g_radar_sess_speed_sum + (mot >> 1)) / mot);
+        }
+        g_radar_play_motion_sec[g_radar_play_active_idx]    = mot;
+        g_radar_play_avg_speed_cms[g_radar_play_active_idx] = av;
+    }
+    g_radar_sess_motion_sec                       = 0;
+    g_radar_sess_speed_sum                        = 0;
     g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
     g_radar_play_state                            = RADAR_PLAY_STATE_IDLE;
     radar_play_records_save_to_flash();
@@ -627,6 +663,27 @@ void app_radar_set_time_from_epoch(u32 epoch_sec, s8 tz_q15)
     BLE_LOG_D("datetime: %04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec);
 }
 
+/** 每推进 1 s 世界时调用：工作模式 + 逗宠进行中 + 雷达判为移动时累加运动秒数与速度样本 */
+static void radar_play_accum_motion_for_elapsed_sec(void)
+{
+    if (!g_radar_working_mode || g_radar_play_state != RADAR_PLAY_STATE_ACTIVE)
+    {
+        return;
+    }
+    if ((u16)RadarSpeedAbs(g_radar_last_speed_cms) <= (u16)RADAR_TARGET_MOVING_SPEED_THR_CMS)
+    {
+        return;
+    }
+    {
+        u32 add_v = (u32)(u16)RadarSpeedAbs(g_radar_last_speed_cms);
+        if (g_radar_sess_speed_sum <= 0xFFFFFFFFu - add_v)
+        {
+            g_radar_sess_speed_sum += add_v;
+        }
+        g_radar_sess_motion_sec++;
+    }
+}
+
 void app_radar_on_time_tick(void)
 {
     if (!g_radar_time_valid)
@@ -649,6 +706,7 @@ void app_radar_on_time_tick(void)
     {
         g_radar_time_tick_acc_us -= 1000000u;
         g_radar_time_sec++;
+        radar_play_accum_motion_for_elapsed_sec();
     }
 }
 
@@ -681,7 +739,7 @@ int app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
     return count;
 }
 
-int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
+int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out, u16 *avg_speed_cms_out, u8 max_records)
 {
 #define RADAR_PLAY_MIN_DURATION_SEC 30u
 
@@ -712,14 +770,24 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records
         /* 持续时间不足 30 s 或时间戳回绕/异常：标记为无效并跳过，下次 clear 会清除 */
         if (end <= start || (end - start) < (RADAR_PLAY_MIN_DURATION_SEC - 1))
         {
-            g_radar_play_end_sec[idx] = 0;
-            need_save                 = 1;
+            g_radar_play_end_sec[idx]       = 0;
+            g_radar_play_motion_sec[idx]    = 0;
+            g_radar_play_avg_speed_cms[idx] = 0;
+            need_save                       = 1;
             continue;
         }
 
         out_buf[count * 2]     = start;
         out_buf[count * 2 + 1] = end;
         tz_buf[count]          = (u8)g_radar_play_tz_q15[idx];
+        if (motion_sec_out)
+        {
+            motion_sec_out[count] = g_radar_play_motion_sec[idx];
+        }
+        if (avg_speed_cms_out)
+        {
+            avg_speed_cms_out[count] = g_radar_play_avg_speed_cms[idx];
+        }
         count++;
         BLE_LOG_D("count: %d, start: %d, end: %d", count, start, end);
     }
@@ -757,6 +825,8 @@ void app_radar_clear_complete_play_records(void)
     u32 start_tmp[RADAR_TIME_MAX_RECORDS] = {0};
     u32 end_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
     s8  tz_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u32 mot_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
+    u16 av_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
     u8  keep_count                        = 0;
 
     u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
@@ -771,20 +841,26 @@ void app_radar_clear_complete_play_records(void)
         start_tmp[keep_count] = g_radar_play_start_sec[idx];
         end_tmp[keep_count]   = g_radar_play_end_sec[idx];
         tz_tmp[keep_count]    = g_radar_play_tz_q15[idx];
+        mot_tmp[keep_count]   = g_radar_play_motion_sec[idx];
+        av_tmp[keep_count]    = g_radar_play_avg_speed_cms[idx];
         keep_count++;
     }
 
     for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
     {
-        g_radar_play_start_sec[i] = 0;
-        g_radar_play_end_sec[i]   = 0;
-        g_radar_play_tz_q15[i]    = 0;
+        g_radar_play_start_sec[i]     = 0;
+        g_radar_play_end_sec[i]       = 0;
+        g_radar_play_tz_q15[i]        = 0;
+        g_radar_play_motion_sec[i]    = 0;
+        g_radar_play_avg_speed_cms[i] = 0;
     }
     for (u8 i = 0; i < keep_count; i++)
     {
-        g_radar_play_start_sec[i] = start_tmp[i];
-        g_radar_play_end_sec[i]   = end_tmp[i];
-        g_radar_play_tz_q15[i]    = tz_tmp[i];
+        g_radar_play_start_sec[i]     = start_tmp[i];
+        g_radar_play_end_sec[i]       = end_tmp[i];
+        g_radar_play_tz_q15[i]        = tz_tmp[i];
+        g_radar_play_motion_sec[i]    = mot_tmp[i];
+        g_radar_play_avg_speed_cms[i] = av_tmp[i];
     }
 
     g_radar_play_record_count = keep_count;
@@ -2201,9 +2277,10 @@ void app_radar_parse_and_report_frame(void)
             radar_v_sum      = 0;
             radar_sample_cnt = 0;
 
+            g_radar_last_speed_cms = v_avg;
             // LOG_D("radar, x=%dmm y=%dmm v=%dcm/s", x_avg, y_avg, v_avg);
             u32 now_tick = clock_time();
-            if (RadarSpeedAbs(v_avg) > 5)
+            if (RadarSpeedAbs(v_avg) > RADAR_TARGET_MOVING_SPEED_THR_CMS)
             {
                 RadarSessionOnMotion(now_tick);
             }

@@ -36,7 +36,7 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u)  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 30  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -141,9 +141,11 @@ static void app_ctrl_try_upload_play_records(void)
         return;
     }
 
-    u32 records[RADAR_TIME_MAX_RECORDS * 2] = {0};
-    u8  timezones[RADAR_TIME_MAX_RECORDS]   = {0};
-    int count                               = app_radar_get_complete_play_records(records, timezones, RADAR_TIME_MAX_RECORDS);
+    u32 records[RADAR_TIME_MAX_RECORDS * 2]   = {0};
+    u8  timezones[RADAR_TIME_MAX_RECORDS]     = {0};
+    u32 motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
+    u16 avg_speed_cms[RADAR_TIME_MAX_RECORDS] = {0};
+    int count                                 = app_radar_get_complete_play_records(records, timezones, motion_sec, avg_speed_cms, RADAR_TIME_MAX_RECORDS);
     if (count <= 0)
     {
         return;
@@ -154,21 +156,27 @@ static void app_ctrl_try_upload_play_records(void)
         u32 start_sec = records[i * 2];
         u32 end_sec   = records[i * 2 + 1];
 
-        // payload: [total][idx][start_sec(LE4)][end_sec(LE4)][tz]
-        u8 evt[12] = {0};
-        evt[0]     = 0;
-        evt[1]     = (u8)count;
-        evt[2]     = (u8)i;
-        evt[3]     = (u8)(start_sec & 0xFF);
-        evt[4]     = (u8)((start_sec >> 8) & 0xFF);
-        evt[5]     = (u8)((start_sec >> 16) & 0xFF);
-        evt[6]     = (u8)((start_sec >> 24) & 0xFF);
-        evt[7]     = (u8)(end_sec & 0xFF);
-        evt[8]     = (u8)((end_sec >> 8) & 0xFF);
-        evt[9]     = (u8)((end_sec >> 16) & 0xFF);
-        evt[10]    = (u8)((end_sec >> 24) & 0xFF);
-        evt[11]    = timezones[i];
-        BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d", i, start_sec, end_sec, timezones[i]);
+        /* 14B：受 CTRL_TX_MAX_LEN=20 限制（6 头 + payload ≤14）。motion 为 u16 秒（>65535 饱和），平均速度 u8 cm/s（>255 饱和）。 */
+        u32 msec    = motion_sec[i];
+        u16 avs     = avg_speed_cms[i];
+        u16 m16     = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
+        u8  av8     = (avs > 255u) ? 255u : (u8)avs;
+        u8  evt[14] = {0};
+        evt[0]      = (u8)count;
+        evt[1]      = (u8)i;
+        evt[2]      = (u8)(start_sec & 0xFF);
+        evt[3]      = (u8)((start_sec >> 8) & 0xFF);
+        evt[4]      = (u8)((start_sec >> 16) & 0xFF);
+        evt[5]      = (u8)((start_sec >> 24) & 0xFF);
+        evt[6]      = (u8)(end_sec & 0xFF);
+        evt[7]      = (u8)((end_sec >> 8) & 0xFF);
+        evt[8]      = (u8)((end_sec >> 16) & 0xFF);
+        evt[9]      = (u8)((end_sec >> 24) & 0xFF);
+        evt[10]     = timezones[i];
+        evt[11]     = (u8)(m16 & 0xFF);
+        evt[12]     = (u8)((m16 >> 8) & 0xFF);
+        evt[13]     = av8;
+        BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d mot: %u av: %u", i, start_sec, end_sec, timezones[i], (u32)m16, (u32)av8);
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
     }
 

@@ -449,27 +449,54 @@ byte7 : 0x00
 - 每次新增一条完整记录（会话结束）时，若 BLE 已连接，主动上报未 ACK 的完整记录。
 - BLE 首次连接成功或重连成功后，若存在未 ACK 的完整记录，主动补发。
 
+**长度约束（与实现对齐）**
+
+- 控制面单帧总长须满足 `6 + payloadLen ≤ CTRL_TX_MAX_LEN`（当前 **20** 字节，见 §1 / `app_ctrl.h`）。
+- 本事件 **payload 固定 14 字节**（`payloadLen = 0x000E`），总长 **20 字节**。
+
 **主动上报帧（设备 → APP，EVENT）**
+
+帧头（6 字节）同 §1，以下为 **payload 内偏移**（从首字节算起，**小端 LE**）：
+
+| payload 偏移 | 长度 | 类型 | 说明 |
+|----------------|------|------|------|
+| 0 | 1 | u8 | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致） |
+| 1 | 1 | u8 | `index`：当前条在批次中的序号 `0 .. total-1` |
+| 2 | 4 | u32 LE | `start_sec`：逗宠段开始 Unix 秒 |
+| 6 | 4 | u32 LE | `end_sec`：逗宠段结束 Unix 秒 |
+| 10 | 1 | s8 | `tz_q15`：时区（与 TIME_SET 一致，设备侧存 Q15 截断为 s8 上传） |
+| 11 | 2 | u16 LE | `motion_sec`：**累计运动时长**（秒）。统计规则：设备处于**工作模式**且该段逗宠**进行中**时，若雷达判为**目标在移动**（与自动逗宠逻辑相同的速度门限），则每推进 1 秒世界时累加 1；设备内可大于 65535 秒，**上报时饱和为 65535** |
+| 13 | 1 | u8 | `avg_speed_cm_s`：**平均速度**（cm/s，无符号）。为该段内上述「运动秒」上采样到的速度绝对值的整数平均；**上报时饱和为 255** |
+
+**整帧 20 字节示例（6 字节头 + 14 字节 payload；`payloadLen` 小端为 `0x0E 0x00`）**
 
 ```
 byte0 : 0x01
 byte1 : 0x03           // msgType = EVENT
 byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
-byte4 : 0x0B           // payloadLen = 11
-byte5 : 0x00
-byte6 : total          // 本次批次总条数
-byte7 : index          // 当前条目序号（0..total-1）
-byte8 : start_sec_L0
+byte4 : 0x0E           // payloadLen L0 = 14
+byte5 : 0x00           // payloadLen L1 = 0
+byte6 : total          // payload[0]
+byte7 : index          // payload[1]
+byte8 : start_sec_L0   // payload[2..5]
 byte9 : start_sec_L1
 byte10: start_sec_L2
 byte11: start_sec_L3
-byte12: end_sec_L0
+byte12: end_sec_L0     // payload[6..9]
 byte13: end_sec_L1
 byte14: end_sec_L2
 byte15: end_sec_L3
-byte16: tz_q15
+byte16: tz_q15         // payload[10]
+byte17: motion_sec_L0  // payload[11..12]
+byte18: motion_sec_L1
+byte19: avg_speed_cm_s // payload[13]
 ```
+
+**破坏性变更说明**
+
+- 较旧文档：此前 payload 曾描述为 11 字节或与固件 12 字节（首字节恒为 0 预留）不一致；当前固件为 **14 字节 payload**，首字节为 **`total`**，不再发送前置恒 0 字节。
+- APP 须按 **`payloadLen`** 解析：为 `14` 时按上表读取 `motion_sec` / `avg_speed_cm_s`；若需兼容更老固件，可根据 `payloadLen == 12` 走旧布局（无运动字段）。
 
 **ACK 请求帧（APP → 设备，CMD）**
 
