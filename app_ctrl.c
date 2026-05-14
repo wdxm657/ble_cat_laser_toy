@@ -141,6 +141,7 @@ static void app_ctrl_try_upload_play_records(void)
         return;
     }
 
+    BLE_LOG_D("app_radar_get_complete_play_records");
     u32 records[RADAR_TIME_MAX_RECORDS * 2]   = {0};
     u8  timezones[RADAR_TIME_MAX_RECORDS]     = {0};
     u32 motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
@@ -176,7 +177,7 @@ static void app_ctrl_try_upload_play_records(void)
         evt[11]     = (u8)(m16 & 0xFF);
         evt[12]     = (u8)((m16 >> 8) & 0xFF);
         evt[13]     = av8;
-        BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d mot: %u av: %u", i, start_sec, end_sec, timezones[i], (u32)m16, (u32)av8);
+        BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d mot: %d av: %d", i, start_sec, end_sec, timezones[i], (u32)m16, (u32)av8);
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
     }
 
