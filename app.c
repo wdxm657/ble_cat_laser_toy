@@ -35,8 +35,14 @@
 #ifdef UI_RADAR_ENABLE
 #include "app_radar.h"
 #endif
-#define ADV_IDLE_ENTER_DEEP_TIME  60  // 60 s
-#define CONN_IDLE_ENTER_DEEP_TIME 60  // 60 s
+#define ADV_IDLE_ENTER_DEEP_TIME  60             // 60 s
+#define CONN_IDLE_ENTER_DEEP_TIME 60             // 60 s
+#define KEY_DEBOUNCE_US           (20 * 1000)    // 按键去抖 20ms
+#define KEY_SLEEP_ENABLE_DELAY_US (5 * 1000000)  // 初始化后 5s 才允许按键进深睡
+#define KEY_SM_IDLE               0
+#define KEY_SM_PRESS_DEBOUNCE     1
+#define KEY_SM_PRESSED            2
+#define KEY_SM_RELEASE_DEBOUNCE   3
 #define MY_APP_ADV_CHANNEL        BLT_ENABLE_ADV_ALL
 #define MY_ADV_INTERVAL_MIN       ADV_INTERVAL_20MS
 #define MY_ADV_INTERVAL_MAX       ADV_INTERVAL_25MS
@@ -46,9 +52,10 @@
 u32 advertise_begin_tick;
 u32 g_time_tick_last = 0;
 #if (PM_DEEPSLEEP_ENABLE)
-int device_in_connection_state;
-u8  sendTerminate_before_enterDeep = 0;
-u32 latest_user_event_tick;
+int        device_in_connection_state;
+u8         sendTerminate_before_enterDeep = 0;
+u32        latest_user_event_tick;
+static u32 key_sleep_enable_tick = 0;
 #endif
 own_addr_type_t app_own_address_type = OWN_ADDRESS_PUBLIC;
 
@@ -259,15 +266,11 @@ void task_suspend_exit(u8 e, u8 *p, int n)
     rf_set_power_level_index(MY_RF_POWER_INDEX);
 }
 
-#if defined(CHARGE_STATE) && defined(CHARGE_STY)
 static inline u8 app_is_usb_plug_in(void)
 {
-    // 有一个低电平就代表插入
-    u8 state = gpio_read(CHARGE_STATE);
-    u8 sty   = gpio_read(CHARGE_STY);
-    return (state == 0 || sty == 0) ? 1 : 0;
+    // 高电平就代表插入
+    return gpio_read(USB_DET);
 }
-#endif
 /**
  * @brief     uart ndma interrupt process
  * @param[in] none.
@@ -292,8 +295,8 @@ u8                                    scan_pm_disable = 0;
 void blt_pm_proc(void)
 {
 #if (BLE_APP_PM_ENABLE)
-    static u8  usb_unplug_pending = 0;
-    static u32 usb_unplug_tick    = 0;
+    static u8  key_sm   = KEY_SM_IDLE;
+    static u32 key_tick = 0;
 
 #if (PM_DEEPSLEEP_RETENTION_ENABLE)
 #if (SCAN_ENABLE)
@@ -356,24 +359,71 @@ void blt_pm_proc(void)
     }
 #endif
 #if (PM_DEEPSLEEP_ENABLE)  // test connection power, should disable deepSleep
-    // 检测USB拔出：需要持续1秒仍为拔出，才认为真的拔出
-    if (!app_is_usb_plug_in())
+    // 检测按键：按下去抖确认 -> 松开去抖确认后，才进入深睡
     {
-        if (!usb_unplug_pending)
-        {
-            usb_unplug_pending = 1;
-            usb_unplug_tick    = clock_time();
-        }
+        u8 key_down = !gpio_read(GPIO_KEY);
 
-        if (clock_time_exceed(usb_unplug_tick, 1000 * 1000))
+        switch (key_sm)
         {
-            // 二次确认仍为拔出
-            if (!app_is_usb_plug_in())
+        case KEY_SM_IDLE:
+            if (key_down)
             {
-                // 配置USB插入检测唤醒  有一个低电平就是插入了
-                cpu_set_gpio_wakeup(CHARGE_STATE, Level_Low, 1);
-                cpu_set_gpio_wakeup(CHARGE_STY, Level_Low, 1);
+                key_sm   = KEY_SM_PRESS_DEBOUNCE;
+                key_tick = clock_time();
+            }
+            break;
+
+        case KEY_SM_PRESS_DEBOUNCE:
+            if (!key_down)
+            {
+                key_sm = KEY_SM_IDLE;
+            }
+            else if (clock_time_exceed(key_tick, KEY_DEBOUNCE_US))
+            {
+                if (!gpio_read(GPIO_KEY))
+                {
+                    key_sm = KEY_SM_PRESSED;
+                }
+                else
+                {
+                    key_sm = KEY_SM_IDLE;
+                }
+            }
+            break;
+
+        case KEY_SM_PRESSED:
+            if (!key_down)
+            {
+                key_sm   = KEY_SM_RELEASE_DEBOUNCE;
+                key_tick = clock_time();
+            }
+            break;
+
+        case KEY_SM_RELEASE_DEBOUNCE:
+            if (key_down)
+            {
+                key_sm = KEY_SM_PRESSED;
+            }
+            else if (clock_time_exceed(key_tick, KEY_DEBOUNCE_US))
+            {
+                if (!gpio_read(GPIO_KEY))
+                {
+                    key_sm = KEY_SM_PRESSED;
+                    break;
+                }
+                key_sm = KEY_SM_IDLE;
+                if (!clock_time_exceed(key_sleep_enable_tick, KEY_SLEEP_ENABLE_DELAY_US))
+                {
+                    break;
+                }
+                // 配置USB插入检测唤醒  高电平就是插入了
+                // USB插入检测暂不需要
+                // cpu_set_gpio_wakeup(USB_DET, Level_Low, 1);
                 gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
+                // 配置按键按下检测唤醒  低电平就是按下了
+                cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
+                gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+
                 // 关闭所有灯
                 gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
                 gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
@@ -404,15 +454,12 @@ void blt_pm_proc(void)
                     cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepSleep
                 }
             }
-            else
-            {
-                usb_unplug_pending = 0;
-            }
+            break;
+
+        default:
+            key_sm = KEY_SM_IDLE;
+            break;
         }
-    }
-    else
-    {
-        usb_unplug_pending = 0;
     }
 
     // // 60s 广播未连接也进入低功耗
@@ -707,7 +754,11 @@ _attribute_no_inline_ void user_init_normal(void)
 #ifdef UI_LED_ENABLE
     // 配置上拉输入
     gpio_setup_up_down_resistor(CHARGE_STATE, PM_PIN_PULLUP_10K);
-    gpio_setup_up_down_resistor(CHARGE_STY, PM_PIN_PULLUP_10K);
+    gpio_setup_up_down_resistor(USB_DET, PM_PIN_PULLUP_10K);
+    gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+#if (PM_DEEPSLEEP_ENABLE)
+    key_sleep_enable_tick = clock_time();
+#endif
     // 常开充电开关
     gpio_write(CHARGE_SWITCH, 1);
     // 常开NTC电压AD检测开关

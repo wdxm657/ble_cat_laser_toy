@@ -5,10 +5,11 @@
 #include "app_adc_dbg.h"
 #include "app_ctrl.h"
 
-#define APP_ADC_SAMPLE_INTERVAL_US 10000u
-#define APP_ADC_REPORT_INTERVAL_US 250000u
-#define APP_BAT_DISCHARGE_STEP_S   210u
-#define APP_BAT_CHARGE_STEP_S      30u
+#define APP_ADC_SAMPLE_INTERVAL_US       10000u
+#define APP_ADC_REPORT_INTERVAL_US       250000u
+#define APP_BAT_DISCHARGE_STEP_S         210u
+#define APP_BAT_CHARGE_STEP_S            30u
+#define APP_CHARGE_GPIO_DEBOUNCE_SAMPLES 2u /* 10ms * 2 = 20ms，与按键去抖一致 */
 
 typedef struct
 {
@@ -218,6 +219,33 @@ static u8  s_bat_percent;
 static u8  s_bat_percent_inited;
 static u8  s_bat_prev_charging;
 static u32 s_bat_rate_acc_us;
+static u8  s_charge_state_stable;
+static u8  s_usb_det_stable;
+static u8  s_charge_state_cnt;
+static u8  s_usb_det_cnt;
+
+static void app_adc_dbg_gpio_debounce(u8 raw, u8 *stable, u8 *cnt)
+{
+    if (raw == *stable)
+    {
+        *cnt = 0;
+        return;
+    }
+    if (++(*cnt) >= APP_CHARGE_GPIO_DEBOUNCE_SAMPLES)
+    {
+        *stable = raw;
+        *cnt    = 0;
+    }
+}
+
+static void app_adc_dbg_charge_gpio_update(void)
+{
+    u8 charge_raw = gpio_read(CHARGE_STATE);
+    u8 usb_raw    = gpio_read(USB_DET);
+
+    app_adc_dbg_gpio_debounce(charge_raw, &s_charge_state_stable, &s_charge_state_cnt);
+    app_adc_dbg_gpio_debounce(usb_raw, &s_usb_det_stable, &s_usb_det_cnt);
+}
 
 static int ntc_temp_from_res_10ohm(u16 r_10ohm)
 {
@@ -256,10 +284,8 @@ static int ntc_temp_from_res_10ohm(u16 r_10ohm)
 
 u8 app_adc_dbg_is_charging(void)
 {
-    /* CHARGE_STATE: 充电中为低电平；CHARGE_STY: 充满为低电平 */
-    u8 charge_state = gpio_read(CHARGE_STATE);
-    u8 charge_full  = gpio_read(CHARGE_STY);
-    return (charge_state == 0 && charge_full != 0) ? 1 : 0;
+    /* CHARGE_STATE: 充电中为低电平；usb_det: 插入为高电平（经去抖后的稳定值） */
+    return (s_charge_state_stable == 0 && s_usb_det_stable == 1) ? 1 : 0;
 }
 
 static u8 app_adc_dbg_bat_percent_from_mv(u16 mv_bat)
@@ -387,8 +413,12 @@ void app_adc_dbg_init(void)
     s_bat_mv             = 0;
     s_bat_percent        = 0;
     s_bat_percent_inited = 0;
-    s_bat_prev_charging  = 0xFF;
-    s_bat_rate_acc_us    = 0;
+    s_bat_prev_charging     = 0xFF;
+    s_bat_rate_acc_us       = 0;
+    s_charge_state_stable   = gpio_read(CHARGE_STATE);
+    s_usb_det_stable        = gpio_read(USB_DET);
+    s_charge_state_cnt      = 0;
+    s_usb_det_cnt           = 0;
 }
 
 void app_adc_dbg_poll(void)
@@ -406,6 +436,8 @@ void app_adc_dbg_poll(void)
 
     if (clock_time_exceed(s_adc_sample_tick, APP_ADC_SAMPLE_INTERVAL_US))
     {
+        app_adc_dbg_charge_gpio_update();
+
         u32 mv_bat = app_adc_dbg_sample_pin(ADC_GPIO_PB2);
         u32 mv_ntc = app_adc_dbg_sample_pin(ADC_GPIO_PC4);
 

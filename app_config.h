@@ -156,10 +156,11 @@ enum{
 	#define LED_ON_LEVEL 			1 		//gpio output high voltage to turn on led
 	#define	CHARGE_SWITCH  	GPIO_PA0 // 充电模块开关
 	#define	CHARGE_STATE  	GPIO_PA1 // 充电中低电平否则高电平 INPUT
-	#define	CHARGE_STY  	GPIO_PA2 // 充满电低电平否则高电平 INPUT
+	#define	USB_DET  	    GPIO_PA2 // USB插入高电平拔出低电平 INPUT
+	#define	GPIO_KEY  	    GPIO_PA4 // 按键检测  INPUT
 	#define	GPIO_LED_BLUE  	GPIO_PA5
-	#define	GPIO_LED_GREEN	GPIO_PA7
-	#define	GPIO_LED_RED	GPIO_PA6
+	#define	GPIO_LED_GREEN	GPIO_PA6
+	#define	GPIO_LED_RED	GPIO_PA7
 	#define	GPIO_CHARGE_LED_GREEN	GPIO_PB1
 	#define	GPIO_CHARGE_LED_RED 	GPIO_PB0
 	#define	V_BAT_CON		GPIO_PB3 // 控制电池电压AD检测开关 现在常开即可
@@ -169,6 +170,7 @@ enum{
 	#define PA0_FUNC				AS_GPIO
 	#define PA1_FUNC				AS_GPIO
 	#define PA2_FUNC				AS_GPIO
+	#define PA4_FUNC				AS_GPIO
 	#define PA5_FUNC				AS_GPIO
 	#define PA6_FUNC				AS_GPIO
 	#define PA7_FUNC				AS_GPIO
@@ -181,6 +183,7 @@ enum{
 	#define	PA0_OUTPUT_ENABLE		1
 	#define	PA1_INPUT_ENABLE		1
 	#define PA2_INPUT_ENABLE		1
+	#define PA4_INPUT_ENABLE		1
 	#define	PA5_OUTPUT_ENABLE		1
 	#define	PA6_OUTPUT_ENABLE		1
 	#define	PA7_OUTPUT_ENABLE		1
