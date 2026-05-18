@@ -7,7 +7,7 @@
 
 #define APP_ADC_SAMPLE_INTERVAL_US       10000u
 #define APP_ADC_REPORT_INTERVAL_US       250000u
-#define APP_BAT_DISCHARGE_STEP_S         210u
+#define APP_BAT_DISCHARGE_STEP_S         60u
 #define APP_BAT_CHARGE_STEP_S            30u
 #define APP_CHARGE_GPIO_DEBOUNCE_SAMPLES 2u /* 10ms * 2 = 20ms，与按键去抖一致 */
 
@@ -210,6 +210,7 @@ static const bat_point_t g_bat_table[] = {
     {3000, 0}};
 
 static u32 s_adc_sample_tick;
+static u32 s_adc_init_tick;
 static u32 s_adc_report_tick;
 static u32 s_mv_bat_sum;
 static u32 s_mv_ntc_sum;
@@ -330,7 +331,9 @@ u16 app_adc_dbg_get_bat_mv(void)
 
 u8 app_adc_dbg_get_bat_percent(void)
 {
-    return s_bat_percent;
+    // 只给前端 0 20 40 60 80 100
+    u8 bat = s_bat_percent / 20 * 20;
+    return bat;
 }
 
 static u8 app_adc_dbg_bat_percent_apply_rate_limit(u8 target_percent, u8 is_charging)
@@ -405,20 +408,22 @@ void app_adc_dbg_init(void)
     adc_init();
     adc_power_on_sar_adc(1);
 
-    s_adc_sample_tick    = 0;
-    s_adc_report_tick    = 0;
-    s_mv_bat_sum         = 0;
-    s_mv_ntc_sum         = 0;
-    s_sample_cnt         = 0;
-    s_bat_mv             = 0;
-    s_bat_percent        = 0;
-    s_bat_percent_inited = 0;
-    s_bat_prev_charging     = 0xFF;
-    s_bat_rate_acc_us       = 0;
-    s_charge_state_stable   = gpio_read(CHARGE_STATE);
-    s_usb_det_stable        = gpio_read(USB_DET);
-    s_charge_state_cnt      = 0;
-    s_usb_det_cnt           = 0;
+    // 初始化计时器
+    s_adc_init_tick       = clock_time();
+    s_adc_sample_tick     = 0;
+    s_adc_report_tick     = 0;
+    s_mv_bat_sum          = 0;
+    s_mv_ntc_sum          = 0;
+    s_sample_cnt          = 0;
+    s_bat_mv              = 0;
+    s_bat_percent         = 0;
+    s_bat_percent_inited  = 0;
+    s_bat_prev_charging   = 0xFF;
+    s_bat_rate_acc_us     = 0;
+    s_charge_state_stable = gpio_read(CHARGE_STATE);
+    s_usb_det_stable      = gpio_read(USB_DET);
+    s_charge_state_cnt    = 0;
+    s_usb_det_cnt         = 0;
 }
 
 void app_adc_dbg_poll(void)
@@ -472,11 +477,19 @@ void app_adc_dbg_poll(void)
 
         u8 bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
         u8 is_charging     = app_adc_dbg_is_charging();
-        // u8 bat_percent     = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
-        u8 bat_percent = bat_percent_raw;
-        s_bat_percent  = bat_percent;
+        // ADC初始化5s后开始按照速率限制变化
+        if (clock_time_exceed(s_adc_init_tick, 5000000))
+        {
+            u8 bat_percent = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
+            s_bat_percent  = bat_percent;
+        }
+        else
+        {
+            s_bat_percent = bat_percent_raw;
+        }
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
+        // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
 
         // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d ntc=%d NTC_R=%d0(ohm) T=%dC n=%d bat_raw=%d",
         //           mv_bat_avg,
