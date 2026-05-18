@@ -83,6 +83,7 @@ enum{
     CTRL_REASON_LOW_BATTERY = 0x01,
     CTRL_REASON_POWER_ON_COOLDOWN_30S  = 0x02,  // 30s 冷却中，禁止开机
     CTRL_REASON_POWER_OFF_COOLDOWN_30S = 0x03,  // 30s 冷却中，禁止关机
+    CTRL_REASON_BATTERY_TEMP_HIGH      = 0x04,  // 电池温度过高，禁止开机/强制关机
 };
 
 // ATT value max length for RX/TX.
@@ -130,6 +131,11 @@ void app_ctrl_task(void);
  * @return 0: success, other: fail
  */
 int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen);
+
+/**
+ * @brief   Ctrl TX Notify 已开启时，上报 POWER_CTRL 开机失败（电池温度过高）
+ */
+void app_ctrl_notify_power_rejected_battery_temp_high(void);
 
 /**
  * @brief   Send arbitrary bytes/text to PC visualizer via Ctrl TX notify (EVENT: CTRL_CMD_TEXT_CHUNK, 0x40).

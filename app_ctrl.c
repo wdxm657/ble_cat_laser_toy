@@ -21,6 +21,7 @@
 #endif
 
 #include "app.h"
+#include "app_adc_dbg.h"
 #if (UI_RADAR_ENABLE)
 #include "app_radar.h"
 #endif
@@ -528,6 +529,17 @@ static void app_ctrl_led_set(u8 ledId, u8 state)
     (void)ledId;
     (void)state;
 #endif
+}
+
+void app_ctrl_notify_power_rejected_battery_temp_high(void)
+{
+    if (BLS_CONN_HANDLE == 0xFFFF)
+    {
+        return;
+    }
+
+    u8 pl[3] = {CTRL_STATUS_REJECT_ERROR, 0, CTRL_REASON_BATTERY_TEMP_HIGH};
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_POWER_CTRL, g_ctrlSeq++, pl, sizeof(pl));
 }
 
 // ----------------------- sending -----------------------
@@ -1250,6 +1262,17 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
         {
             status       = CTRL_STATUS_REJECT_ERROR;
             reason       = CTRL_REASON_LOW_BATTERY;
+            on_effective = 0;
+        }
+    }
+
+    // 电池温度过高禁止开机（>70°C；此时充电开关已由固件关闭）
+    if (status == CTRL_STATUS_OK && target_on && !cur_on)
+    {
+        if (app_adc_dbg_is_ntc_temp_valid() && app_adc_dbg_get_ntc_temp_c() > 70)
+        {
+            status       = CTRL_STATUS_REJECT_ERROR;
+            reason       = CTRL_REASON_BATTERY_TEMP_HIGH;
             on_effective = 0;
         }
     }

@@ -307,6 +307,7 @@ byte9 : 0x00           // 预留
     - `reason=0x03`：关机失败（关机请求时处于离上次开机不足 30s 的冷却中）
     - `byte7 (on_effective)` 中回显设备当前真实电源状态
   - 低电量禁止开机：当 `on=1` 且 `电量<15% 且未充电` 时，`status=CTRL_STATUS_REJECT_ERROR (0x05)`，`reason=0x01`（LOW_BATTERY），并回显 `on_effective=0`。
+  - 电池温度过高禁止开机：当 `on=1` 且 NTC 有效且 `温度>70°C` 时，`status=CTRL_STATUS_REJECT_ERROR (0x05)`，`reason=0x04`（BATTERY_TEMP_HIGH），并回显 `on_effective=0`。此时固件已关闭充电开关（`CHARGE_SWITCH`）。
 
 **示例**：
 
@@ -340,7 +341,23 @@ byte4 : 0x03           // payloadLen = 3
 byte5 : 0x00
 byte6 : status
 byte7 : on_effective  // 回显 0x00/0x01（是否实际生效）
-byte8 : reason         // 0x00=NONE, 0x01=LOW_BATTERY, 0x02=POWER_ON_COOLDOWN_30S, 0x03=POWER_OFF_COOLDOWN_30S
+byte8 : reason         // 0x00=NONE, 0x01=LOW_BATTERY, 0x02=POWER_ON_COOLDOWN_30S, 0x03=POWER_OFF_COOLDOWN_30S, 0x04=BATTERY_TEMP_HIGH
+```
+
+**设备主动上报（EVENT，温度过高强制关机）**
+
+当设备处于开机状态且 NTC 有效、`温度>70°C` 时，固件关闭充电开关并强制关机；若 APP 已对 Ctrl TX 写入 CCC `0x0001` 开启 Notify，设备发送：
+
+```
+byte0 : 0x01
+byte1 : 0x03           // msgType = EVENT
+byte2 : 0x12           // cmdId = POWER_CTRL
+byte3 : seq            // 设备自增
+byte4 : 0x03           // payloadLen = 3
+byte5 : 0x00
+byte6 : 0x05           // status = REJECT_ERROR
+byte7 : 0x00           // on_effective = 关
+byte8 : 0x04           // reason = BATTERY_TEMP_HIGH
 ```
 
 #### 4.6 设备状态查询（STATUS_GET，CMD = 0x13）

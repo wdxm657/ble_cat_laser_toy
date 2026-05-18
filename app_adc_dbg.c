@@ -3,9 +3,13 @@
 #include "adc.h"
 #include "app_config.h"
 #include "app_adc_dbg.h"
+#include "app.h"
 #include "app_ctrl.h"
 
 #define APP_ADC_SAMPLE_INTERVAL_US       10000u
+#define APP_NTC_CHARGE_OFF_TEMP_C        50
+#define APP_NTC_CHARGE_ON_TEMP_C         40
+#define APP_NTC_POWER_OFF_TEMP_C         70
 #define APP_ADC_REPORT_INTERVAL_US       250000u
 #define APP_BAT_DISCHARGE_STEP_S         60u
 #define APP_BAT_CHARGE_STEP_S            30u
@@ -224,6 +228,10 @@ static u8  s_charge_state_stable;
 static u8  s_usb_det_stable;
 static u8  s_charge_state_cnt;
 static u8  s_usb_det_cnt;
+static s8  s_ntc_temp_c;
+static u8  s_ntc_temp_valid;
+static u8  s_charge_switch_on = 1;
+static u8  s_ntc_over70_active;
 
 static void app_adc_dbg_gpio_debounce(u8 raw, u8 *stable, u8 *cnt)
 {
@@ -287,6 +295,73 @@ u8 app_adc_dbg_is_charging(void)
 {
     /* CHARGE_STATE: 充电中为低电平；usb_det: 插入为高电平（经去抖后的稳定值） */
     return (s_charge_state_stable == 0 && s_usb_det_stable == 1) ? 1 : 0;
+}
+
+u8 app_adc_dbg_is_charge_switch_on(void)
+{
+    return s_charge_switch_on;
+}
+
+s8 app_adc_dbg_get_ntc_temp_c(void)
+{
+    return s_ntc_temp_c;
+}
+
+u8 app_adc_dbg_is_ntc_temp_valid(void)
+{
+    return s_ntc_temp_valid;
+}
+
+static void app_adc_dbg_charge_switch_set(u8 on)
+{
+    s_charge_switch_on = on ? 1 : 0;
+    gpio_write(CHARGE_SWITCH, s_charge_switch_on);
+}
+
+static void app_adc_dbg_temp_charge_manage(void)
+{
+    if (!s_ntc_temp_valid)
+    {
+        return;
+    }
+
+    /* USB 插入且充电开关开启时：>50°C 关充电；USB 插入且开关已关时：≤40°C 恢复开启 */
+    if (s_usb_det_stable)
+    {
+        if (s_charge_switch_on)
+        {
+            if (s_ntc_temp_c > APP_NTC_CHARGE_OFF_TEMP_C)
+            {
+                app_adc_dbg_charge_switch_set(0);
+            }
+        }
+        else if (s_ntc_temp_c <= APP_NTC_CHARGE_ON_TEMP_C)
+        {
+            app_adc_dbg_charge_switch_set(1);
+        }
+    }
+
+    if (s_ntc_temp_c > APP_NTC_POWER_OFF_TEMP_C)
+    {
+        if (s_charge_switch_on)
+        {
+            app_adc_dbg_charge_switch_set(0);
+        }
+
+        if (app_get_power_state())
+        {
+            app_set_power_state(0);
+            if (!s_ntc_over70_active)
+            {
+                s_ntc_over70_active = 1;
+                app_ctrl_notify_power_rejected_battery_temp_high();
+            }
+        }
+    }
+    else
+    {
+        s_ntc_over70_active = 0;
+    }
 }
 
 static u8 app_adc_dbg_bat_percent_from_mv(u16 mv_bat)
@@ -424,6 +499,10 @@ void app_adc_dbg_init(void)
     s_usb_det_stable      = gpio_read(USB_DET);
     s_charge_state_cnt    = 0;
     s_usb_det_cnt         = 0;
+    s_ntc_temp_c          = 0;
+    s_ntc_temp_valid      = 0;
+    s_charge_switch_on    = 1;
+    s_ntc_over70_active   = 0;
 }
 
 void app_adc_dbg_poll(void)
@@ -465,11 +544,14 @@ void app_adc_dbg_poll(void)
 
         int ntc_temp_c    = 0;
         u16 ntc_res_10ohm = 0;
+        s_ntc_temp_valid  = 0;
         if (mv_ntc_avg > 0 && mv_ntc_avg < 3300)
         {
             u32 r10       = (1000u * mv_ntc_avg) / (3300u - mv_ntc_avg);
             ntc_res_10ohm = (r10 > 0xFFFFu) ? 0xFFFFu : (u16)r10;
             ntc_temp_c    = ntc_temp_from_res_10ohm(ntc_res_10ohm);
+            s_ntc_temp_c  = (s8)ntc_temp_c;
+            s_ntc_temp_valid = 1;
         }
 
         /* 分压比 660k / 100k => 电池真实电压 = ADC 电压 * 6.6 */
@@ -490,16 +572,8 @@ void app_adc_dbg_poll(void)
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
         // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
-
-        // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d ntc=%d NTC_R=%d0(ohm) T=%dC n=%d bat_raw=%d",
-        //           mv_bat_avg,
-        //           bat_percent,
-        //           is_charging,
-        //           mv_ntc_avg,
-        //           ntc_res_10ohm,
-        //           ntc_temp_c,
-        //           s_sample_cnt,
-        //           bat_percent_raw);
+        // BLE_LOG_D("ntc=%d NTC_R=%d0(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
+        app_adc_dbg_temp_charge_manage();
 
         s_mv_bat_sum      = 0;
         s_mv_ntc_sum      = 0;

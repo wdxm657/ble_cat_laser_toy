@@ -159,8 +159,8 @@ enum{
 	#define	USB_DET  	    GPIO_PA2 // USB插入高电平拔出低电平 INPUT
 	#define	GPIO_KEY  	    GPIO_PA4 // 按键检测  INPUT
 	#define	GPIO_LED_BLUE  	GPIO_PA5
-	#define	GPIO_LED_GREEN	GPIO_PA6
-	#define	GPIO_LED_RED	GPIO_PA7
+	#define	GPIO_LED_GREEN	GPIO_PA7
+	#define	GPIO_LED_RED	GPIO_PA6
 	#define	GPIO_CHARGE_LED_GREEN	GPIO_PB1
 	#define	GPIO_CHARGE_LED_RED 	GPIO_PB0
 	#define	V_BAT_CON		GPIO_PB3 // 控制电池电压AD检测开关 现在常开即可
