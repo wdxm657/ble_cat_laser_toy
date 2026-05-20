@@ -477,11 +477,11 @@ byte7 : 0x00
 
 | payload 偏移 | 长度 | 类型 | 说明 |
 |----------------|------|------|------|
-| 0 | 1 | u8 | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致） |
-| 1 | 1 | u8 | `index`：当前条在批次中的序号 `0 .. total-1` |
-| 2 | 4 | u32 LE | `start_sec`：逗宠段开始 Unix 秒 |
-| 6 | 4 | u32 LE | `end_sec`：逗宠段结束 Unix 秒 |
-| 10 | 1 | s8 | `tz_q15`：时区（与 TIME_SET 一致，设备侧存 Q15 截断为 s8 上传） |
+| 0 | 1 | u8 | `status` |
+| 1 | 1 | u8 | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致） |
+| 2 | 1 | u8 | `index`：当前条在批次中的序号 `0 .. total-1` |
+| 3 | 4 | u32 LE | `start_sec`：逗宠段开始 Unix 秒 |
+| 7 | 4 | u32 LE | `end_sec`：逗宠段结束 Unix 秒 |
 | 11 | 2 | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535** |
 | 13 | 1 | u8 | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255** |
 
@@ -501,17 +501,17 @@ byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
 byte4 : 0x0E           // payloadLen L0 = 14
 byte5 : 0x00           // payloadLen L1 = 0
-byte6 : total          // payload[0]
-byte7 : index          // payload[1]
-byte8 : start_sec_L0   // payload[2..5]
-byte9 : start_sec_L1
-byte10: start_sec_L2
-byte11: start_sec_L3
-byte12: end_sec_L0     // payload[6..9]
-byte13: end_sec_L1
-byte14: end_sec_L2
-byte15: end_sec_L3
-byte16: tz_q15         // payload[10]
+byte6 : status         // payload[0]
+byte7 : total          // payload[1]
+byte8 : index          // payload[2]
+byte9 : start_sec_L0   // payload[3..6]
+byte10 : start_sec_L1
+byte11: start_sec_L2
+byte12: start_sec_L3
+byte13: end_sec_L0     // payload[7..10]
+byte14: end_sec_L1
+byte15: end_sec_L2
+byte16: end_sec_L3
 byte17: motion_sec_L0  // payload[11..12]
 byte18: motion_sec_L1
 byte19: avg_speed_cm_s // payload[13]
