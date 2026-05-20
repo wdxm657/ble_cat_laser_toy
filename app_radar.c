@@ -2219,8 +2219,10 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             }
             motion_dir_deg10 = (s16)d;
         }
+#if DEBUG_MODE
         app_ctrl_radar_dbg_send_prev_raw(
             g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
+#endif
     }
     g_radar_pred.prev_x_mm = x_mm;
     g_radar_pred.prev_y_mm = y_mm;

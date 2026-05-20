@@ -418,7 +418,7 @@ void blt_pm_proc(void)
                 }
                 // 配置USB插入检测唤醒  高电平就是插入了
                 // USB插入检测暂不需要
-                // cpu_set_gpio_wakeup(USB_DET, Level_Low, 1);
+                cpu_set_gpio_wakeup(USB_DET, Level_High, 1);
                 gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
                 // 配置按键按下检测唤醒  低电平就是按下了
                 cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
@@ -754,8 +754,9 @@ _attribute_no_inline_ void user_init_normal(void)
 #ifdef UI_LED_ENABLE
     // 配置上拉输入
     gpio_setup_up_down_resistor(CHARGE_STATE, PM_PIN_PULLUP_10K);
-    gpio_setup_up_down_resistor(USB_DET, PM_PIN_PULLUP_10K);
     gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+    // 配置下拉输入
+    gpio_setup_up_down_resistor(USB_DET, PM_PIN_PULLDOWN_100K);
 #if (PM_DEEPSLEEP_ENABLE)
     key_sleep_enable_tick = clock_time();
 #endif
