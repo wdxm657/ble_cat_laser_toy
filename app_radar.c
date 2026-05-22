@@ -21,7 +21,7 @@
 #define RADAR_RX_IRQ_DEBUG 0
 #endif
 
-#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.5f * 1000.0f)
+#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.8f * 1000.0f)
 #define RADAR_FRAME_LEN                   30
 #define SAMPLE_COUNT                      1
 #define STATIONARY_DXY_THRESHOLD_MM       5

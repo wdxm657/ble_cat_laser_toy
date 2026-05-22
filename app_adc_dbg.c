@@ -13,7 +13,20 @@
 #define APP_ADC_REPORT_INTERVAL_US       250000u
 #define APP_BAT_DISCHARGE_STEP_S         60u
 #define APP_BAT_CHARGE_STEP_S            30u
+#define APP_BAT_PERCENT_STABLE_US        5000000u
+#define APP_BAT_FLASH_SAVE_INTERVAL_US   30000000u
+#define APP_BAT_PERCENT_DEFAULT_NO_FLASH 100u
 #define APP_CHARGE_GPIO_DEBOUNCE_SAMPLES 2u /* 10ms * 2 = 20ms，与按键去抖一致 */
+
+#define BAT_PERCENT_FLASH_MAGIC          0x42415450u /* "BATP" */
+
+typedef struct
+{
+    u32 magic;
+    u8  percent;
+    u8  reserved[3];
+    u32 crc;
+} bat_percent_flash_t;
 
 typedef struct
 {
@@ -232,6 +245,69 @@ static s8  s_ntc_temp_c;
 static u8  s_ntc_temp_valid;
 static u8  s_charge_switch_on = 1;
 static u8  s_ntc_over70_active;
+static u32 s_bat_flash_save_tick;
+static u8  s_bat_flash_valid;
+
+static u32 app_adc_dbg_flash_crc32(const u8 *data, u32 len)
+{
+    u32 crc = 0xFFFFFFFFu;
+    for (u32 i = 0; i < len; i++)
+    {
+        crc ^= data[i];
+        for (u8 b = 0; b < 8; b++)
+        {
+            if (crc & 1u)
+            {
+                crc = (crc >> 1) ^ 0xEDB88320u;
+            }
+            else
+            {
+                crc >>= 1;
+            }
+        }
+    }
+    return ~crc;
+}
+
+static u8 app_adc_dbg_bat_percent_load_from_flash(u8 *percent_out)
+{
+    bat_percent_flash_t stored;
+
+    if (!percent_out)
+    {
+        return 0;
+    }
+
+    flash_read_page(BAT_PERCENT_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    if (stored.magic != BAT_PERCENT_FLASH_MAGIC)
+    {
+        return 0;
+    }
+    u32 crc = app_adc_dbg_flash_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+    if (crc != stored.crc)
+    {
+        return 0;
+    }
+    if (stored.percent > 100)
+    {
+        return 0;
+    }
+    *percent_out = stored.percent;
+    return 1;
+}
+
+static void app_adc_dbg_bat_percent_save_to_flash(void)
+{
+    bat_percent_flash_t stored;
+    stored.magic       = BAT_PERCENT_FLASH_MAGIC;
+    stored.percent     = s_bat_percent;
+    stored.reserved[0] = 0;
+    stored.reserved[1] = 0;
+    stored.reserved[2] = 0;
+    stored.crc         = app_adc_dbg_flash_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+    flash_erase_sector(BAT_PERCENT_FLASH_ADDR);
+    flash_write_page(BAT_PERCENT_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+}
 
 static void app_adc_dbg_gpio_debounce(u8 raw, u8 *stable, u8 *cnt)
 {
@@ -411,6 +487,16 @@ u8 app_adc_dbg_get_bat_percent(void)
     return bat;
 }
 
+u8 app_adc_dbg_get_bat_percent_exact(void)
+{
+    return s_bat_percent;
+}
+
+u8 app_adc_dbg_is_bat_percent_stable(void)
+{
+    return (s_bat_percent_inited && clock_time_exceed(s_adc_init_tick, APP_BAT_PERCENT_STABLE_US)) ? 1 : 0;
+}
+
 static u8 app_adc_dbg_bat_percent_apply_rate_limit(u8 target_percent, u8 is_charging)
 {
     u32 step_us = (is_charging ? APP_BAT_CHARGE_STEP_S : APP_BAT_DISCHARGE_STEP_S) * 1000000u;
@@ -420,7 +506,6 @@ static u8 app_adc_dbg_bat_percent_apply_rate_limit(u8 target_percent, u8 is_char
         s_bat_percent_inited = 1;
         s_bat_prev_charging  = is_charging;
         s_bat_rate_acc_us    = 0;
-        s_bat_percent        = target_percent;
         return s_bat_percent;
     }
 
@@ -480,8 +565,17 @@ static u32 app_adc_dbg_sample_pin(adc_input_pin_def_e pin)
 
 void app_adc_dbg_init(void)
 {
+    u8 flash_percent = 0;
+
     adc_init();
     adc_power_on_sar_adc(1);
+
+    s_bat_flash_valid = app_adc_dbg_bat_percent_load_from_flash(&flash_percent);
+    if (!s_bat_flash_valid)
+    {
+        flash_percent     = APP_BAT_PERCENT_DEFAULT_NO_FLASH;
+        s_bat_flash_valid = 1;
+    }
 
     // 初始化计时器
     s_adc_init_tick       = clock_time();
@@ -491,7 +585,8 @@ void app_adc_dbg_init(void)
     s_mv_ntc_sum          = 0;
     s_sample_cnt          = 0;
     s_bat_mv              = 0;
-    s_bat_percent         = 0;
+    s_bat_percent         = flash_percent;
+    s_bat_flash_save_tick = 0;
     s_bat_percent_inited  = 0;
     s_bat_prev_charging   = 0xFF;
     s_bat_rate_acc_us     = 0;
@@ -547,10 +642,10 @@ void app_adc_dbg_poll(void)
         s_ntc_temp_valid  = 0;
         if (mv_ntc_avg > 0 && mv_ntc_avg < 3300)
         {
-            u32 r10       = (1000u * mv_ntc_avg) / (3300u - mv_ntc_avg);
-            ntc_res_10ohm = (r10 > 0xFFFFu) ? 0xFFFFu : (u16)r10;
-            ntc_temp_c    = ntc_temp_from_res_10ohm(ntc_res_10ohm);
-            s_ntc_temp_c  = (s8)ntc_temp_c;
+            u32 r10          = (1000u * mv_ntc_avg) / (3300u - mv_ntc_avg);
+            ntc_res_10ohm    = (r10 > 0xFFFFu) ? 0xFFFFu : (u16)r10;
+            ntc_temp_c       = ntc_temp_from_res_10ohm(ntc_res_10ohm);
+            s_ntc_temp_c     = (s8)ntc_temp_c;
             s_ntc_temp_valid = 1;
         }
 
@@ -559,13 +654,26 @@ void app_adc_dbg_poll(void)
 
         u8 bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
         u8 is_charging     = app_adc_dbg_is_charging();
-        // ADC初始化5s后开始按照速率限制变化
-        if (clock_time_exceed(s_adc_init_tick, 5000000))
+        // ADC 初始化 5s 前使用 flash 上次电量，避免 raw 不稳定
+        if (clock_time_exceed(s_adc_init_tick, APP_BAT_PERCENT_STABLE_US))
         {
             u8 bat_percent = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
             s_bat_percent  = bat_percent;
+
+            if (s_bat_percent_inited)
+            {
+                if (s_bat_flash_save_tick == 0)
+                {
+                    s_bat_flash_save_tick = now;
+                }
+                else if (clock_time_exceed(s_bat_flash_save_tick, APP_BAT_FLASH_SAVE_INTERVAL_US))
+                {
+                    app_adc_dbg_bat_percent_save_to_flash();
+                    s_bat_flash_save_tick = now;
+                }
+            }
         }
-        else
+        else if (!s_bat_flash_valid)
         {
             s_bat_percent = bat_percent_raw;
         }

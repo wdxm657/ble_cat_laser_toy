@@ -6,6 +6,8 @@ void app_adc_dbg_init(void);
 void app_adc_dbg_poll(void);
 u16  app_adc_dbg_get_bat_mv(void);
 u8   app_adc_dbg_get_bat_percent(void);
+u8   app_adc_dbg_get_bat_percent_exact(void);
+u8   app_adc_dbg_is_bat_percent_stable(void);
 u8   app_adc_dbg_is_charging(void);
 u8   app_adc_dbg_is_charge_switch_on(void);
 s8   app_adc_dbg_get_ntc_temp_c(void);

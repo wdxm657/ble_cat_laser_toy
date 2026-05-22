@@ -35,20 +35,21 @@
 #ifdef UI_RADAR_ENABLE
 #include "app_radar.h"
 #endif
-#define ADV_IDLE_ENTER_DEEP_TIME  60             // 60 s
-#define CONN_IDLE_ENTER_DEEP_TIME 60             // 60 s
-#define KEY_DEBOUNCE_US           (20 * 1000)    // 按键去抖 20ms
-#define KEY_SLEEP_ENABLE_DELAY_US (5 * 1000000)  // 初始化后 5s 才允许按键进深睡
-#define KEY_SM_IDLE               0
-#define KEY_SM_PRESS_DEBOUNCE     1
-#define KEY_SM_PRESSED            2
-#define KEY_SM_RELEASE_DEBOUNCE   3
-#define MY_APP_ADV_CHANNEL        BLT_ENABLE_ADV_ALL
-#define MY_ADV_INTERVAL_MIN       ADV_INTERVAL_20MS
-#define MY_ADV_INTERVAL_MAX       ADV_INTERVAL_25MS
-#define MY_RF_POWER_INDEX         RF_POWER_P2p87dBm
-#define MY_DIRECT_ADV_TIME        10000000
-#define BLE_DEVICE_ADDRESS_TYPE   BLE_DEVICE_ADDRESS_PUBLIC
+#define ADV_IDLE_ENTER_DEEP_TIME       60             // 60 s
+#define CONN_IDLE_ENTER_DEEP_TIME      60             // 60 s
+#define KEY_DEBOUNCE_US                (20 * 1000)    // 按键去抖 20ms
+#define KEY_SLEEP_ENABLE_DELAY_US      (5 * 1000000)  // 初始化后 5s 才允许按键进深睡
+#define APP_BAT_LOW_DEEP_SLEEP_PERCENT 5              // 电量稳定后低于该值强制深睡
+#define KEY_SM_IDLE                    0
+#define KEY_SM_PRESS_DEBOUNCE          1
+#define KEY_SM_PRESSED                 2
+#define KEY_SM_RELEASE_DEBOUNCE        3
+#define MY_APP_ADV_CHANNEL             BLT_ENABLE_ADV_ALL
+#define MY_ADV_INTERVAL_MIN            ADV_INTERVAL_20MS
+#define MY_ADV_INTERVAL_MAX            ADV_INTERVAL_25MS
+#define MY_RF_POWER_INDEX              RF_POWER_P2p87dBm
+#define MY_DIRECT_ADV_TIME             10000000
+#define BLE_DEVICE_ADDRESS_TYPE        BLE_DEVICE_ADDRESS_PUBLIC
 u32 advertise_begin_tick;
 u32 g_time_tick_last = 0;
 #if (PM_DEEPSLEEP_ENABLE)
@@ -287,6 +288,44 @@ u8                                    scan_pm_disable = 0;
 // scan cycle and active time
 #define SCAN_CYCLE_US  (1 * 1000000)
 #define SCAN_ACTIVE_US (1 * 1000 * 1000)
+
+#if (PM_DEEPSLEEP_ENABLE)
+static void app_request_deep_sleep(void)
+{
+    cpu_set_gpio_wakeup(USB_DET, Level_High, 1);
+    gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
+    cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
+    gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+
+    gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
+    gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
+    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+    gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
+    gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
+    gpio_write(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
+    gpio_write(V_NTC_CON, 0);
+    gpio_write(V_BAT_CON, 0);
+
+    if (sendTerminate_before_enterDeep == 2)
+    {
+        LOG_D("deep sleep conn");
+        cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);
+        return;
+    }
+    if (device_in_connection_state)
+    {
+        bls_ll_terminateConnection(HCI_ERR_REMOTE_USER_TERM_CONN);
+        bls_ll_setAdvEnable(0);
+        sendTerminate_before_enterDeep = 1;
+    }
+    else
+    {
+        LOG_D("deep sleep no conn");
+        cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);
+    }
+}
+#endif
+
 /**
  * @brief      power management code for application
  * @param[in]  none
@@ -416,43 +455,7 @@ void blt_pm_proc(void)
                 {
                     break;
                 }
-                // 配置USB插入检测唤醒  高电平就是插入了
-                // USB插入检测暂不需要
-                cpu_set_gpio_wakeup(USB_DET, Level_High, 1);
-                gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
-                // 配置按键按下检测唤醒  低电平就是按下了
-                cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
-                gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
-
-                // 关闭所有灯
-                gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
-                gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
-                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-                gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
-                gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
-                gpio_write(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
-                // 关闭所有AD采样开关
-                gpio_write(V_NTC_CON, 0);
-                gpio_write(V_BAT_CON, 0);
-                if (sendTerminate_before_enterDeep == 2)
-                {  // Terminate OK
-                    LOG_D("usb plug out deep sleep conn");
-                    LOG_D("usb plug out deep sleep conn");
-                    cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepSleep
-                }
-                // 如果蓝牙连接中，先断开蓝牙
-                if (device_in_connection_state)
-                {
-                    bls_ll_terminateConnection(HCI_ERR_REMOTE_USER_TERM_CONN);  // push terminate cmd into ble TX buffer
-                    bls_ll_setAdvEnable(0);                                     // disable adv
-                    sendTerminate_before_enterDeep = 1;
-                }
-                else
-                {
-                    LOG_D("usb plug out deep sleep no conn");
-                    LOG_D("usb plug out deep sleep no conn");
-                    cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);  // deepSleep
-                }
+                app_request_deep_sleep();
             }
             break;
 
@@ -460,6 +463,12 @@ void blt_pm_proc(void)
             key_sm = KEY_SM_IDLE;
             break;
         }
+    }
+
+    if (clock_time_exceed(key_sleep_enable_tick, KEY_SLEEP_ENABLE_DELAY_US) && app_adc_dbg_is_bat_percent_stable() &&
+        !app_adc_dbg_is_charging() && app_adc_dbg_get_bat_percent_exact() < APP_BAT_LOW_DEEP_SLEEP_PERCENT)
+    {
+        app_request_deep_sleep();
     }
 
     // // 60s 广播未连接也进入低功耗
