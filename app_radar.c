@@ -382,7 +382,7 @@ _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INS
 
 #define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)   // 1s
 #define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)   // 4s
-#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 10u)  // 30s
+#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)  // 30s
 #define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u * 1u)
 #define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
 #define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
@@ -411,7 +411,7 @@ static void app_radar_power_state_reset(void)
     BLE_LOG_D("app_radar_power_state_reset");
     g_radar_low_freq_phase_on = 0;
     g_radar_hold_on_mode      = 1;
-    g_radar_rest_mode         = 0;
+    g_radar_rest_mode = 0;
     radar_working_mode_set(1);
     g_radar_phase_tick           = 0;
     g_radar_rest_start_tick      = 0;
@@ -2421,8 +2421,8 @@ void app_radar_task_power_schedule(void)
     {
         if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_REST)
         {
+            BLE_LOG_D("radar rest mode!!!!!!!!");
             radar_play_record_end();
-            BLE_LOG_D("radar rest mode");
             radar_working_mode_set(0);
             g_radar_rest_mode            = 1;
             g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
