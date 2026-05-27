@@ -47,7 +47,7 @@ enum{
     
     // 新简化配置接口
     /** APP -> device: set height and enter config mode (height cached, not applied immediately) */
-    CTRL_CMD_RADAR_CONFIG_SET_HEIGHT   = 0x59,
+    CTRL_CMD_RADAR_CONFIG_SET_HEIGHT   = 0x50,
     /** APP -> device: set 4 coords in batch (validate and apply with cached height) */
     CTRL_CMD_RADAR_CONFIG_SET_COORDS   = 0x5B,
 

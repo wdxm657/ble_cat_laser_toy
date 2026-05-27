@@ -1268,7 +1268,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     {
         u8 bat_percent = app_adc_dbg_get_bat_percent();
         u8 is_charging = app_adc_dbg_is_charging() ? 1 : 0;
-        if (bat_percent < 15 && !is_charging)
+        if (bat_percent < 15)
         {
             status       = CTRL_STATUS_REJECT_ERROR;
             reason       = CTRL_REASON_LOW_BATTERY;
@@ -1459,16 +1459,18 @@ static int app_ctrl_handle_radar_config_set_height(u8 seq, u8 *payload, u16 len)
     {
         height_mm = 2500;
     }
+    // 应用高度
+    app_radar_set_install_height_mm(height_mm);
 
     // 缓存高度值
-    g_radar_config_cached_height = (s32)height_mm;
-    g_radar_config_height_set    = 1;
+    // g_radar_config_cached_height = (s32)height_mm;
+    // g_radar_config_height_set    = 1;
 
-    // 进入配置模式
-    g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_SETTING;
+    // // 进入配置模式
+    // g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_SETTING;
 
-    // 清空坐标点缓存
-    app_ctrl_radar_boundary_reset();
+    // // 清空坐标点缓存
+    // app_ctrl_radar_boundary_reset();
 
     BLE_LOG_D("RADAR_CONFIG_SET_HEIGHT: cached_height=%d mm", height_mm);
 

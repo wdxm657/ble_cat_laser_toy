@@ -680,7 +680,7 @@ class RadarVisualizer:
             if fr.cmd_id == cp.CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
                 return f"[RSP][0x56] status={st}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
-                return f"[RSP][0x59] status={st} (new config: height cached)"
+                return f"[RSP][0x50] status={st} (new config: height cached)"
             if fr.cmd_id == cp.CTRL_CMD_DEVICE_REBOOT:
                 return f"[RSP][0x5A] status={st} (rebooting)"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_COORDS and len(pld) >= 4:
@@ -1018,8 +1018,8 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self._bind_press_release(self.btn_left, 2)
         self._bind_press_release(self.btn_right, 3)
 
-        # 新简化配置流程 (0x59 + 0x5B)
-        g.addWidget(QtWidgets.QLabel("简化配置 (0x59 + 0x5B)"), 6, 0, 1, 4)
+        # 新简化配置流程 (0x50 + 0x5B)
+        g.addWidget(QtWidgets.QLabel("简化配置 (0x50 + 0x5B)"), 6, 0, 1, 4)
         
         # 高度设置
         g.addWidget(QtWidgets.QLabel("高度(mm):"), 7, 0)
@@ -1070,7 +1070,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         g.addWidget(self.coord_ld_y, 11, 2)
         
         # 配置按钮
-        b_config_step1 = QtWidgets.QPushButton("1.设置高度(0x59)")
+        b_config_step1 = QtWidgets.QPushButton("1.设置高度(0x50)")
         b_config_step1.clicked.connect(self._on_new_config_step1)
         g.addWidget(b_config_step1, 12, 0, 1, 2)
         
@@ -1078,7 +1078,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         b_config_step2.clicked.connect(self._on_new_config_step2)
         g.addWidget(b_config_step2, 12, 2, 1, 2)
         
-        b_config_all = QtWidgets.QPushButton("一键配置(0x59+0x5B)")
+        b_config_all = QtWidgets.QPushButton("一键配置(0x50+0x5B)")
         b_config_all.clicked.connect(self._on_new_config_all)
         b_config_all.setStyleSheet("QPushButton { background: #45475a; font-weight: bold; }")
         g.addWidget(b_config_all, 13, 0, 1, 4)
@@ -1120,13 +1120,13 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
 
     def _on_new_config_step1(self) -> None:
-        """新简化配置：步骤1 - 设置高度并进入配置模式 (CMD 0x59)"""
+        """新简化配置：步骤1 - 设置高度并进入配置模式 (CMD 0x50)"""
         height_mm = self.new_h_mm.value()
         ok = self.vis.send_cmd(*vc.cmd_radar_config_set_height(height_mm))
         if not ok:
             self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
         else:
-            self.radar_text.appendPlainText(f"[本地] 已发送：设置高度 {height_mm}mm (0x59)")
+            self.radar_text.appendPlainText(f"[本地] 已发送：设置高度 {height_mm}mm (0x50)")
 
     def _on_new_config_step2(self) -> None:
         """新简化配置：步骤2 - 批量设置4个坐标点 (CMD 0x5B) - 分包传输"""
