@@ -11,8 +11,8 @@
 #define APP_NTC_CHARGE_ON_TEMP_C         40
 #define APP_NTC_POWER_OFF_TEMP_C         70
 #define APP_ADC_REPORT_INTERVAL_US       250000u
-#define APP_BAT_DISCHARGE_STEP_S         1u
-#define APP_BAT_CHARGE_STEP_S            1u
+#define APP_BAT_DISCHARGE_STEP_S         1u * 100000u
+#define APP_BAT_CHARGE_STEP_S            1u * 100000u
 #define APP_BAT_PERCENT_STABLE_US        5000000u
 #define APP_BAT_FLASH_SAVE_INTERVAL_US   30000000u
 #define APP_BAT_PERCENT_DEFAULT_NO_FLASH 100u
@@ -500,7 +500,7 @@ u8 app_adc_dbg_is_bat_percent_stable(void)
 
 static u8 app_adc_dbg_bat_percent_apply_rate_limit(u8 target_percent, u8 is_charging)
 {
-    u32 step_us = (is_charging ? APP_BAT_CHARGE_STEP_S : APP_BAT_DISCHARGE_STEP_S) * 1000000u;
+    u32 step_us = (is_charging ? APP_BAT_CHARGE_STEP_S : APP_BAT_DISCHARGE_STEP_S);
 
     if (!s_bat_percent_inited)
     {
@@ -657,7 +657,7 @@ void app_adc_dbg_poll(void)
         u8 bat_percent_raw;
         if (is_charging)
         {
-            bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg) - 300;
+            bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
         }
         else
         {

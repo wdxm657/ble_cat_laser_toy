@@ -47,10 +47,10 @@
 #define STEP_MOTOR_MIN_INTERVAL_US_FASTEST 750u
 
 /* angle precision: 0.1 degree (deg10) */
-#define GIMBAL_PAN_LIMIT_DEG10_POS         DEGx10(80)
-#define GIMBAL_PAN_LIMIT_DEG10_NEG         DEGx10(-80)
-#define GIMBAL_TILT_LIMIT_DEG10_POS        DEGx10(0)
-#define GIMBAL_TILT_LIMIT_DEG10_NEG        DEGx10(-75)
+#define GIMBAL_PAN_LIMIT_DEG10_POS         DEGx10(60)
+#define GIMBAL_PAN_LIMIT_DEG10_NEG         DEGx10(-60)
+#define GIMBAL_TILT_LIMIT_DEG10_POS        DEGx10(-10)
+#define GIMBAL_TILT_LIMIT_DEG10_NEG        DEGx10(-80)
 
 typedef enum
 {

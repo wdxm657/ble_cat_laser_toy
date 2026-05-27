@@ -21,7 +21,7 @@
 #define RADAR_RX_IRQ_DEBUG 0
 #endif
 
-#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.8f * 1000.0f)
+#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (2.0f * 1000.0f)
 #define RADAR_FRAME_LEN                   30
 #define SAMPLE_COUNT                      1
 #define STATIONARY_DXY_THRESHOLD_MM       5
@@ -329,17 +329,17 @@ _attribute_data_retention_ static u8                 g_radar_install_height_set 
 
 /* 边界多边形：默认是矩形，但支持修改为任意凸四边形（点顺序需为逆时针或顺时针一致） */
 static const radar_boundary_point_t g_radar_boundary_quad_default[4] = {
-    {-1000, 4000},
-    {1000, 4000},
-    {1000, 400},
-    {-1000, 400},
+    {-6000, 6000},
+    {6000, 6000},
+    {6000, 500},
+    {-6000, 500},
 };
 
 _attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4] = {
-    {-600, 100},
-    {600, 800},
-    {800, 4000},
-    {-1000, 3000},
+    {-6000, 6000},
+    {6000, 6000},
+    {6000, 500},
+    {-6000, 500},
 };
 
 #define RADAR_BOUNDARY_FLASH_MAGIC       0x52424452u  // "RBDR"
@@ -411,7 +411,7 @@ static void app_radar_power_state_reset(void)
     BLE_LOG_D("app_radar_power_state_reset");
     g_radar_low_freq_phase_on = 0;
     g_radar_hold_on_mode      = 1;
-    g_radar_rest_mode = 0;
+    g_radar_rest_mode         = 0;
     radar_working_mode_set(1);
     g_radar_phase_tick           = 0;
     g_radar_rest_start_tick      = 0;
@@ -2044,7 +2044,7 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     else
     {
         v_abs   = RadarSpeedAbs(v_cm_s);
-        lead_mm = (s32)RADAR_TRACK_LEAD_MM_BASE + ((s32)v_abs * (s32)RADAR_TRACK_LEAD_MM_PER_NUM) / (s32)RADAR_TRACK_LEAD_MM_PER_DEN;
+        lead_mm = (s32)RadarRandRangeI32(RADAR_TRACK_LEAD_MM_MIN, RADAR_TRACK_LEAD_MM_MIN + 200) + ((s32)v_abs * (s32)RADAR_TRACK_LEAD_MM_PER_NUM) / (s32)RADAR_TRACK_LEAD_MM_PER_DEN;
         if (lead_mm < (s32)RADAR_TRACK_LEAD_MM_MIN)
         {
             lead_mm = (s32)RADAR_TRACK_LEAD_MM_MIN;
