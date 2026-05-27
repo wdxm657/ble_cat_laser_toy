@@ -292,27 +292,6 @@ u8                                    scan_pm_disable = 0;
 #if (PM_DEEPSLEEP_ENABLE)
 static void app_request_deep_sleep(void)
 {
-    app_adc_dbg_bat_percent_save_to_flash();
-    cpu_set_gpio_wakeup(USB_DET, Level_High, 1);
-    gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
-    cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
-    gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
-
-    gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
-    gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
-    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-    gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
-    gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
-    gpio_write(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
-    gpio_write(V_NTC_CON, 0);
-    gpio_write(V_BAT_CON, 0);
-
-    if (sendTerminate_before_enterDeep == 2)
-    {
-        LOG_D("deep sleep conn");
-        cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);
-        return;
-    }
     if (device_in_connection_state)
     {
         bls_ll_terminateConnection(HCI_ERR_REMOTE_USER_TERM_CONN);
@@ -321,6 +300,21 @@ static void app_request_deep_sleep(void)
     }
     else
     {
+        app_adc_dbg_bat_percent_save_to_flash();
+        cpu_set_gpio_wakeup(USB_DET, Level_High, 1);
+        gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
+        cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
+        gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+
+        gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
+        gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
+        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+        gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
+        gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
+        gpio_write(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
+        gpio_write(V_NTC_CON, 0);
+        gpio_write(V_BAT_CON, 0);
+
         LOG_D("deep sleep no conn");
         cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);
     }
@@ -334,6 +328,11 @@ static void app_request_deep_sleep(void)
  */
 void blt_pm_proc(void)
 {
+    if (sendTerminate_before_enterDeep == 2)
+    {
+        app_request_deep_sleep();
+        return;
+    }
 #if (BLE_APP_PM_ENABLE)
     static u8  key_sm   = KEY_SM_IDLE;
     static u32 key_tick = 0;
