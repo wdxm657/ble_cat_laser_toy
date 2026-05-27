@@ -436,7 +436,7 @@ void app_ctrl_status_notify_task(void)
     }
     if (changed)
     {
-        BLE_LOG_D("power_on: %d, boundary_set: %d, install_height: %d, install_height_hi: %d", power_on, boundary_set, install_height, install_height_hi);
+        BLE_LOG_D("height: %d", height_mm);
         u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
     }

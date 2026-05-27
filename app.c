@@ -292,6 +292,7 @@ u8                                    scan_pm_disable = 0;
 #if (PM_DEEPSLEEP_ENABLE)
 static void app_request_deep_sleep(void)
 {
+    app_adc_dbg_bat_percent_save_to_flash();
     cpu_set_gpio_wakeup(USB_DET, Level_High, 1);
     gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
     cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);

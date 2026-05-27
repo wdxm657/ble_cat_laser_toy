@@ -11,8 +11,8 @@
 #define APP_NTC_CHARGE_ON_TEMP_C         40
 #define APP_NTC_POWER_OFF_TEMP_C         70
 #define APP_ADC_REPORT_INTERVAL_US       250000u
-#define APP_BAT_DISCHARGE_STEP_S         60u
-#define APP_BAT_CHARGE_STEP_S            30u
+#define APP_BAT_DISCHARGE_STEP_S         1u
+#define APP_BAT_CHARGE_STEP_S            1u
 #define APP_BAT_PERCENT_STABLE_US        5000000u
 #define APP_BAT_FLASH_SAVE_INTERVAL_US   30000000u
 #define APP_BAT_PERCENT_DEFAULT_NO_FLASH 100u
@@ -247,6 +247,7 @@ static u8  s_charge_switch_on = 1;
 static u8  s_ntc_over70_active;
 static u32 s_bat_flash_save_tick;
 static u8  s_bat_flash_valid;
+static u32 s_log_tick;
 
 static u32 app_adc_dbg_flash_crc32(const u8 *data, u32 len)
 {
@@ -296,7 +297,7 @@ static u8 app_adc_dbg_bat_percent_load_from_flash(u8 *percent_out)
     return 1;
 }
 
-static void app_adc_dbg_bat_percent_save_to_flash(void)
+void app_adc_dbg_bat_percent_save_to_flash(void)
 {
     bat_percent_flash_t stored;
     stored.magic       = BAT_PERCENT_FLASH_MAGIC;
@@ -652,26 +653,36 @@ void app_adc_dbg_poll(void)
         /* 分压比 660k / 100k => 电池真实电压 = ADC 电压 * 6.6 */
         mv_bat_avg = (mv_bat_avg * 66u + 5u) / 10u;
 
-        u8 bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
-        u8 is_charging     = app_adc_dbg_is_charging();
+        u8 is_charging = app_adc_dbg_is_charging();
+        u8 bat_percent_raw;
+        if (is_charging)
+        {
+            bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg) - 300;
+        }
+        else
+        {
+            bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
+        }
+
         // ADC 初始化 5s 前使用 flash 上次电量，避免 raw 不稳定
         if (clock_time_exceed(s_adc_init_tick, APP_BAT_PERCENT_STABLE_US))
         {
             u8 bat_percent = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
             s_bat_percent  = bat_percent;
 
-            if (s_bat_percent_inited)
-            {
-                if (s_bat_flash_save_tick == 0)
-                {
-                    s_bat_flash_save_tick = now;
-                }
-                else if (clock_time_exceed(s_bat_flash_save_tick, APP_BAT_FLASH_SAVE_INTERVAL_US))
-                {
-                    app_adc_dbg_bat_percent_save_to_flash();
-                    s_bat_flash_save_tick = now;
-                }
-            }
+            // if (s_bat_percent_inited)
+            // {
+            //     if (s_bat_flash_save_tick == 0)
+            //     {
+            //         app_adc_dbg_bat_percent_save_to_flash();
+            //         s_bat_flash_save_tick = now;
+            //     }
+            //     else if (clock_time_exceed(s_bat_flash_save_tick, APP_BAT_FLASH_SAVE_INTERVAL_US))
+            //     {
+            //         app_adc_dbg_bat_percent_save_to_flash();
+            //         s_bat_flash_save_tick = now;
+            //     }
+            // }
         }
         else if (!s_bat_flash_valid)
         {
@@ -679,7 +690,11 @@ void app_adc_dbg_poll(void)
         }
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
-        // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
+        if (clock_time_exceed(s_bat_flash_save_tick, 1000000))
+        {
+            BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
+            s_bat_flash_save_tick = now;
+        }
         // BLE_LOG_D("ntc=%d NTC_R=%d0(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
         app_adc_dbg_temp_charge_manage();
 

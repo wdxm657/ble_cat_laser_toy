@@ -12,3 +12,4 @@ u8   app_adc_dbg_is_charging(void);
 u8   app_adc_dbg_is_charge_switch_on(void);
 s8   app_adc_dbg_get_ntc_temp_c(void);
 u8   app_adc_dbg_is_ntc_temp_valid(void);
+void app_adc_dbg_bat_percent_save_to_flash(void);
