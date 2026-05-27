@@ -220,6 +220,16 @@ static u8  g_radar_boundary_active_index                  = 0xFF;
 static u8  g_radar_boundary_point_mask                    = 0;
 static s16 g_hieght_angle_10                              = 0;
 
+// 新简化配置流程的状态变量
+static s32 g_radar_config_cached_height = 0;  // 缓存的高度值（mm）
+static u8  g_radar_config_height_set    = 0;  // 是否已设置高度标志
+
+// 分包传输状态变量（用于 RADAR_CONFIG_SET_COORDS）
+static s32 g_radar_config_coords_part0[2] = {0, 0};  // 第一包：左上、右上的坐标 (x0,y0), (x1,y1)
+static u8  g_radar_config_part0_received  = 0;       // 是否已接收第一包
+static u32 g_radar_config_part0_tick      = 0;       // 第一包接收时间戳
+#define RADAR_CONFIG_PART_TIMEOUT_US 5000000u        // 5秒超时
+
 static void app_ctrl_radar_boundary_reset(void)
 {
     g_radar_boundary_next_index   = 0;
@@ -1417,259 +1427,211 @@ static int app_ctrl_handle_uid_get(u8 seq, u8 *payload, u16 len)
     return 0;
 }
 
-static int app_ctrl_handle_radar_set_install_height(u8 seq, u8 *payload, u16 len)
+// ----------------------- 新简化配置接口 handler -----------------------
+
+/**
+ * @brief 处理设置高度并进入配置模式命令（CMD = 0x59）
+ *
+ * 设备行为：
+ * 1. 将高度限制在 500~10000mm 范围内
+ * 2. 缓存高度值（不立即生效）
+ * 3. 自动进入配置模式（SETTING状态）
+ * 4. 清空之前缓存的坐标点数据
+ */
+static int app_ctrl_handle_radar_config_set_height(u8 seq, u8 *payload, u16 len)
 {
 #if (UI_RADAR_ENABLE)
     if (len < 2)
     {
         u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_SET_INSTALL_HEIGHT, seq, rsp, sizeof(rsp));
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_HEIGHT, seq, rsp, sizeof(rsp));
         return -1;
     }
 
     s16 height_mm = (s16)(payload[0] | (payload[1] << 8));
-    LOG_D("height_mm: %d, payload: %d, %d", height_mm, payload[0], payload[1]);
-    LOG_D("height_mm: %d, payload: %d, %d", height_mm, payload[0], payload[1]);
-    LOG_D("height_mm: %d, payload: %d, %d", height_mm, payload[0], payload[1]);
-    app_radar_set_install_height_mm((s32)height_mm);
 
-    g_hieght_angle_10 = (s16)(lookup_atan2(6000, height_mm) * RAD_TO_DEG * 10.0f - 900.0f);
+    // 限制高度范围 800~2500mm
+    if (height_mm < 800)
+    {
+        height_mm = 800;
+    }
+    else if (height_mm > 2500)
+    {
+        height_mm = 2500;
+    }
 
-    u8 rsp[2] = {CTRL_STATUS_OK, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_SET_INSTALL_HEIGHT, seq, rsp, sizeof(rsp));
-    return 0;
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_SET_INSTALL_HEIGHT, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
+    // 缓存高度值
+    g_radar_config_cached_height = (s32)height_mm;
+    g_radar_config_height_set    = 1;
 
-static int app_ctrl_handle_radar_boundary_enter(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    (void)payload;
-    (void)len;
-
+    // 进入配置模式
     g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_SETTING;
+
+    // 清空坐标点缓存
     app_ctrl_radar_boundary_reset();
-    s32 h = 0;
-    app_radar_get_install_height_mm(&h);
-    BLE_LOG_D("height_mm: %d", h);
-    BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
-    BLE_LOG_D("g_radar_boundary_y: %d, %d, %d, %d", g_radar_boundary_y[0], g_radar_boundary_y[1], g_radar_boundary_y[2], g_radar_boundary_y[3]);
+
+    BLE_LOG_D("RADAR_CONFIG_SET_HEIGHT: cached_height=%d mm", height_mm);
 
     u8 rsp[2] = {CTRL_STATUS_OK, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_ENTER, seq, rsp, sizeof(rsp));
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_HEIGHT, seq, rsp, sizeof(rsp));
     return 0;
 #else
     (void)payload;
     (void)len;
     u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_ENTER, seq, rsp, sizeof(rsp));
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_HEIGHT, seq, rsp, sizeof(rsp));
     return -1;
 #endif
 }
 
-static int app_ctrl_handle_radar_boundary_select_point(u8 seq, u8 *payload, u16 len)
+/**
+ * @brief 处理批量设置坐标点命令（CMD = 0x5B）- 分包传输版本
+ *
+ * 设备行为：
+ * 第一包（partIndex=0）：
+ *   - 暂存左上、右上两点
+ *   - 返回中间状态响应
+ * 第二包（partIndex=1）：
+ *   - 检查是否已通过 0x59 设置高度（未设置则返回 errDetail=3）
+ *   - 校验通过后：将缓存的高度和4个坐标一起更新到配置，保存到 Flash
+ * 超时处理：若第一包后 5 秒内未收到第二包，清空暂存数据
+ */
+static int app_ctrl_handle_radar_config_set_coords(u8 seq, u8 *payload, u16 len)
 {
 #if (UI_RADAR_ENABLE)
-    if (len < 1)
+    // 检查超时：若第一包已接收但超过5秒未收到第二包，清空暂存
+    if (g_radar_config_part0_received &&
+        clock_time_exceed(g_radar_config_part0_tick, RADAR_CONFIG_PART_TIMEOUT_US))
     {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, CTRL_RADAR_BOUNDARY_ERR_INDEX};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT, seq, rsp, sizeof(rsp));
+        BLE_LOG_D("RADAR_CONFIG_SET_COORDS: part0 timeout, reset");
+        g_radar_config_part0_received = 0;
+    }
+
+    // 最小长度检查：partIndex(1) + 2个点的坐标(8) = 9字节
+    if (len < 9)
+    {
+        u8 rsp[4] = {CTRL_STATUS_PARAM_ERROR, 0, 0, 0};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
         return -1;
     }
 
-    if (g_radar_boundary_mode != CTRL_RADAR_BOUNDARY_MODE_SETTING)
+    u8 partIndex = payload[0];
+
+    if (partIndex == 0)
     {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, CTRL_RADAR_BOUNDARY_ERR_STATE};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
+        // 第一包：接收左上(0)、右上(1)两个坐标点
+        s16 x0_mm = (s16)(payload[1] | (payload[2] << 8));
+        s16 y0_mm = (s16)(payload[3] | (payload[4] << 8));
+        s16 x1_mm = (s16)(payload[5] | (payload[6] << 8));
+        s16 y1_mm = (s16)(payload[7] | (payload[8] << 8));
 
-    u8 point_index = payload[0];
-    if (point_index >= RADAR_BOUNDARY_POINT_COUNT)
-    {
-        u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, CTRL_RADAR_BOUNDARY_ERR_INDEX};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
+        // 暂存第一包数据（使用无符号类型避免符号扩展）
+        g_radar_config_coords_part0[0] = ((u32)(u16)x0_mm) | (((u32)(u16)y0_mm) << 16);
+        g_radar_config_coords_part0[1] = ((u32)(u16)x1_mm) | (((u32)(u16)y1_mm) << 16);
+        g_radar_config_part0_received  = 1;
+        g_radar_config_part0_tick      = clock_time();
 
-    g_radar_boundary_active_index = point_index;
-    BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
-    BLE_LOG_D("g_radar_boundary_y: %d, %d, %d, %d", g_radar_boundary_y[0], g_radar_boundary_y[1], g_radar_boundary_y[2], g_radar_boundary_y[3]);
-    app_ctrl_radar_boundary_move_to_point(point_index);
+        BLE_LOG_D("RADAR_CONFIG_SET_COORDS part0: (%d,%d), (%d,%d)", x0_mm, y0_mm, x1_mm, y1_mm);
 
-    u8 rsp[3] = {CTRL_STATUS_OK, point_index, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT, seq, rsp, sizeof(rsp));
-    return 0;
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-static u8 app_ctrl_radar_boundary_all_points_ready(void)
-{
-#if UI_RADAR_ENABLE
-    return (g_radar_boundary_point_mask == 0x0F);
-#else
-    return 0;
-#endif
-}
-
-static int app_ctrl_handle_radar_boundary_save_point(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    if (g_radar_boundary_mode != CTRL_RADAR_BOUNDARY_MODE_SETTING)
-    {
-        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_STATE};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    if (len < 1)
-    {
-        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_INDEX};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    u8 point_index = payload[0];
-    if (point_index >= RADAR_BOUNDARY_POINT_COUNT)
-    {
-        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, point_index, CTRL_RADAR_BOUNDARY_ERR_INDEX};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    g_radar_boundary_active_index = point_index;
-
-    if (!app_ctrl_radar_boundary_is_move_done(point_index))
-    {
-        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, point_index, CTRL_RADAR_BOUNDARY_ERR_STATE};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-    BLE_LOG_D("app_ctrl_radar_boundary_save_point idx=%d", point_index);
-
-#if (UI_STEP_MOTOR_ENABLE)
-    s16 pan_cur   = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
-    s16 tilt_cur  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
-    s32 height_mm = 0;
-    app_radar_get_install_height_mm(&height_mm);
-
-    s16 x_mm = 0;
-    s16 y_mm = 0;
-    BLE_LOG_D("p: %d, t: %d, h: %d", pan_cur, tilt_cur, height_mm);
-    app_ctrl_calc_xy_from_angles(pan_cur, tilt_cur, height_mm, &x_mm, &y_mm);
-#else
-    s16 x_mm = 0;
-    s16 y_mm = 0;
-#endif
-
-    app_ctrl_radar_boundary_store_point(point_index, x_mm, y_mm);
-    BLE_LOG_D("x: %d, y: %d", x_mm, y_mm);
-
-    u8 ready  = app_ctrl_radar_boundary_all_points_ready() ? 1 : 0;
-    u8 rsp[4] = {CTRL_STATUS_OK, point_index, ready, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT, seq, rsp, sizeof(rsp));
-    return 0;
-
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-static int app_ctrl_handle_radar_boundary_commit(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    (void)payload;
-    if (g_radar_boundary_mode != CTRL_RADAR_BOUNDARY_MODE_SETTING)
-    {
-        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_STATE};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_COMMIT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    if (len != 0)
-    {
-        u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_STATE};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_COMMIT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    // if (!app_ctrl_radar_boundary_all_points_ready())
-    // {
-    //     u8 missing = 0xFF;
-    //     for (u8 i = 0; i < RADAR_BOUNDARY_POINT_COUNT; i++)
-    //     {
-    //         if ((g_radar_boundary_point_mask & (1u << i)) == 0)
-    //         {
-    //             missing = i;
-    //             break;
-    //         }
-    //     }
-    //     u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, missing, CTRL_RADAR_BOUNDARY_ERR_INDEX};
-    //     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_COMMIT, seq, rsp, sizeof(rsp));
-    //     return -1;
-    // }
-
-    u8 errDetail           = CTRL_RADAR_BOUNDARY_OK;
-    u8 shortPairMask       = 0;
-    g_radar_boundary_ready = 1;
-
-    if (app_ctrl_radar_boundary_commit(&errDetail, &shortPairMask))
-    {
-        // g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
-        u8 rsp[4] = {CTRL_STATUS_OK, 1, 0, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_COMMIT, seq, rsp, sizeof(rsp));
-        // app_ctrl_radar_boundary_reset();
+        // 返回中间状态响应
+        u8 rsp[2] = {CTRL_STATUS_OK, 0};  // partIndex=0
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
         return 0;
     }
+    else if (partIndex == 1)
+    {
+        // 第二包：接收右下(2)、左下(3)两个坐标点
 
-    u8 rsp[4] = {CTRL_STATUS_OK, 0, errDetail, shortPairMask};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_COMMIT, seq, rsp, sizeof(rsp));
-    return -1;
+        // 检查是否已接收第一包
+        if (!g_radar_config_part0_received)
+        {
+            u8 rsp[4] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_STATE, 0};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
+            return -1;
+        }
+
+        // 检查是否已设置高度
+        if (!g_radar_config_height_set)
+        {
+            g_radar_config_part0_received = 0;
+            u8 rsp[4]                     = {CTRL_STATUS_OK, 0, CTRL_RADAR_BOUNDARY_ERR_STATE, 0};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
+            return -1;
+        }
+
+        s16 x2_mm = (s16)(payload[1] | (payload[2] << 8));
+        s16 y2_mm = (s16)(payload[3] | (payload[4] << 8));
+        s16 x3_mm = (s16)(payload[5] | (payload[6] << 8));
+        s16 y3_mm = (s16)(payload[7] | (payload[8] << 8));
+
+        BLE_LOG_D("RADAR_CONFIG_SET_COORDS part1: (%d,%d), (%d,%d)", x2_mm, y2_mm, x3_mm, y3_mm);
+
+        // 合并两包数据得到4个坐标点
+        s32 x[4], y[4];
+        x[0] = (s16)(g_radar_config_coords_part0[0] & 0xFFFF);
+        y[0] = (s16)(((u32)g_radar_config_coords_part0[0] >> 16) & 0xFFFF);
+        x[1] = (s16)(g_radar_config_coords_part0[1] & 0xFFFF);
+        y[1] = (s16)(((u32)g_radar_config_coords_part0[1] >> 16) & 0xFFFF);
+        x[2] = (s32)x2_mm;
+        y[2] = (s32)y2_mm;
+        x[3] = (s32)x3_mm;
+        y[3] = (s32)y3_mm;
+
+        BLE_LOG_D("RADAR_CONFIG_SET_COORDS merged: x=[%d,%d,%d,%d] y=[%d,%d,%d,%d]",
+                  x[0],
+                  x[1],
+                  x[2],
+                  x[3],
+                  y[0],
+                  y[1],
+                  y[2],
+                  y[3]);
+
+        // 清空第一包暂存状态
+        g_radar_config_part0_received = 0;
+
+        // 校验通过，应用配置
+        // 1. 应用高度
+        app_radar_set_install_height_mm(g_radar_config_cached_height);
+        BLE_LOG_D("RADAR_CONFIG_SET_COORDS: success, height=%d mm", g_radar_config_cached_height);
+        // g_hieght_angle_10 = (s16)(lookup_atan2(6000, g_radar_config_cached_height) * RAD_TO_DEG * 10.0f - 900.0f);
+
+        // 2. 应用坐标
+        for (u8 i = 0; i < 4; i++)
+        {
+            g_radar_boundary_x[i] = x[i];
+            g_radar_boundary_y[i] = y[i];
+        }
+        app_radar_set_boundary_quad(g_radar_boundary_x, g_radar_boundary_y);
+
+        // 3. 保存到 Flash
+        app_radar_save_boundary_quad_to_flash(g_radar_boundary_x, g_radar_boundary_y);
+
+        // 4. 退出配置模式
+        g_radar_boundary_mode     = CTRL_RADAR_BOUNDARY_MODE_IDLE;
+        g_radar_config_height_set = 0;
+        app_ctrl_radar_boundary_reset();
+
+        // 5. 启用雷达功能
+        app_radar_set_enabled(1);
+
+        // 返回最终响应
+        u8 rsp[4] = {CTRL_STATUS_OK, 1, 0, 0};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
+        return 0;
+    }
+    else
+    {
+        // 无效的 partIndex
+        u8 rsp[4] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_INDEX, 0};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
+        return -1;
+    }
 #else
     (void)payload;
     (void)len;
-    u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_COMMIT, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-static int app_ctrl_handle_radar_boundary_exit(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    (void)payload;
-    (void)len;
-
-    g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
-    app_ctrl_radar_boundary_reset();
-    BLE_LOG_D("g_radar_boundary_x: %d, %d, %d, %d", g_radar_boundary_x[0], g_radar_boundary_x[1], g_radar_boundary_x[2], g_radar_boundary_x[3]);
-
-    // 退出设置状态时与刚开机情况一样，直接进入holdon模式
-    app_radar_set_enabled(1);
-    u8 rsp[2] = {CTRL_STATUS_OK, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_EXIT, seq, rsp, sizeof(rsp));
-    return 0;
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_BOUNDARY_EXIT, seq, rsp, sizeof(rsp));
+    u8 rsp[4] = {CTRL_STATUS_UNSUPPORTED_CMD, 0, 0, 0};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
     return -1;
 #endif
 }
@@ -1927,30 +1889,6 @@ void app_ctrl_onRx(u8 *data, u16 len)
         BLE_LOG_D("CTRL_CMD_TEXT_CHUNK");
         app_ctrl_handle_text_chunk(seq, payload, payLen);
         break;
-    case CTRL_CMD_RADAR_SET_INSTALL_HEIGHT:
-        BLE_LOG_D("CTRL_CMD_RADAR_SET_INSTALL_HEIGHT");
-        app_ctrl_handle_radar_set_install_height(seq, payload, payLen);
-        break;
-    case CTRL_CMD_RADAR_BOUNDARY_ENTER:
-        BLE_LOG_D("CTRL_CMD_RADAR_BOUNDARY_ENTER");
-        app_ctrl_handle_radar_boundary_enter(seq, payload, payLen);
-        break;
-    case CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT:
-        BLE_LOG_D("CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT");
-        app_ctrl_handle_radar_boundary_select_point(seq, payload, payLen);
-        break;
-    case CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT:
-        BLE_LOG_D("CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT");
-        app_ctrl_handle_radar_boundary_save_point(seq, payload, payLen);
-        break;
-    case CTRL_CMD_RADAR_BOUNDARY_EXIT:
-        BLE_LOG_D("CTRL_CMD_RADAR_BOUNDARY_EXIT");
-        app_ctrl_handle_radar_boundary_exit(seq, payload, payLen);
-        break;
-    case CTRL_CMD_RADAR_BOUNDARY_COMMIT:
-        BLE_LOG_D("CTRL_CMD_RADAR_BOUNDARY_COMMIT");
-        app_ctrl_handle_radar_boundary_commit(seq, payload, payLen);
-        break;
     case CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
         BLE_LOG_D("CTRL_CMD_RADAR_RESET_FLASH_CONFIG");
         app_radar_clear_install_height_and_boundary_flash();
@@ -1995,6 +1933,14 @@ void app_ctrl_onRx(u8 *data, u16 len)
         app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
     }
 #endif
+        break;
+    case CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
+        BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_HEIGHT");
+        app_ctrl_handle_radar_config_set_height(seq, payload, payLen);
+        break;
+    case CTRL_CMD_RADAR_CONFIG_SET_COORDS:
+        BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_COORDS");
+        app_ctrl_handle_radar_config_set_coords(seq, payload, payLen);
         break;
     case CTRL_CMD_DEVICE_REBOOT:
         BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");

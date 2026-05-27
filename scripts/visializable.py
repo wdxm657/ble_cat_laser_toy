@@ -479,7 +479,9 @@ class RadarVisualizer:
                     while not self._stop.is_set():
                         a2, e2 = self.ble_target()
                         if (not e2) or (not a2):
-                            print("[BLE] disabled by UI, disconnecting", file=sys.stderr)
+                            print(
+                                "[BLE] disabled by UI, disconnecting", file=sys.stderr
+                            )
                             break
                         if not client.is_connected:
                             print(
@@ -677,8 +679,15 @@ class RadarVisualizer:
                 return f"[RSP][0x55] status={st} apply={apply_ok} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')}) pairMask=0x{pair_mask:02X}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
                 return f"[RSP][0x56] status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
+                return f"[RSP][0x59] status={st} (new config: height cached)"
             if fr.cmd_id == cp.CTRL_CMD_DEVICE_REBOOT:
                 return f"[RSP][0x5A] status={st} (rebooting)"
+            if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_COORDS and len(pld) >= 4:
+                apply_ok = pld[1]
+                err = pld[2]
+                pair_mask = pld[3]
+                return f"[RSP][0x5B] status={st} apply={apply_ok} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')}) pairMask=0x{pair_mask:02X}"
             return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
 
         if (
@@ -887,7 +896,9 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         row_addr = QtWidgets.QHBoxLayout()
         row_addr.addWidget(QtWidgets.QLabel("address:"))
         self.addr_edit = QtWidgets.QLineEdit()
-        cur_addr, cur_en = self.vis.ble_target() if self.vis._transport == "ble" else ("", False)
+        cur_addr, cur_en = (
+            self.vis.ble_target() if self.vis._transport == "ble" else ("", False)
+        )
         self.addr_edit.setText(cur_addr)
         row_addr.addWidget(self.addr_edit, 1)
         conn_l.addLayout(row_addr)
@@ -954,7 +965,9 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             return
         self.vis.set_ble_target(addr, enabled)
         self._update_conn_btn_text()
-        self.radar_text.appendPlainText(f"[本地] BLE {'连接请求' if enabled else '已断开'}: {addr}")
+        self.radar_text.appendPlainText(
+            f"[本地] BLE {'连接请求' if enabled else '已断开'}: {addr}"
+        )
 
     def _build_service_panel(self, root: QtWidgets.QVBoxLayout) -> None:
         g = QtWidgets.QGridLayout()
@@ -1005,53 +1018,81 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self._bind_press_release(self.btn_left, 2)
         self._bind_press_release(self.btn_right, 3)
 
-        # Height
-        g.addWidget(QtWidgets.QLabel("安装高度 (0x50, mm)"), 6, 0, 1, 2)
-        self.h_mm = QtWidgets.QSpinBox()
-        self.h_mm.setRange(500, 10000)
-        self.h_mm.setValue(2500)
-        b_h = QtWidgets.QPushButton("设置高度")
-        b_h.clicked.connect(
-            lambda: self._send(*vc.cmd_radar_set_height(self.h_mm.value()))
-        )
-        g.addWidget(self.h_mm, 7, 0)
-        g.addWidget(b_h, 7, 1)
+        # 新简化配置流程 (0x59 + 0x5B)
+        g.addWidget(QtWidgets.QLabel("简化配置 (0x59 + 0x5B)"), 6, 0, 1, 4)
+        
+        # 高度设置
+        g.addWidget(QtWidgets.QLabel("高度(mm):"), 7, 0)
+        self.new_h_mm = QtWidgets.QSpinBox()
+        self.new_h_mm.setRange(500, 10000)
+        self.new_h_mm.setValue(2500)
+        g.addWidget(self.new_h_mm, 7, 1)
+        
+        # 坐标点设置（4个点）
+        g.addWidget(QtWidgets.QLabel("左上(x,y):"), 8, 0)
+        self.coord_lu_x = QtWidgets.QSpinBox()
+        self.coord_lu_x.setRange(-5000, 5000)
+        self.coord_lu_x.setValue(-1000)
+        self.coord_lu_y = QtWidgets.QSpinBox()
+        self.coord_lu_y.setRange(0, 10000)
+        self.coord_lu_y.setValue(4000)
+        g.addWidget(self.coord_lu_x, 8, 1)
+        g.addWidget(self.coord_lu_y, 8, 2)
+        
+        g.addWidget(QtWidgets.QLabel("右上(x,y):"), 9, 0)
+        self.coord_ru_x = QtWidgets.QSpinBox()
+        self.coord_ru_x.setRange(-5000, 5000)
+        self.coord_ru_x.setValue(1000)
+        self.coord_ru_y = QtWidgets.QSpinBox()
+        self.coord_ru_y.setRange(0, 10000)
+        self.coord_ru_y.setValue(4000)
+        g.addWidget(self.coord_ru_x, 9, 1)
+        g.addWidget(self.coord_ru_y, 9, 2)
+        
+        g.addWidget(QtWidgets.QLabel("右下(x,y):"), 10, 0)
+        self.coord_rd_x = QtWidgets.QSpinBox()
+        self.coord_rd_x.setRange(-5000, 5000)
+        self.coord_rd_x.setValue(1000)
+        self.coord_rd_y = QtWidgets.QSpinBox()
+        self.coord_rd_y.setRange(0, 10000)
+        self.coord_rd_y.setValue(800)
+        g.addWidget(self.coord_rd_x, 10, 1)
+        g.addWidget(self.coord_rd_y, 10, 2)
+        
+        g.addWidget(QtWidgets.QLabel("左下(x,y):"), 11, 0)
+        self.coord_ld_x = QtWidgets.QSpinBox()
+        self.coord_ld_x.setRange(-5000, 5000)
+        self.coord_ld_x.setValue(-1000)
+        self.coord_ld_y = QtWidgets.QSpinBox()
+        self.coord_ld_y.setRange(0, 10000)
+        self.coord_ld_y.setValue(800)
+        g.addWidget(self.coord_ld_x, 11, 1)
+        g.addWidget(self.coord_ld_y, 11, 2)
+        
+        # 配置按钮
+        b_config_step1 = QtWidgets.QPushButton("1.设置高度(0x59)")
+        b_config_step1.clicked.connect(self._on_new_config_step1)
+        g.addWidget(b_config_step1, 12, 0, 1, 2)
+        
+        b_config_step2 = QtWidgets.QPushButton("2.设置坐标(0x5B)")
+        b_config_step2.clicked.connect(self._on_new_config_step2)
+        g.addWidget(b_config_step2, 12, 2, 1, 2)
+        
+        b_config_all = QtWidgets.QPushButton("一键配置(0x59+0x5B)")
+        b_config_all.clicked.connect(self._on_new_config_all)
+        b_config_all.setStyleSheet("QPushButton { background: #45475a; font-weight: bold; }")
+        g.addWidget(b_config_all, 13, 0, 1, 4)
 
-        # Boundary flow
-        g.addWidget(QtWidgets.QLabel("边界流程 (0x51/52/53/55 + 0x56)"), 8, 0, 1, 5)
-        self.b_idx = QtWidgets.QSpinBox()
-        self.b_idx.setRange(0, 3)
-        b_enter = QtWidgets.QPushButton("进入")
-        b_sel = QtWidgets.QPushButton("选择点")
-        b_save = QtWidgets.QPushButton("保存点")
-        b_commit = QtWidgets.QPushButton("提交")
-        b_reset = QtWidgets.QPushButton("复位")
-        b_exit = QtWidgets.QPushButton("退出")
-        b_enter.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_enter()))
-        b_sel.clicked.connect(
-            lambda: self._send(*vc.cmd_radar_boundary_select(self.b_idx.value()))
-        )
-        b_save.clicked.connect(
-            lambda: self._send(*vc.cmd_radar_boundary_save(self.b_idx.value()))
-        )
-        b_commit.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_commit()))
+        # 复位和重启
+        g.addWidget(QtWidgets.QLabel("系统控制"), 14, 0, 1, 4)
+        b_reset = QtWidgets.QPushButton("复位配置(0x56)")
         b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
-        b_exit.clicked.connect(lambda: self._send(*vc.cmd_radar_boundary_exit()))
-        g.addWidget(QtWidgets.QLabel("point"), 9, 0)
-        g.addWidget(self.b_idx, 9, 1)
-        g.addWidget(b_enter, 10, 0)
-        g.addWidget(b_sel, 10, 1)
-        g.addWidget(b_save, 10, 2)
-        g.addWidget(b_commit, 10, 3)
-        g.addWidget(b_reset, 10, 4)
-        g.addWidget(b_exit, 10, 5)
-
-        # Device reboot
-        g.addWidget(QtWidgets.QLabel("设备软复位 (0x5A)"), 11, 0, 1, 2)
-        b_reboot = QtWidgets.QPushButton("重启 MCU")
+        g.addWidget(b_reset, 15, 0, 1, 2)
+        
+        b_reboot = QtWidgets.QPushButton("重启MCU(0x5A)")
         b_reboot.clicked.connect(lambda: self._send(*vc.cmd_device_reboot()))
         b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
-        g.addWidget(b_reboot, 11, 2, 1, 2)
+        g.addWidget(b_reboot, 15, 2, 1, 2)
 
         if self.vis._transport != "ble":
             self.time_use_local_tz.setEnabled(False)
@@ -1077,6 +1118,70 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         ok = self.vis.send_cmd(*vc.cmd_time_set(epoch_sec, tz_q15))
         if not ok:
             self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
+
+    def _on_new_config_step1(self) -> None:
+        """新简化配置：步骤1 - 设置高度并进入配置模式 (CMD 0x59)"""
+        height_mm = self.new_h_mm.value()
+        ok = self.vis.send_cmd(*vc.cmd_radar_config_set_height(height_mm))
+        if not ok:
+            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
+        else:
+            self.radar_text.appendPlainText(f"[本地] 已发送：设置高度 {height_mm}mm (0x59)")
+
+    def _on_new_config_step2(self) -> None:
+        """新简化配置：步骤2 - 批量设置4个坐标点 (CMD 0x5B) - 分包传输"""
+        coords = [
+            (self.coord_lu_x.value(), self.coord_lu_y.value()),  # 左上
+            (self.coord_ru_x.value(), self.coord_ru_y.value()),  # 右上
+            (self.coord_rd_x.value(), self.coord_rd_y.value()),  # 右下
+            (self.coord_ld_x.value(), self.coord_ld_y.value()),  # 左下
+        ]
+        
+        # cmd_radar_config_set_coords 返回两个命令（分包传输）
+        commands = vc.cmd_radar_config_set_coords(coords)
+        
+        # 依次发送两个包
+        all_ok = True
+        for cmd_id, payload, desc in commands:
+            ok = self.vis.send_cmd(cmd_id, payload, desc)
+            if not ok:
+                all_ok = False
+                break
+        
+        if not all_ok:
+            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
+        else:
+            self.radar_text.appendPlainText(f"[本地] 已发送：设置坐标 {coords} (0x5B, 分2包)")
+
+    def _on_new_config_all(self) -> None:
+        """新简化配置：一键配置 - 先设置高度，再设置坐标"""
+        self.radar_text.appendPlainText("[本地] 开始一键配置...")
+        
+        # 步骤1：设置高度
+        height_mm = self.new_h_mm.value()
+        ok1 = self.vis.send_cmd(*vc.cmd_radar_config_set_height(height_mm))
+        if not ok1:
+            self.radar_text.appendPlainText("[本地] 步骤1失败：设置高度失败")
+            return
+        self.radar_text.appendPlainText(f"[本地] 步骤1完成：设置高度 {height_mm}mm")
+        
+        # 等待一小段时间让设备处理
+        import time
+        time.sleep(0.1)
+        
+        # 步骤2：设置坐标
+        coords = [
+            (self.coord_lu_x.value(), self.coord_lu_y.value()),
+            (self.coord_ru_x.value(), self.coord_ru_y.value()),
+            (self.coord_rd_x.value(), self.coord_rd_y.value()),
+            (self.coord_ld_x.value(), self.coord_ld_y.value()),
+        ]
+        ok2 = self.vis.send_cmd(*vc.cmd_radar_config_set_coords(coords))
+        if not ok2:
+            self.radar_text.appendPlainText("[本地] 步骤2失败：设置坐标失败")
+            return
+        self.radar_text.appendPlainText(f"[本地] 步骤2完成：设置坐标 {coords}")
+        self.radar_text.appendPlainText("[本地] 一键配置完成！等待设备响应...")
 
     def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
         btn.pressed.connect(

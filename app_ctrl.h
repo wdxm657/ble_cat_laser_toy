@@ -39,17 +39,17 @@ enum{
     CTRL_CMD_PLAY_RECORD_GET = 0x33,   // get play records (start/end time)
     CTRL_CMD_UID_GET         = 0x34,   // get flash UID (16 bytes, split into 2 responses)
 
-    CTRL_CMD_RADAR_SET_INSTALL_HEIGHT  = 0x50,   // set radar install height (mm)
-    CTRL_CMD_RADAR_BOUNDARY_ENTER       = 0x51,   // enter boundary setting mode
-    CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT = 0x52,  // select boundary point index
-    CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT  = 0x53,   // save current point (payload[0]=pointIndex)
-    CTRL_CMD_RADAR_BOUNDARY_EXIT        = 0x54,   // exit boundary setting mode
-    CTRL_CMD_RADAR_BOUNDARY_COMMIT      = 0x55,   // commit all 4 points when APP confirms ready
     CTRL_CMD_RADAR_RESET_FLASH_CONFIG   = 0x56,   // reset radar install height and boundary in flash
     /** APP -> device: request boundary quad (device emits 4x EVENT sub BOUNDARY_PT); RSP status only */
     CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY  = 0x57,
     /** APP -> device: set radar track gimbal step interval; payload u16 LE interval_us (µs) */
     CTRL_CMD_RADAR_TRACK_SPEED         = 0x58,
+    
+    // 新简化配置接口
+    /** APP -> device: set height and enter config mode (height cached, not applied immediately) */
+    CTRL_CMD_RADAR_CONFIG_SET_HEIGHT   = 0x59,
+    /** APP -> device: set 4 coords in batch (validate and apply with cached height) */
+    CTRL_CMD_RADAR_CONFIG_SET_COORDS   = 0x5B,
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
 

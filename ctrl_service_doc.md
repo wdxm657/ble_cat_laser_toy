@@ -588,295 +588,175 @@ byte7 : part           // 0: UID[0..7], 1: UID[8..15]
 byte8..byte15 : uid8   // 8 字节 UID 分片
 ```
 
-#### 4.10 设置雷达安装高度（RADAR_SET_INSTALL_HEIGHT，CMD = 0x50）
+#### 4.10 雷达配置流程（CMD = 0x59, 0x5B）
 
-用途：APP 侧设置雷达安装高度（mm），影响 tilt 角计算。
+配置流程分为两步：
+1. APP 调用 0x59 设置高度（设备自动进入配置模式，高度缓存）
+2. APP 调用 0x5B 批量设置4个坐标点（设备校验后与高度一起更新配置）
+
+##### 4.10.1 设置高度并进入配置模式（RADAR_CONFIG_SET_HEIGHT，CMD = 0x59）
+
+用途：APP 设置雷达安装高度，设备自动进入配置模式，高度数据缓存但不立即生效。
 
 **请求帧（APP → 设备）**
 
 ```
 byte0 : 0x01           // version
 byte1 : 0x01           // msgType = CMD
-byte2 : 0x50           // cmdId = RADAR_SET_INSTALL_HEIGHT
+byte2 : 0x59           // cmdId = RADAR_CONFIG_SET_HEIGHT
 byte3 : seq
 byte4 : 0x02           // payloadLen = 2
 byte5 : 0x00
-byte6 : height_L       // s16, mm
+byte6 : height_L       // s16, mm (小端)
 byte7 : height_H
 ```
 
+**示例**：
+
+```
+（设置高度 2500mm）
+01 01 59 01 02 00 C4 09
+```
+
 **响应帧（设备 → APP）**
 
 ```
 byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
-byte2 : 0x50           // cmdId = RADAR_SET_INSTALL_HEIGHT
+byte2 : 0x59           // cmdId = RADAR_CONFIG_SET_HEIGHT
 byte3 : seq
 byte4 : 0x02           // payloadLen = 2
 byte5 : 0x00
-byte6 : status
-byte7 : 0x00
-```
-
-设备行为：调用 `app_radar_set_install_height_mm()`，内部会将高度限制在 500~10000mm。
-
-#### 4.11 边界点设置状态机（RADAR_BOUNDARY_XXX，CMD = 0x51~0x54）
-
-用途：APP 以“进入 → 选点 → 调整电机 → 保存 → 退出”的方式设置边界四个角点。点位顺序固定为：**左上(0) → 右上(1) → 右下(2) → 左下(3)**。
-
-##### 4.11.1 进入设置状态（RADAR_BOUNDARY_ENTER，CMD = 0x51）
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x51           // cmdId = RADAR_BOUNDARY_ENTER
-byte3 : seq
-byte4 : 0x00           // payloadLen = 0
-byte5 : 0x00
-```
-
-**响应帧（设备 → APP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x51           // cmdId = RADAR_BOUNDARY_ENTER
-byte3 : seq
-byte4 : 0x02           // payloadLen = 2
-byte5 : 0x00
-byte6 : status
-byte7 : 0x00
-```
-
-设备行为：进入边界点设置状态并清空本轮缓存点位。
-
-##### 4.11.2 选择需要调整的点（RADAR_BOUNDARY_SELECT_POINT，CMD = 0x52）
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x52           // cmdId = RADAR_BOUNDARY_SELECT_POINT
-byte3 : seq
-byte4 : 0x01           // payloadLen = 1
-byte5 : 0x00
-byte6 : pointIndex     // 0:左上, 1:右上, 2:右下, 3:左下
-```
-
-**响应帧（设备 → APP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x52           // cmdId = RADAR_BOUNDARY_SELECT_POINT
-byte3 : seq
-byte4 : 0x03           // payloadLen = 3
-byte5 : 0x00
-byte6 : status
-byte7 : pointIndex
-byte8 : 0x00           // reserved
-```
-
-设备行为：根据上一次保存的该点坐标，先驱动电机移动到对应位置。运动完成后，APP 可开始发送电机控制指令进行微调。
-
-##### 4.11.3 保存当前点（RADAR_BOUNDARY_SAVE_POINT，CMD = 0x53）
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x53           // cmdId = RADAR_BOUNDARY_SAVE_POINT
-byte3 : seq
-byte4 : 0x01           // payloadLen = 1
-byte5 : 0x00
-byte6 : pointIndex     // 当前要保存的点：0~3
-```
-
-**响应帧（设备 → APP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x53           // cmdId = RADAR_BOUNDARY_SAVE_POINT
-byte3 : seq
-byte4 : 0x04           // payloadLen = 4
-byte5 : 0x00
-byte6 : status
-byte7 : pointIndex
-byte8 : ready          // 1: 当前已收齐 4 点；0: 未收齐
-byte9 : 0x00           // reserved
+byte6 : status         // 0x00=成功，其它为错误码
+byte7 : 0x00           // reserved
 ```
 
 设备行为：
+1. 将高度限制在 800~2500mm 范围内
+2. 缓存高度值（不立即生效）
+3. 自动进入配置模式（SETTING状态）
+4. 清空之前缓存的坐标点数据
 
-1. 使用请求里 `pointIndex` 指定要保存的点（不再依赖上次 select 的 active index）。
-2. 读取当前电机角度，反算坐标并保存该点。
-3. 仅返回当前点保存结果与 `ready` 状态，不在此命令中执行四点校验/提交。
+##### 4.10.2 批量设置坐标点（RADAR_CONFIG_SET_COORDS，CMD = 0x5B）
 
-##### 4.11.4 提交四点边界（RADAR_BOUNDARY_COMMIT，CMD = 0x55）
+用途：APP 分两次发送4个坐标点（左上、右上、右下、左下），设备校验合法性后与缓存的高度一起更新配置。
 
-用途：APP 调用该接口表示“4 个点均已就绪”，设备执行顺序与距离校验并决定是否应用边界。
+**注意**：由于 BLE MTU 限制为 20 字节，需分两包发送。
 
-**请求帧（APP → 设备）**
+**请求帧 - 第一包（APP → 设备）**
+
+发送左上、右上两个坐标点：
 
 ```
-byte0 : 0x01
+byte0 : 0x01           // version
 byte1 : 0x01           // msgType = CMD
-byte2 : 0x55           // cmdId = RADAR_BOUNDARY_COMMIT
+byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
 byte3 : seq
-byte4 : 0x00           // payloadLen = 0
+byte4 : 0x09           // payloadLen = 9
 byte5 : 0x00
+byte6 : 0x00           // partIndex = 0 (第一包)
+byte7 : x0_L           // 左上点 x (s16, mm, 小端)
+byte8 : x0_H
+byte9 : y0_L           // 左上点 y (s16, mm, 小端)
+byte10: y0_H
+byte11: x1_L           // 右上点 x (s16, mm, 小端)
+byte12: x1_H
+byte13: y1_L           // 右上点 y (s16, mm, 小端)
+byte14: y1_H
+```
+
+总计：15 字节
+
+**请求帧 - 第二包（APP → 设备）**
+
+发送右下、左下两个坐标点：
+
+```
+byte0 : 0x01           // version
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
+byte3 : seq
+byte4 : 0x09           // payloadLen = 9
+byte5 : 0x00
+byte6 : 0x01           // partIndex = 1 (第二包)
+byte7 : x2_L           // 右下点 x (s16, mm, 小端)
+byte8 : x2_H
+byte9 : y2_L           // 右下点 y (s16, mm, 小端)
+byte10: y2_H
+byte11: x3_L           // 左下点 x (s16, mm, 小端)
+byte12: x3_H
+byte13: y3_L           // 左下点 y (s16, mm, 小端)
+byte14: y3_H
+```
+
+总计：15 字节
+
+**示例**：
+
+设置4个点：(-1000,4000), (1000,4000), (1000,800), (-1000,800)
+
+第一包（左上、右上）：
+```
+01 01 5B 01 09 00 00 18 FC A0 0F E8 03 A0 0F
+```
+
+第二包（右下、左下）：
+```
+01 01 5B 02 09 00 01 E8 03 20 03 18 FC 20 03
 ```
 
 **响应帧（设备 → APP）**
 
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x55           // cmdId = RADAR_BOUNDARY_COMMIT
-byte3 : seq
-byte4 : payloadLen L
-byte5 : payloadLen H
-byte6 : status
-byte7 : applyOkOrReserve  // 成功时=1；失败时保留
-byte8 : errDetail         // 0:无, 1:两点距离<1m, 2:顺序错误, 3:状态错误, 4:点位错误
-byte9 : shortPairMask     // 当 errDetail=1 时有效，位图表示所有 <1m 的点对（最多6组）
-```
-
-`shortPairMask` 位定义（4 点共 6 组）：
-
-- bit0: (0,1)
-- bit1: (0,2)
-- bit2: (0,3)
-- bit3: (1,2)
-- bit4: (1,3)
-- bit5: (2,3)
-
-例如：
-
-- `shortPairMask = 0x01` 表示仅 (0,1) 小于 1m
-- `shortPairMask = 0x09` 表示 (0,1) 和 (1,2) 小于 1m
-- 提交成功：payloadLen = 4
-- 提交失败：payloadLen = 4（含 `errDetail`、`shortPairMask`）
-
-##### 4.11.5 退出设置状态（RADAR_BOUNDARY_EXIT，CMD = 0x54）
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x54           // cmdId = RADAR_BOUNDARY_EXIT
-byte3 : seq
-byte4 : 0x00           // payloadLen = 0
-byte5 : 0x00
-```
-
-**响应帧（设备 → APP）**
+设备收到第一包后，暂存数据，返回中间状态响应：
 
 ```
 byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
-byte2 : 0x54           // cmdId = RADAR_BOUNDARY_EXIT
-byte3 : seq
+byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
+byte3 : seq            // 与第一包的 seq 对应
 byte4 : 0x02           // payloadLen = 2
 byte5 : 0x00
-byte6 : status
-byte7 : 0x00
+byte6 : 0x00           // status = 成功接收第一包
+byte7 : 0x00           // partIndex = 0（已接收第一包）
 ```
 
-设备行为：退出边界点设置状态，恢复其它业务。
-
-##### 4.11.5 示例流程（设置左上点）
-
-1. 进入边界点设置状态：
+设备收到第二包后，完成校验并应用配置，返回最终响应：
 
 ```
-01 01 51 01 00 00
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
+byte3 : seq            // 与第二包的 seq 对应
+byte4 : 0x04           // payloadLen = 4
+byte5 : 0x00
+byte6 : status         // 0x00=成功，其它为错误码
+byte7 : applyOk        // 1=配置已应用，0=校验失败未应用
+byte8 : errDetail      // 0:无, 1:未先设置高度, 2:未收到第一包
 ```
 
-1. 选择左上点（index=0），设备自动移动到上次左上点：
+设备行为：
+1. 收到第一包（partIndex=0）：暂存左上、右上两点，返回中间状态响应
+2. 收到第二包（partIndex=1）：
+   - 检查是否已通过 0x59 设置高度（未设置则返回 errDetail=1）
+   - 校验是否已收到第一包（未收到则返回 errDetail=2）
+   - 校验通过后：将缓存的高度和4个坐标一起更新到配置，保存到 Flash
+3. 超时处理：若第一包后 5 秒内未收到第二包，清空暂存数据
+   - 退出配置模式（IDLE状态）
+   - 启用雷达功能
+
+##### 4.10.3 完整配置流程示例
 
 ```
-01 01 52 02 01 00 00
+1. 设置高度 2500mm：
+01 01 59 01 02 00 C4 09
+
+2. 设置4个坐标点：
+01 01 5B 02 10 00 18 FC A0 0F E8 03 A0 0F E8 03 20 03 18 FC 20 03
+
+3. 配置完成，设备自动退出配置模式并启用雷达
 ```
 
-1. APP 使用 `MOTOR_DIR_CTRL` 指令微调电机位置。
-
-```
-（下转，中速）
-01 01 22 01 03 00 01 01 02
-（右转，中速）
-01 01 22 01 03 00 01 03 02
-（停止）
-01 01 22 01 03 00 00 01 02
-（查询电机角度坐标信息）
-01 01 20 01 01 00 02
-```
-
-1. 保存左上点：
-
-```
-01 01 53 03 00 00
-```
-
-1. 若需要退出设置状态：
-
-```
-01 01 54 04 00 00
-```
-
-##### 4.11.6 雷达调试数据上报（EVENT，cmdId = 0x57）
-
-用途：设备以 **二进制**事件方式高频上报雷达调试数据，供上位机可视化使用（比走 `TEXT_CHUNK` 文本日志更省带宽、更易解析）。
-
-通用帧头（设备 → APP，上报）：
-
-```
-byte0 : 0x01            // version
-byte1 : 0x03            // msgType = EVENT
-byte2 : 0x57            // cmdId = RADAR_DEBUG channel（与 RADAR_DEBUG_GET_BOUNDARY 复用同一 cmdId）
-byte3 : seq
-byte4 : payloadLen L
-byte5 : payloadLen H
-payload...
-```
-
-payload[0] 为 `subType`，其余字段按 subType 解析（均为 **LE**）：
-
-- **subType = 0x01（PREV_RAW）**：`payloadLen = 12`
-  - byte0  : 0x01
-  - byte1..2  : prev_x (s16, mm)
-  - byte3..4  : prev_y (s16, mm)
-  - byte5..6  : raw_x  (s16, mm)
-  - byte7..8  : raw_y  (s16, mm)
-  - byte9     : motion_valid (u8, 0/1)
-  - byte10..11: motion_dir_deg10 (s16, deg*10；若 motion_valid==0 则为 0)
-
-- **subType = 0x02（PRED_STA）**：`payloadLen = 9`
-  - byte0  : 0x02
-  - byte1..2  : ax_mm (s16)
-  - byte3..4  : ay_mm (s16)
-  - byte5..6  : bx_mm (s16)
-  - byte7..8  : by_mm (s16)
-
-- **subType = 0x03（PREDSEQ）**：`payloadLen = 6`
-  - byte0  : 0x03
-  - byte1  : idx (u8，从 1 开始；idx==1 表示新序列)
-  - byte2..3  : x_mm (s16)
-  - byte4..5  : y_mm (s16)
-
-- **subType = 0x04（BOUNDARY_PT）**：`payloadLen = 6`
-  - byte0  : 0x04
-  - byte1  : corner_idx (u8, 0..3；顺序：左上0 → 右上1 → 右下2 → 左下3)
-  - byte2..3  : x_mm (s16)
-  - byte4..5  : y_mm (s16)
-
-#### 4.12 文本分片传输（TEXT_CHUNK，CMD = 0x40）
+#### 4.11 文本分片传输（TEXT_CHUNK，CMD = 0x40）
 
 用于发送长文本，设备端最多缓存 `CTRL_TEXT_MAX_TOTAL_LEN = 100` 字节文本，每帧最多携带 `CTRL_TEXT_CHUNK_DATA_MAX = 10` 字节纯文本。
 
@@ -943,7 +823,7 @@ APP 侧发送完整长文本的推荐流程：
 
 1. 当所有分片均成功，应答 `status=0x00` 后，本次文本在设备端即可视为“已完整接收并处理”。
 
-#### 4.13 解绑复位
+#### 4.12 解绑复位
 
 **请求帧（APP → 设备）**
 
@@ -970,7 +850,7 @@ byte6 : status
 
 设备行为：清除FLASH中的高度和坐标信息和逗宠记录
 
-#### 4.14 设备软复位（DEVICE_REBOOT，CMD = 0x5A）
+#### 4.13 设备软复位（DEVICE_REBOOT，CMD = 0x5A）
 
 用途：APP 请求设备执行 MCU 软复位（重启）。  
 注意：设备会尽量先回复一帧 RSP，但随后会很快复位，因此 **APP 不应依赖一定能收到响应**；链路会断开，设备会重新广播/可被重新连接。
@@ -1000,7 +880,7 @@ byte6 : status         // 0x00=OK，其它为错误码
 
 设备行为：回复 RSP 后在 `app_ctrl_task()` 中延时约 120ms 触发 `start_reboot()`。
 
-#### 4.15 电池电量使用电池服务特帧读取
+#### 4.14 电池电量使用电池服务特帧读取
 
 Battery Service
 UUID:0000180F-0000-1000-8000-00805F9B34FB

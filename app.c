@@ -1195,7 +1195,7 @@ void main_loop(void)
     if (!StepMotor_GimbalResetBusy() && g_app_power_on)
     {
         app_radar_gimbal_track_task(); /* StepMotor_GimbalTask；雷达目标在 parse 中直接 SetTarget */
-        app_ctrl_motor_dir_task();
+        // app_ctrl_motor_dir_task();
     }
 #endif
 #endif
