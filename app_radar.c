@@ -383,7 +383,7 @@ _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INS
 #define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)   // 1s
 #define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)   // 4s
 #define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)  // 30s
-#define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u * 1u)
+#define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u * 10u)
 #define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
 #define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
 #define RADAR_UART_WARMUP_US       (1000000u * 7u / 10u)  // 700ms
@@ -686,7 +686,7 @@ static void radar_play_record_start(void)
         g_radar_play_active_idx   = radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
         radar_play_records_save_to_flash();
         BLE_LOG_D("radar_play_record_push");
-        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        // gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
     }
     else
     {
@@ -855,8 +855,8 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
         {
             avg_speed_cms_out[count] = g_radar_play_avg_speed_cms[idx];
         }
-        count++;
         BLE_LOG_D("count: %d, start: %d, end: %d", count, start, end);
+        count++;
     }
 
     if (need_save)
@@ -1170,7 +1170,7 @@ static void RadarSessionOnMotion(u32 now_tick)
     BLE_LOG_D("update work tick");
     g_radar_hold_on_mode = 1;
     radar_play_record_start();
-    gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+    // gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
 }
 
 static u8 RadarSessionCanPredict(u32 now_tick)
@@ -2259,6 +2259,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             }
             else
             {
+                gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
                 RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
             }
         }

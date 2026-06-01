@@ -11,8 +11,8 @@
 #define APP_NTC_CHARGE_ON_TEMP_C         40
 #define APP_NTC_POWER_OFF_TEMP_C         70
 #define APP_ADC_REPORT_INTERVAL_US       250000u
-#define APP_BAT_DISCHARGE_STEP_S         1u * 100000u
-#define APP_BAT_CHARGE_STEP_S            1u * 100000u
+#define APP_BAT_DISCHARGE_STEP_S         1u * 10000u
+#define APP_BAT_CHARGE_STEP_S            1u * 10000u
 #define APP_BAT_PERCENT_STABLE_US        5000000u
 #define APP_BAT_FLASH_SAVE_INTERVAL_US   30000000u
 #define APP_BAT_PERCENT_DEFAULT_NO_FLASH 100u
@@ -234,6 +234,7 @@ static u32 s_mv_ntc_sum;
 static u16 s_sample_cnt;
 static u16 s_bat_mv;
 static u8  s_bat_percent;
+static u8  last_s_bat_percent;
 static u8  s_bat_percent_inited;
 static u8  s_bat_prev_charging;
 static u32 s_bat_rate_acc_us;
@@ -601,6 +602,8 @@ void app_adc_dbg_init(void)
     s_ntc_over70_active   = 0;
 }
 
+static u8 first_5ms_flag;
+
 void app_adc_dbg_poll(void)
 {
     u32 now = clock_time();
@@ -669,6 +672,13 @@ void app_adc_dbg_poll(void)
         {
             u8 bat_percent = app_adc_dbg_bat_percent_apply_rate_limit(bat_percent_raw, is_charging);
             s_bat_percent  = bat_percent;
+            if (!first_5ms_flag)
+            {
+                s_bat_percent  = bat_percent_raw;
+                first_5ms_flag = 1;
+                BLE_LOG_D("first_5ms_flag %d", bat_percent_raw);
+                app_adc_dbg_bat_percent_save_to_flash();
+            }
 
             // if (s_bat_percent_inited)
             // {
@@ -686,12 +696,14 @@ void app_adc_dbg_poll(void)
         }
         else if (!s_bat_flash_valid)
         {
+            BLE_LOG_D("Using default bat percent %d%% as flash is invalid", bat_percent_raw);
             s_bat_percent = bat_percent_raw;
         }
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
-        if (clock_time_exceed(s_bat_flash_save_tick, 1000000))
+        if (clock_time_exceed(s_bat_flash_save_tick, 1000000) && s_bat_percent != last_s_bat_percent)
         {
+            last_s_bat_percent = s_bat_percent;
             BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
             s_bat_flash_save_tick = now;
         }

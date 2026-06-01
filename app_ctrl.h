@@ -46,10 +46,8 @@ enum{
     CTRL_CMD_RADAR_TRACK_SPEED         = 0x58,
     
     // 新简化配置接口
-    /** APP -> device: set height and enter config mode (height cached, not applied immediately) */
+    /** APP -> device: set height (applied immediately) */
     CTRL_CMD_RADAR_CONFIG_SET_HEIGHT   = 0x50,
-    /** APP -> device: set 4 coords in batch (validate and apply with cached height) */
-    CTRL_CMD_RADAR_CONFIG_SET_COORDS   = 0x5B,
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
 

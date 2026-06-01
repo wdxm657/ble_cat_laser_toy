@@ -465,7 +465,7 @@ void blt_pm_proc(void)
         }
     }
 
-    if (clock_time_exceed(key_sleep_enable_tick, KEY_SLEEP_ENABLE_DELAY_US) && app_adc_dbg_is_bat_percent_stable() &&
+    if (clock_time_exceed(key_sleep_enable_tick, KEY_SLEEP_ENABLE_DELAY_US * 2) && app_adc_dbg_is_bat_percent_stable() &&
         !app_adc_dbg_is_charging() && app_adc_dbg_get_bat_percent_exact() < APP_BAT_LOW_DEEP_SLEEP_PERCENT)
     {
         app_request_deep_sleep();

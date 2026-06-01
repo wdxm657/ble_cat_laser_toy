@@ -106,8 +106,8 @@ enum{
 /**
  *  @brief  watchdog enable and timeout setting
  */
-#define MODULE_WATCHDOG_ENABLE						0
-#define WATCHDOG_INIT_TIMEOUT						500  //Unit:ms
+#define MODULE_WATCHDOG_ENABLE						1
+#define WATCHDOG_INIT_TIMEOUT						10000  //Unit:ms
 /**
  *  @brief  software uart enable and setting
  */

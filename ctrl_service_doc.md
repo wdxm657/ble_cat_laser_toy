@@ -588,22 +588,16 @@ byte7 : part           // 0: UID[0..7], 1: UID[8..15]
 byte8..byte15 : uid8   // 8 字节 UID 分片
 ```
 
-#### 4.10 雷达配置流程（CMD = 0x59, 0x5B）
+#### 4.10 设置安装高度（RADAR_CONFIG_SET_HEIGHT，CMD = 0x50）
 
-配置流程分为两步：
-1. APP 调用 0x59 设置高度（设备自动进入配置模式，高度缓存）
-2. APP 调用 0x5B 批量设置4个坐标点（设备校验后与高度一起更新配置）
-
-##### 4.10.1 设置高度并进入配置模式（RADAR_CONFIG_SET_HEIGHT，CMD = 0x59）
-
-用途：APP 设置雷达安装高度，设备自动进入配置模式，高度数据缓存但不立即生效。
+用途：APP 设置雷达安装高度，设备立即应用。
 
 **请求帧（APP → 设备）**
 
 ```
 byte0 : 0x01           // version
 byte1 : 0x01           // msgType = CMD
-byte2 : 0x59           // cmdId = RADAR_CONFIG_SET_HEIGHT
+byte2 : 0x50           // cmdId = RADAR_CONFIG_SET_HEIGHT
 byte3 : seq
 byte4 : 0x02           // payloadLen = 2
 byte5 : 0x00
@@ -615,7 +609,7 @@ byte7 : height_H
 
 ```
 （设置高度 2500mm）
-01 01 59 01 02 00 C4 09
+01 01 50 01 02 00 C4 09
 ```
 
 **响应帧（设备 → APP）**
@@ -623,7 +617,7 @@ byte7 : height_H
 ```
 byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
-byte2 : 0x59           // cmdId = RADAR_CONFIG_SET_HEIGHT
+byte2 : 0x50           // cmdId = RADAR_CONFIG_SET_HEIGHT
 byte3 : seq
 byte4 : 0x02           // payloadLen = 2
 byte5 : 0x00
@@ -633,128 +627,7 @@ byte7 : 0x00           // reserved
 
 设备行为：
 1. 将高度限制在 800~2500mm 范围内
-2. 缓存高度值（不立即生效）
-3. 自动进入配置模式（SETTING状态）
-4. 清空之前缓存的坐标点数据
-
-##### 4.10.2 批量设置坐标点（RADAR_CONFIG_SET_COORDS，CMD = 0x5B）
-
-用途：APP 分两次发送4个坐标点（左上、右上、右下、左下），设备校验合法性后与缓存的高度一起更新配置。
-
-**注意**：由于 BLE MTU 限制为 20 字节，需分两包发送。
-
-**请求帧 - 第一包（APP → 设备）**
-
-发送左上、右上两个坐标点：
-
-```
-byte0 : 0x01           // version
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
-byte3 : seq
-byte4 : 0x09           // payloadLen = 9
-byte5 : 0x00
-byte6 : 0x00           // partIndex = 0 (第一包)
-byte7 : x0_L           // 左上点 x (s16, mm, 小端)
-byte8 : x0_H
-byte9 : y0_L           // 左上点 y (s16, mm, 小端)
-byte10: y0_H
-byte11: x1_L           // 右上点 x (s16, mm, 小端)
-byte12: x1_H
-byte13: y1_L           // 右上点 y (s16, mm, 小端)
-byte14: y1_H
-```
-
-总计：15 字节
-
-**请求帧 - 第二包（APP → 设备）**
-
-发送右下、左下两个坐标点：
-
-```
-byte0 : 0x01           // version
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
-byte3 : seq
-byte4 : 0x09           // payloadLen = 9
-byte5 : 0x00
-byte6 : 0x01           // partIndex = 1 (第二包)
-byte7 : x2_L           // 右下点 x (s16, mm, 小端)
-byte8 : x2_H
-byte9 : y2_L           // 右下点 y (s16, mm, 小端)
-byte10: y2_H
-byte11: x3_L           // 左下点 x (s16, mm, 小端)
-byte12: x3_H
-byte13: y3_L           // 左下点 y (s16, mm, 小端)
-byte14: y3_H
-```
-
-总计：15 字节
-
-**示例**：
-
-设置4个点：(-1000,4000), (1000,4000), (1000,800), (-1000,800)
-
-第一包（左上、右上）：
-```
-01 01 5B 01 09 00 00 18 FC A0 0F E8 03 A0 0F
-```
-
-第二包（右下、左下）：
-```
-01 01 5B 02 09 00 01 E8 03 20 03 18 FC 20 03
-```
-
-**响应帧（设备 → APP）**
-
-设备收到第一包后，暂存数据，返回中间状态响应：
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
-byte3 : seq            // 与第一包的 seq 对应
-byte4 : 0x02           // payloadLen = 2
-byte5 : 0x00
-byte6 : 0x00           // status = 成功接收第一包
-byte7 : 0x00           // partIndex = 0（已接收第一包）
-```
-
-设备收到第二包后，完成校验并应用配置，返回最终响应：
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x5B           // cmdId = RADAR_CONFIG_SET_COORDS
-byte3 : seq            // 与第二包的 seq 对应
-byte4 : 0x04           // payloadLen = 4
-byte5 : 0x00
-byte6 : status         // 0x00=成功，其它为错误码
-byte7 : applyOk        // 1=配置已应用，0=校验失败未应用
-byte8 : errDetail      // 0:无, 1:未先设置高度, 2:未收到第一包
-```
-
-设备行为：
-1. 收到第一包（partIndex=0）：暂存左上、右上两点，返回中间状态响应
-2. 收到第二包（partIndex=1）：
-   - 检查是否已通过 0x59 设置高度（未设置则返回 errDetail=1）
-   - 校验是否已收到第一包（未收到则返回 errDetail=2）
-   - 校验通过后：将缓存的高度和4个坐标一起更新到配置，保存到 Flash
-3. 超时处理：若第一包后 5 秒内未收到第二包，清空暂存数据
-   - 退出配置模式（IDLE状态）
-   - 启用雷达功能
-
-##### 4.10.3 完整配置流程示例
-
-```
-1. 设置高度 2500mm：
-01 01 59 01 02 00 C4 09
-
-2. 设置4个坐标点：
-01 01 5B 02 10 00 18 FC A0 0F E8 03 A0 0F E8 03 20 03 18 FC 20 03
-
-3. 配置完成，设备自动退出配置模式并启用雷达
-```
+2. 立即应用该高度到雷达配置
 
 #### 4.11 文本分片传输（TEXT_CHUNK，CMD = 0x40）
 

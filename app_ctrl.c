@@ -37,7 +37,7 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 1  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 6  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -126,6 +126,72 @@ static u8 app_ctrl_play_record_upload_allowed(void)
     return 1;
 }
 
+// ----------------------- 逐条逗宠记录上传状态机 -----------------------
+// 每秒上传 1 条，收到 APP ACK 后再发下一条，避免低功耗蓝牙拥塞。
+
+enum
+{
+    PLAY_UPLOAD_IDLE = 0,
+    PLAY_UPLOAD_SEND_WAIT,  // 等待 1s 间隔后发送
+    PLAY_UPLOAD_WAIT_ACK,   // 已发送，等待 APP ACK
+};
+
+static u8  g_play_upload_state                              = PLAY_UPLOAD_IDLE;
+static u32 g_play_cache_records[RADAR_TIME_MAX_RECORDS * 2] = {0};
+static u8  g_play_cache_timezones[RADAR_TIME_MAX_RECORDS]   = {0};
+static u32 g_play_cache_motion[RADAR_TIME_MAX_RECORDS]      = {0};
+static u16 g_play_cache_speed[RADAR_TIME_MAX_RECORDS]       = {0};
+static u8  g_play_cache_total                               = 0;
+static u8  g_play_cache_index                               = 0;
+static u32 g_play_upload_tick                               = 0;
+
+#define PLAY_RECORD_UPLOAD_INTERVAL_US    1000000u  // 每条记录间隔 1s
+#define PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US 2000000u  // ACK 超时 2s，超时后重传当前记录
+
+/**
+ * @brief 从缓存中发送当前索引的一条记录（EVENT）
+ */
+static void app_ctrl_upload_one_record_from_cache(void)
+{
+    u8  i         = g_play_cache_index;
+    u32 start_sec = g_play_cache_records[i * 2];
+    u32 end_sec   = g_play_cache_records[i * 2 + 1];
+    u32 msec      = g_play_cache_motion[i];
+    u16 avs       = g_play_cache_speed[i];
+    u16 m16       = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
+    u8  av8       = (avs > 255u) ? 255u : (u8)avs;
+
+    u8 evt[14] = {0};
+    evt[0]     = CTRL_STATUS_OK;
+    // 由于APP端需要收到总数后才会发送ACK给设备，所以每次上传记录的total数量都需要是1
+    evt[1]  = 1;
+    evt[2]  = 0;
+    evt[3]  = (u8)(start_sec & 0xFF);
+    evt[4]  = (u8)((start_sec >> 8) & 0xFF);
+    evt[5]  = (u8)((start_sec >> 16) & 0xFF);
+    evt[6]  = (u8)((start_sec >> 24) & 0xFF);
+    evt[7]  = (u8)(end_sec & 0xFF);
+    evt[8]  = (u8)((end_sec >> 8) & 0xFF);
+    evt[9]  = (u8)((end_sec >> 16) & 0xFF);
+    evt[10] = (u8)((end_sec >> 24) & 0xFF);
+    evt[11] = (u8)(m16 & 0xFF);
+    evt[12] = (u8)((m16 >> 8) & 0xFF);
+    evt[13] = av8;
+    BLE_LOG_D("upload record %d/%d start:%d end:%d tz:%d mot:%d av:%d",
+              i + 1,
+              g_play_cache_total,
+              start_sec,
+              end_sec,
+              g_play_cache_timezones[i],
+              (u32)m16,
+              (u32)av8);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
+
+    // 记录发送时间戳，用于 ACK 超时重传判断
+    g_play_upload_tick  = clock_time();
+    g_play_upload_state = PLAY_UPLOAD_WAIT_ACK;
+}
+
 static void app_ctrl_try_upload_play_records(void)
 {
     if (BLS_CONN_HANDLE == 0xFFFF)
@@ -137,52 +203,36 @@ static void app_ctrl_try_upload_play_records(void)
         return;
     }
 
+    // 如果正在上传中，不重新开始
+    if (g_play_upload_state != PLAY_UPLOAD_IDLE)
+    {
+        return;
+    }
+
     if (!app_radar_has_complete_play_records())
     {
         return;
     }
 
     BLE_LOG_D("app_radar_get_complete_play_records");
-    u32 records[RADAR_TIME_MAX_RECORDS * 2]   = {0};
-    u8  timezones[RADAR_TIME_MAX_RECORDS]     = {0};
-    u32 motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
-    u16 avg_speed_cms[RADAR_TIME_MAX_RECORDS] = {0};
-    int count                                 = app_radar_get_complete_play_records(records, timezones, motion_sec, avg_speed_cms, RADAR_TIME_MAX_RECORDS);
+    int count = app_radar_get_complete_play_records(
+        g_play_cache_records, g_play_cache_timezones, g_play_cache_motion, g_play_cache_speed, RADAR_TIME_MAX_RECORDS);
     if (count <= 0)
     {
         return;
     }
 
-    for (int i = 0; i < count; i++)
-    {
-        u32 start_sec = records[i * 2];
-        u32 end_sec   = records[i * 2 + 1];
+    g_play_cache_total = (u8)count;
+    g_play_cache_index = 0;
 
-        /* 14B：受 CTRL_TX_MAX_LEN=20 限制（6 头 + payload ≤14）。motion 为 u16 秒（>65535 饱和），平均速度 u8 cm/s（>255 饱和）。 */
-        u32 msec    = motion_sec[i];
-        u16 avs     = avg_speed_cms[i];
-        u16 m16     = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
-        u8  av8     = (avs > 255u) ? 255u : (u8)avs;
-        u8  evt[14] = {0};
-        evt[0]      = CTRL_STATUS_OK;
-        evt[1]      = (u8)count;
-        evt[2]      = (u8)i;
-        evt[3]      = (u8)(start_sec & 0xFF);
-        evt[4]      = (u8)((start_sec >> 8) & 0xFF);
-        evt[5]      = (u8)((start_sec >> 16) & 0xFF);
-        evt[6]      = (u8)((start_sec >> 24) & 0xFF);
-        evt[7]      = (u8)(end_sec & 0xFF);
-        evt[8]      = (u8)((end_sec >> 8) & 0xFF);
-        evt[9]      = (u8)((end_sec >> 16) & 0xFF);
-        evt[10]     = (u8)((end_sec >> 24) & 0xFF);
-        evt[11]     = (u8)(m16 & 0xFF);
-        evt[12]     = (u8)((m16 >> 8) & 0xFF);
-        evt[13]     = av8;
-        BLE_LOG_D("evt: %d start_sec: %d end_sec: %d tz: %d mot: %d av: %d", i, start_sec, end_sec, timezones[i], (u32)m16, (u32)av8);
-        app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
-    }
+    // 一次性取出所有记录到缓存，然后清空雷达端已完成记录。
+    // 后续依靠 ACK 超时重传机制确保每条记录都被 APP 收到后才会推进到下一条。
+    app_radar_clear_complete_play_records();
 
-    // 等待 APP ACK 后清理；后续在连接事件或记录变化时再触发上传。
+    // 调度第一条：等待 1s 后发送
+    g_play_upload_tick  = clock_time();
+    g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
+    BLE_LOG_D("play upload start: %d records", count);
 }
 #endif
 
@@ -219,16 +269,6 @@ static u8  g_radar_boundary_mode                          = CTRL_RADAR_BOUNDARY_
 static u8  g_radar_boundary_active_index                  = 0xFF;
 static u8  g_radar_boundary_point_mask                    = 0;
 static s16 g_hieght_angle_10                              = 0;
-
-// 新简化配置流程的状态变量
-static s32 g_radar_config_cached_height = 0;  // 缓存的高度值（mm）
-static u8  g_radar_config_height_set    = 0;  // 是否已设置高度标志
-
-// 分包传输状态变量（用于 RADAR_CONFIG_SET_COORDS）
-static s32 g_radar_config_coords_part0[2] = {0, 0};  // 第一包：左上、右上的坐标 (x0,y0), (x1,y1)
-static u8  g_radar_config_part0_received  = 0;       // 是否已接收第一包
-static u32 g_radar_config_part0_tick      = 0;       // 第一包接收时间戳
-#define RADAR_CONFIG_PART_TIMEOUT_US 5000000u        // 5秒超时
 
 static void app_ctrl_radar_boundary_reset(void)
 {
@@ -384,7 +424,8 @@ static void app_ctrl_calc_exclusive_mode_flags(u8 *working_mode, u8 *resting_mod
     *setting_mode = setting;
 }
 
-void app_ctrl_status_notify_task(void)
+static u32 status_check_tick = 0;
+void       app_ctrl_status_notify_task(void)
 {
 #if (UI_GEN_MOTOR_ENABLE) || (UI_RADAR_ENABLE)
     u8 changed = 0;
@@ -436,9 +477,14 @@ void app_ctrl_status_notify_task(void)
     }
     if (changed)
     {
-        BLE_LOG_D("height: %d", height_mm);
-        u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
-        app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
+        // 状态最多允许1s更新1次，避免过于频繁地通知APP（尤其是充电状态可能会有较大波动）
+        if (clock_time_exceed(status_check_tick, 1000000))
+        {
+            status_check_tick = clock_time();
+            BLE_LOG_D("height: %d", height_mm);
+            u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
+            app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
+        }
     }
 #endif
 }
@@ -1378,17 +1424,38 @@ static int app_ctrl_handle_play_record_get(u8 seq, u8 *payload, u16 len)
         return -1;
     }
 
-    // APP 通知已成功接收当前完整记录批次，设备清理已完成记录（保留进行中的记录）
+    // APP 确认已成功收到当前记录，推进到下一条或结束
     (void)payload;
-    app_radar_clear_complete_play_records();
 
-    u8 remain_complete = app_radar_has_complete_play_records() ? 1 : 0;
-    u8 rsp[2]          = {CTRL_STATUS_OK, remain_complete};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
-    if (remain_complete)
+    if (g_play_upload_state == PLAY_UPLOAD_WAIT_ACK)
     {
-        app_ctrl_try_upload_play_records();
+        // 清除掉上次发送的那一条记录
+        if (g_play_cache_index + 1 < g_play_cache_total)
+        {
+            // 还有下一条：调度 1s 后发送
+            g_play_cache_index++;
+            g_play_upload_tick  = clock_time();
+            g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
+            BLE_LOG_D("play record ack, next %d/%d", g_play_cache_index + 1, g_play_cache_total);
+        }
+        else
+        {
+            // 所有记录已发送完毕
+            g_play_cache_total  = 0;
+            g_play_cache_index  = 0;
+            g_play_upload_state = PLAY_UPLOAD_IDLE;
+            BLE_LOG_D("play record all done");
+        }
     }
+
+    u8 remaining = 0;
+    if (g_play_upload_state != PLAY_UPLOAD_IDLE)
+    {
+        remaining = g_play_cache_total - g_play_cache_index - 1;
+    }
+
+    u8 rsp[2] = {CTRL_STATUS_OK, remaining};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
     return 0;
 #else
     (void)payload;
@@ -1462,16 +1529,6 @@ static int app_ctrl_handle_radar_config_set_height(u8 seq, u8 *payload, u16 len)
     // 应用高度
     app_radar_set_install_height_mm(height_mm);
 
-    // 缓存高度值
-    // g_radar_config_cached_height = (s32)height_mm;
-    // g_radar_config_height_set    = 1;
-
-    // // 进入配置模式
-    // g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_SETTING;
-
-    // // 清空坐标点缓存
-    // app_ctrl_radar_boundary_reset();
-
     BLE_LOG_D("RADAR_CONFIG_SET_HEIGHT: cached_height=%d mm", height_mm);
 
     u8 rsp[2] = {CTRL_STATUS_OK, 0};
@@ -1482,158 +1539,6 @@ static int app_ctrl_handle_radar_config_set_height(u8 seq, u8 *payload, u16 len)
     (void)len;
     u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_HEIGHT, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-/**
- * @brief 处理批量设置坐标点命令（CMD = 0x5B）- 分包传输版本
- *
- * 设备行为：
- * 第一包（partIndex=0）：
- *   - 暂存左上、右上两点
- *   - 返回中间状态响应
- * 第二包（partIndex=1）：
- *   - 检查是否已通过 0x59 设置高度（未设置则返回 errDetail=3）
- *   - 校验通过后：将缓存的高度和4个坐标一起更新到配置，保存到 Flash
- * 超时处理：若第一包后 5 秒内未收到第二包，清空暂存数据
- */
-static int app_ctrl_handle_radar_config_set_coords(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    // 检查超时：若第一包已接收但超过5秒未收到第二包，清空暂存
-    if (g_radar_config_part0_received &&
-        clock_time_exceed(g_radar_config_part0_tick, RADAR_CONFIG_PART_TIMEOUT_US))
-    {
-        BLE_LOG_D("RADAR_CONFIG_SET_COORDS: part0 timeout, reset");
-        g_radar_config_part0_received = 0;
-    }
-
-    // 最小长度检查：partIndex(1) + 2个点的坐标(8) = 9字节
-    if (len < 9)
-    {
-        u8 rsp[4] = {CTRL_STATUS_PARAM_ERROR, 0, 0, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-
-    u8 partIndex = payload[0];
-
-    if (partIndex == 0)
-    {
-        // 第一包：接收左上(0)、右上(1)两个坐标点
-        s16 x0_mm = (s16)(payload[1] | (payload[2] << 8));
-        s16 y0_mm = (s16)(payload[3] | (payload[4] << 8));
-        s16 x1_mm = (s16)(payload[5] | (payload[6] << 8));
-        s16 y1_mm = (s16)(payload[7] | (payload[8] << 8));
-
-        // 暂存第一包数据（使用无符号类型避免符号扩展）
-        g_radar_config_coords_part0[0] = ((u32)(u16)x0_mm) | (((u32)(u16)y0_mm) << 16);
-        g_radar_config_coords_part0[1] = ((u32)(u16)x1_mm) | (((u32)(u16)y1_mm) << 16);
-        g_radar_config_part0_received  = 1;
-        g_radar_config_part0_tick      = clock_time();
-
-        BLE_LOG_D("RADAR_CONFIG_SET_COORDS part0: (%d,%d), (%d,%d)", x0_mm, y0_mm, x1_mm, y1_mm);
-
-        // 返回中间状态响应
-        u8 rsp[2] = {CTRL_STATUS_OK, 0};  // partIndex=0
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
-        return 0;
-    }
-    else if (partIndex == 1)
-    {
-        // 第二包：接收右下(2)、左下(3)两个坐标点
-
-        // 检查是否已接收第一包
-        if (!g_radar_config_part0_received)
-        {
-            u8 rsp[4] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_STATE, 0};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
-            return -1;
-        }
-
-        // 检查是否已设置高度
-        if (!g_radar_config_height_set)
-        {
-            g_radar_config_part0_received = 0;
-            u8 rsp[4]                     = {CTRL_STATUS_OK, 0, CTRL_RADAR_BOUNDARY_ERR_STATE, 0};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
-            return -1;
-        }
-
-        s16 x2_mm = (s16)(payload[1] | (payload[2] << 8));
-        s16 y2_mm = (s16)(payload[3] | (payload[4] << 8));
-        s16 x3_mm = (s16)(payload[5] | (payload[6] << 8));
-        s16 y3_mm = (s16)(payload[7] | (payload[8] << 8));
-
-        BLE_LOG_D("RADAR_CONFIG_SET_COORDS part1: (%d,%d), (%d,%d)", x2_mm, y2_mm, x3_mm, y3_mm);
-
-        // 合并两包数据得到4个坐标点
-        s32 x[4], y[4];
-        x[0] = (s16)(g_radar_config_coords_part0[0] & 0xFFFF);
-        y[0] = (s16)(((u32)g_radar_config_coords_part0[0] >> 16) & 0xFFFF);
-        x[1] = (s16)(g_radar_config_coords_part0[1] & 0xFFFF);
-        y[1] = (s16)(((u32)g_radar_config_coords_part0[1] >> 16) & 0xFFFF);
-        x[2] = (s32)x2_mm;
-        y[2] = (s32)y2_mm;
-        x[3] = (s32)x3_mm;
-        y[3] = (s32)y3_mm;
-
-        BLE_LOG_D("RADAR_CONFIG_SET_COORDS merged: x=[%d,%d,%d,%d] y=[%d,%d,%d,%d]",
-                  x[0],
-                  x[1],
-                  x[2],
-                  x[3],
-                  y[0],
-                  y[1],
-                  y[2],
-                  y[3]);
-
-        // 清空第一包暂存状态
-        g_radar_config_part0_received = 0;
-
-        // 校验通过，应用配置
-        // 1. 应用高度
-        app_radar_set_install_height_mm(g_radar_config_cached_height);
-        BLE_LOG_D("RADAR_CONFIG_SET_COORDS: success, height=%d mm", g_radar_config_cached_height);
-        // g_hieght_angle_10 = (s16)(lookup_atan2(6000, g_radar_config_cached_height) * RAD_TO_DEG * 10.0f - 900.0f);
-
-        // 2. 应用坐标
-        for (u8 i = 0; i < 4; i++)
-        {
-            g_radar_boundary_x[i] = x[i];
-            g_radar_boundary_y[i] = y[i];
-        }
-        app_radar_set_boundary_quad(g_radar_boundary_x, g_radar_boundary_y);
-
-        // 3. 保存到 Flash
-        app_radar_save_boundary_quad_to_flash(g_radar_boundary_x, g_radar_boundary_y);
-
-        // 4. 退出配置模式
-        g_radar_boundary_mode     = CTRL_RADAR_BOUNDARY_MODE_IDLE;
-        g_radar_config_height_set = 0;
-        app_ctrl_radar_boundary_reset();
-
-        // 5. 启用雷达功能
-        app_radar_set_enabled(1);
-
-        // 返回最终响应
-        u8 rsp[4] = {CTRL_STATUS_OK, 1, 0, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
-        return 0;
-    }
-    else
-    {
-        // 无效的 partIndex
-        u8 rsp[4] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_RADAR_BOUNDARY_ERR_INDEX, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[4] = {CTRL_STATUS_UNSUPPORTED_CMD, 0, 0, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_COORDS, seq, rsp, sizeof(rsp));
     return -1;
 #endif
 }
@@ -1784,11 +1689,30 @@ void app_ctrl_notify_play_record_changed(void)
 void app_ctrl_task(void)
 {
 #if (UI_RADAR_ENABLE)
+    // 连接后延迟触发首次上传
     if (g_play_record_delay_active && BLS_CONN_HANDLE != 0xFFFF &&
         clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US) && !StepMotor_GimbalResetBusy())
     {
         LOG_D("app_ctrl_task upload play records");
         app_ctrl_try_upload_play_records();
+    }
+
+    // 逐条上传：每 1s 发送一条记录
+    if (g_play_upload_state == PLAY_UPLOAD_SEND_WAIT &&
+        clock_time_exceed(g_play_upload_tick, PLAY_RECORD_UPLOAD_INTERVAL_US))
+    {
+        app_ctrl_upload_one_record_from_cache();
+    }
+
+    // ACK 超时重传：5s 未收到 ACK 则重新发送当前记录
+    if (g_play_upload_state == PLAY_UPLOAD_WAIT_ACK &&
+        clock_time_exceed(g_play_upload_tick, PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US))
+    {
+        BLE_LOG_D("play record ack timeout, retransmit %d/%d",
+                  g_play_cache_index + 1,
+                  g_play_cache_total);
+        g_play_upload_tick  = clock_time();
+        g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
     }
 #endif
 
@@ -1939,10 +1863,6 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
         BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_HEIGHT");
         app_ctrl_handle_radar_config_set_height(seq, payload, payLen);
-        break;
-    case CTRL_CMD_RADAR_CONFIG_SET_COORDS:
-        BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_COORDS");
-        app_ctrl_handle_radar_config_set_coords(seq, payload, payLen);
         break;
     case CTRL_CMD_DEVICE_REBOOT:
         BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");

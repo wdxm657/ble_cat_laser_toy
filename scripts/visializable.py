@@ -647,6 +647,16 @@ class RadarVisualizer:
                 self._apply_boundary_pt(corner_idx, x_mm, y_mm)
                 return
 
+        # 逗宠记录 EVENT (cmd=0x33): 记录数据
+        if (
+            fr.msg_type == CTRL_MSG_TYPE_EVENT
+            and cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET
+        ):
+            self._apply_play_record_event(payload)
+            with self._lock:
+                self.ctrl_lines.append(self._decode_ctrl_line(fr))
+            return
+
         with self._lock:
             self.ctrl_lines.append(self._decode_ctrl_line(fr))
 
@@ -660,35 +670,26 @@ class RadarVisualizer:
                 return f"[RSP][0x12] status={st} on={pld[1]}"
             if fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL and len(pld) >= 3:
                 return f"[RSP][0x22] status={st} dir={pld[1]} op={pld[2]}"
-            if fr.cmd_id == cp.CTRL_CMD_RADAR_SET_INSTALL_HEIGHT:
-                return f"[RSP][0x50] status={st}"
-            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_ENTER:
-                return f"[RSP][0x51] status={st}"
-            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_SELECT_POINT and len(pld) >= 2:
-                err = pld[1]
-                return f"[RSP][0x52] status={st} idx/err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')})"
-            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_SAVE_POINT and len(pld) >= 4:
-                idx = pld[1]
-                ready = pld[2]
-                err = pld[3]
-                return f"[RSP][0x53] status={st} idx={idx} ready={ready} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')})"
-            if fr.cmd_id == cp.CTRL_CMD_RADAR_BOUNDARY_COMMIT and len(pld) >= 4:
-                apply_ok = pld[1]
-                err = pld[2]
-                pair_mask = pld[3]
-                return f"[RSP][0x55] status={st} apply={apply_ok} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')}) pairMask=0x{pair_mask:02X}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
                 return f"[RSP][0x56] status={st}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
                 return f"[RSP][0x50] status={st} (new config: height cached)"
             if fr.cmd_id == cp.CTRL_CMD_DEVICE_REBOOT:
                 return f"[RSP][0x5A] status={st} (rebooting)"
-            if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_COORDS and len(pld) >= 4:
-                apply_ok = pld[1]
-                err = pld[2]
-                pair_mask = pld[3]
-                return f"[RSP][0x5B] status={st} apply={apply_ok} err={err}({RADAR_BOUNDARY_ERR_TEXT.get(err, 'UNKNOWN')}) pairMask=0x{pair_mask:02X}"
+            if fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET and len(pld) >= 2:
+                remaining = pld[1]
+                if remaining == 0:
+                    return f"[RSP][0x33] status={st} remaining={remaining} (全部上传完毕)"
+                else:
+                    return f"[RSP][0x33] status={st} remaining={remaining} (等待下一条)"
             return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
+
+        if fr.msg_type == CTRL_MSG_TYPE_EVENT and fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET:
+            if len(pld) >= 14:
+                total = pld[1]
+                idx = pld[2]
+                return f"[EVT][0x33] 逗宠记录 {idx + 1}/{total} payload={pld.hex()}"
+            return f"[EVT][0x33] pl={pld.hex()}"
 
         if (
             fr.msg_type == CTRL_MSG_TYPE_EVENT
@@ -747,6 +748,55 @@ class RadarVisualizer:
             if idx == 1:
                 self.seq_history.clear()
             self.seq_history.append((x, y))
+
+    # 逗宠记录缓存（用于 UI 显示）
+    _play_record_count: int = 0
+    _play_record_index: int = 0
+    _play_record_info: str = ""
+
+    def _apply_play_record_event(self, payload: bytes) -> None:
+        """解析逗宠记录 EVENT payload (14 字节)。"""
+        if len(payload) < 14:
+            return
+        status = int(payload[0])
+        total = int(payload[1])
+        index = int(payload[2])
+        start_sec = (
+            int(payload[3])
+            | (int(payload[4]) << 8)
+            | (int(payload[5]) << 16)
+            | (int(payload[6]) << 24)
+        )
+        end_sec = (
+            int(payload[7])
+            | (int(payload[8]) << 8)
+            | (int(payload[9]) << 16)
+            | (int(payload[10]) << 24)
+        )
+        motion_sec = int(payload[11]) | (int(payload[12]) << 8)
+        avg_speed = int(payload[13])
+
+        # 转为可读时间
+        def _fmt_ts(epoch: int) -> str:
+            if epoch == 0:
+                return "--"
+            try:
+                return datetime.datetime.fromtimestamp(
+                    epoch, tz=datetime.timezone.utc
+                ).strftime("%m-%d %H:%M:%S")
+            except Exception:
+                return str(epoch)
+
+        start_str = _fmt_ts(start_sec)
+        end_str = _fmt_ts(end_sec)
+
+        with self._lock:
+            self._play_record_count = total
+            self._play_record_index = index
+            self._play_record_info = (
+                f"记录 {index + 1}/{total}: {start_str} ~ {end_str}  "
+                f"运动 {motion_sec}s  速度 {avg_speed}cm/s"
+            )
 
     def _parse_line(self, line: str):
         s = line.strip()
@@ -1018,81 +1068,44 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self._bind_press_release(self.btn_left, 2)
         self._bind_press_release(self.btn_right, 3)
 
-        # 新简化配置流程 (0x50 + 0x5B)
-        g.addWidget(QtWidgets.QLabel("简化配置 (0x50 + 0x5B)"), 6, 0, 1, 4)
-        
-        # 高度设置
+        # 设置高度
+        g.addWidget(QtWidgets.QLabel("设置高度 (0x50)"), 6, 0, 1, 4)
         g.addWidget(QtWidgets.QLabel("高度(mm):"), 7, 0)
         self.new_h_mm = QtWidgets.QSpinBox()
         self.new_h_mm.setRange(500, 10000)
         self.new_h_mm.setValue(2500)
         g.addWidget(self.new_h_mm, 7, 1)
-        
-        # 坐标点设置（4个点）
-        g.addWidget(QtWidgets.QLabel("左上(x,y):"), 8, 0)
-        self.coord_lu_x = QtWidgets.QSpinBox()
-        self.coord_lu_x.setRange(-5000, 5000)
-        self.coord_lu_x.setValue(-1000)
-        self.coord_lu_y = QtWidgets.QSpinBox()
-        self.coord_lu_y.setRange(0, 10000)
-        self.coord_lu_y.setValue(4000)
-        g.addWidget(self.coord_lu_x, 8, 1)
-        g.addWidget(self.coord_lu_y, 8, 2)
-        
-        g.addWidget(QtWidgets.QLabel("右上(x,y):"), 9, 0)
-        self.coord_ru_x = QtWidgets.QSpinBox()
-        self.coord_ru_x.setRange(-5000, 5000)
-        self.coord_ru_x.setValue(1000)
-        self.coord_ru_y = QtWidgets.QSpinBox()
-        self.coord_ru_y.setRange(0, 10000)
-        self.coord_ru_y.setValue(4000)
-        g.addWidget(self.coord_ru_x, 9, 1)
-        g.addWidget(self.coord_ru_y, 9, 2)
-        
-        g.addWidget(QtWidgets.QLabel("右下(x,y):"), 10, 0)
-        self.coord_rd_x = QtWidgets.QSpinBox()
-        self.coord_rd_x.setRange(-5000, 5000)
-        self.coord_rd_x.setValue(1000)
-        self.coord_rd_y = QtWidgets.QSpinBox()
-        self.coord_rd_y.setRange(0, 10000)
-        self.coord_rd_y.setValue(800)
-        g.addWidget(self.coord_rd_x, 10, 1)
-        g.addWidget(self.coord_rd_y, 10, 2)
-        
-        g.addWidget(QtWidgets.QLabel("左下(x,y):"), 11, 0)
-        self.coord_ld_x = QtWidgets.QSpinBox()
-        self.coord_ld_x.setRange(-5000, 5000)
-        self.coord_ld_x.setValue(-1000)
-        self.coord_ld_y = QtWidgets.QSpinBox()
-        self.coord_ld_y.setRange(0, 10000)
-        self.coord_ld_y.setValue(800)
-        g.addWidget(self.coord_ld_x, 11, 1)
-        g.addWidget(self.coord_ld_y, 11, 2)
-        
-        # 配置按钮
-        b_config_step1 = QtWidgets.QPushButton("1.设置高度(0x50)")
-        b_config_step1.clicked.connect(self._on_new_config_step1)
-        g.addWidget(b_config_step1, 12, 0, 1, 2)
-        
-        b_config_step2 = QtWidgets.QPushButton("2.设置坐标(0x5B)")
-        b_config_step2.clicked.connect(self._on_new_config_step2)
-        g.addWidget(b_config_step2, 12, 2, 1, 2)
-        
-        b_config_all = QtWidgets.QPushButton("一键配置(0x50+0x5B)")
-        b_config_all.clicked.connect(self._on_new_config_all)
-        b_config_all.setStyleSheet("QPushButton { background: #45475a; font-weight: bold; }")
-        g.addWidget(b_config_all, 13, 0, 1, 4)
+        b_config_height = QtWidgets.QPushButton("设置高度")
+        b_config_height.clicked.connect(self._on_new_config_step1)
+        g.addWidget(b_config_height, 7, 2)
+
+        # 逗宠记录（逐条上传）
+        g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), 8, 0, 1, 4)
+        self.play_record_info = QtWidgets.QLabel("尚未收到记录")
+        self.play_record_info.setStyleSheet("color: #a6e3a1; font-size: 11px;")
+        g.addWidget(self.play_record_info, 15, 0, 1, 4)
+
+        b_play_record_ack = QtWidgets.QPushButton("确认收到 (ACK)")
+        b_play_record_ack.setStyleSheet(
+            "QPushButton { background: #45475a; font-weight: bold; color: #a6e3a1; }"
+            "QPushButton:hover { background: #585b70; }"
+        )
+        b_play_record_ack.clicked.connect(self._on_play_record_ack)
+        b_play_record_ack.setToolTip(
+            "告知设备已收到当前逗宠记录，设备将在 1 秒后发送下一条（如有）"
+        )
+        g.addWidget(b_play_record_ack, 16, 0, 1, 4)
 
         # 复位和重启
-        g.addWidget(QtWidgets.QLabel("系统控制"), 14, 0, 1, 4)
+        g.addWidget(QtWidgets.QLabel("系统控制"), 17, 0, 1, 4)
         b_reset = QtWidgets.QPushButton("复位配置(0x56)")
         b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
-        g.addWidget(b_reset, 15, 0, 1, 2)
+        g.addWidget(b_reset, 18, 0, 1, 2)
         
         b_reboot = QtWidgets.QPushButton("重启MCU(0x5A)")
         b_reboot.clicked.connect(lambda: self._send(*vc.cmd_device_reboot()))
         b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
-        g.addWidget(b_reboot, 15, 2, 1, 2)
+        g.addWidget(b_reboot, 18, 2, 1, 2)
 
         if self.vis._transport != "ble":
             self.time_use_local_tz.setEnabled(False)
@@ -1128,31 +1141,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         else:
             self.radar_text.appendPlainText(f"[本地] 已发送：设置高度 {height_mm}mm (0x50)")
 
-    def _on_new_config_step2(self) -> None:
-        """新简化配置：步骤2 - 批量设置4个坐标点 (CMD 0x5B) - 分包传输"""
-        coords = [
-            (self.coord_lu_x.value(), self.coord_lu_y.value()),  # 左上
-            (self.coord_ru_x.value(), self.coord_ru_y.value()),  # 右上
-            (self.coord_rd_x.value(), self.coord_rd_y.value()),  # 右下
-            (self.coord_ld_x.value(), self.coord_ld_y.value()),  # 左下
-        ]
-        
-        # cmd_radar_config_set_coords 返回两个命令（分包传输）
-        commands = vc.cmd_radar_config_set_coords(coords)
-        
-        # 依次发送两个包
-        all_ok = True
-        for cmd_id, payload, desc in commands:
-            ok = self.vis.send_cmd(cmd_id, payload, desc)
-            if not ok:
-                all_ok = False
-                break
-        
-        if not all_ok:
-            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
-        else:
-            self.radar_text.appendPlainText(f"[本地] 已发送：设置坐标 {coords} (0x5B, 分2包)")
-
     def _on_new_config_all(self) -> None:
         """新简化配置：一键配置 - 先设置高度，再设置坐标"""
         self.radar_text.appendPlainText("[本地] 开始一键配置...")
@@ -1164,24 +1152,15 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.radar_text.appendPlainText("[本地] 步骤1失败：设置高度失败")
             return
         self.radar_text.appendPlainText(f"[本地] 步骤1完成：设置高度 {height_mm}mm")
-        
-        # 等待一小段时间让设备处理
-        import time
-        time.sleep(0.1)
-        
-        # 步骤2：设置坐标
-        coords = [
-            (self.coord_lu_x.value(), self.coord_lu_y.value()),
-            (self.coord_ru_x.value(), self.coord_ru_y.value()),
-            (self.coord_rd_x.value(), self.coord_rd_y.value()),
-            (self.coord_ld_x.value(), self.coord_ld_y.value()),
-        ]
-        ok2 = self.vis.send_cmd(*vc.cmd_radar_config_set_coords(coords))
-        if not ok2:
-            self.radar_text.appendPlainText("[本地] 步骤2失败：设置坐标失败")
-            return
-        self.radar_text.appendPlainText(f"[本地] 步骤2完成：设置坐标 {coords}")
-        self.radar_text.appendPlainText("[本地] 一键配置完成！等待设备响应...")
+        self.radar_text.appendPlainText("[本地] 配置完成！等待设备响应...")
+
+    def _on_play_record_ack(self) -> None:
+        """用户点击"确认收到"按钮：告知设备已收到当前逗宠记录。"""
+        ok = self.vis.send_cmd(*vc.cmd_play_record_ack())
+        if not ok:
+            self.radar_text.appendPlainText("[本地] ACK 下发失败（非 BLE 或未连接）")
+        else:
+            self.radar_text.appendPlainText("[本地] 已发送逗宠记录 ACK (0x33)")
 
     def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
         btn.pressed.connect(
@@ -1361,6 +1340,13 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"UI 待下发 interval: {self.speed_spin.value()} µs  (CMD 0x58)",
         ]
         self.radar_text.setPlainText("\n".join(lines))
+
+        # 更新逗宠记录信息
+        with self.vis._lock:
+            rec_info = self.vis._play_record_info
+        cur_text = self.play_record_info.text()
+        if rec_info and rec_info != cur_text:
+            self.play_record_info.setText(rec_info)
 
         self.canvas.draw_idle()
 
