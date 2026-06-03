@@ -141,6 +141,7 @@ static u32 g_play_cache_records[RADAR_TIME_MAX_RECORDS * 2] = {0};
 static u8  g_play_cache_timezones[RADAR_TIME_MAX_RECORDS]   = {0};
 static u32 g_play_cache_motion[RADAR_TIME_MAX_RECORDS]      = {0};
 static u16 g_play_cache_speed[RADAR_TIME_MAX_RECORDS]       = {0};
+static u8  g_play_cache_result[RADAR_TIME_MAX_RECORDS]      = {0};
 static u8  g_play_cache_total                               = 0;
 static u8  g_play_cache_index                               = 0;
 static u32 g_play_upload_tick                               = 0;
@@ -149,7 +150,7 @@ static u32 g_play_upload_tick                               = 0;
 #define PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US 2000000u  // ACK 超时 2s，超时后重传当前记录
 
 /**
- * @brief 从缓存中发送当前索引的一条记录（EVENT）
+ * @brief 从缓存中发送当前索引的一条记录（EVENT），包含狩猎结果
  */
 static void app_ctrl_upload_one_record_from_cache(void)
 {
@@ -158,10 +159,11 @@ static void app_ctrl_upload_one_record_from_cache(void)
     u32 end_sec   = g_play_cache_records[i * 2 + 1];
     u32 msec      = g_play_cache_motion[i];
     u16 avs       = g_play_cache_speed[i];
+    u8  result    = g_play_cache_result[i];
     u16 m16       = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
     u8  av8       = (avs > 255u) ? 255u : (u8)avs;
 
-    u8 evt[14] = {0};
+    u8 evt[15] = {0};
     evt[0]     = CTRL_STATUS_OK;
     // 由于APP端需要收到总数后才会发送ACK给设备，所以每次上传记录的total数量都需要是1
     evt[1]  = 1;
@@ -177,14 +179,16 @@ static void app_ctrl_upload_one_record_from_cache(void)
     evt[11] = (u8)(m16 & 0xFF);
     evt[12] = (u8)((m16 >> 8) & 0xFF);
     evt[13] = av8;
-    BLE_LOG_D("upload record %d/%d start:%d end:%d tz:%d mot:%d av:%d",
+    evt[14] = result;  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
+    BLE_LOG_D("upload record %d/%d start:%d end:%d tz:%d mot:%d av:%d res:%d",
               i + 1,
               g_play_cache_total,
               start_sec,
               end_sec,
               g_play_cache_timezones[i],
               (u32)m16,
-              (u32)av8);
+              (u32)av8,
+              result);
     app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
 
     // 记录发送时间戳，用于 ACK 超时重传判断
@@ -214,9 +218,9 @@ static void app_ctrl_try_upload_play_records(void)
         return;
     }
 
-    BLE_LOG_D("app_radar_get_complete_play_records");
-    int count = app_radar_get_complete_play_records(
-        g_play_cache_records, g_play_cache_timezones, g_play_cache_motion, g_play_cache_speed, RADAR_TIME_MAX_RECORDS);
+    BLE_LOG_D("app_hunt_get_records_with_result");
+    int count = app_hunt_get_records_with_result(
+        g_play_cache_records, g_play_cache_timezones, g_play_cache_motion, g_play_cache_speed, g_play_cache_result, RADAR_TIME_MAX_RECORDS);
     if (count <= 0)
     {
         return;
@@ -388,40 +392,46 @@ static u8 app_ctrl_radar_boundary_commit(u8 *errDetail, u8 *shortPairMask)
     return 1;
 }
 
-static u8 g_last_charge_state  = 0xFF;
-static u8 g_last_setting_state = 0xFF;
-static u8 g_last_working_state = 0xFF;
-static u8 g_last_resting_state = 0xFF;
+static u8 g_last_charge_state   = 0xFF;
+static u8 g_last_setting_state  = 0xFF;
+static u8 g_last_hunting_state  = 0xFF;
+static u8 g_last_standby_state  = 0xFF;
+static u8 g_last_sleeping_state = 0xFF;
 
-static void app_ctrl_calc_exclusive_mode_flags(u8 *working_mode, u8 *resting_mode, u8 *setting_mode)
+static void app_ctrl_calc_exclusive_mode_flags(u8 *hunting, u8 *standby, u8 *sleeping, u8 *setting)
 {
-    u8 setting = app_ctrl_is_setting_mode() ? 1 : 0;
+    u8 s = app_ctrl_is_setting_mode() ? 1 : 0;
 #if (UI_RADAR_ENABLE)
-    u8 resting = RadarSessionIsResting() ? 1 : 0;
-    u8 working = app_radar_is_working_mode() ? 1 : 0;
+    u8 h  = app_hunt_is_hunting() ? 1 : 0;
+    u8 st = app_hunt_is_standby() ? 1 : 0;
+    u8 sl = app_hunt_is_sleeping() ? 1 : 0;
 #else
-    u8 resting = 0;
-    u8 working = 0;
+    u8 h  = 0;
+    u8 st = 0;
+    u8 sl = 0;
 #endif
 
-    // 三种状态互斥：设置中 > 工作中 > 休息中
-    if (setting)
+    // 四种状态互斥：设置中 > 狩猎中 > 待机 > 休眠
+    if (s)
     {
-        working = 0;
-        resting = 0;
+        h  = 0;
+        st = 0;
+        sl = 0;
     }
-    else if (working)
+    else if (h)
     {
-        resting = 0;
+        st = 0;
+        sl = 0;
     }
-    else if (resting)
+    else if (st)
     {
-        working = 0;
+        sl = 0;
     }
 
-    *working_mode = working;
-    *resting_mode = resting;
-    *setting_mode = setting;
+    *hunting  = h;
+    *standby  = st;
+    *sleeping = sl;
+    *setting  = s;
 }
 
 static u32 status_check_tick = 0;
@@ -438,16 +448,18 @@ void       app_ctrl_status_notify_task(void)
     u16 install_height_hi = (U16_HI((s16)height_mm));
     u8  charging          = app_adc_dbg_is_charging() ? 1 : 0;
     u8  setting_mode      = 0;
-    u8  working_mode      = 0;
-    u8  resting_mode      = 0;
-    app_ctrl_calc_exclusive_mode_flags(&working_mode, &resting_mode, &setting_mode);
+    u8  hunting_mode      = 0;
+    u8  standby_mode      = 0;
+    u8  sleeping_mode     = 0;
+    app_ctrl_calc_exclusive_mode_flags(&hunting_mode, &standby_mode, &sleeping_mode, &setting_mode);
     /* 首次仅建立基线，不上报 */
     if (g_last_charge_state == 0xFF)
     {
-        g_last_charge_state  = charging;
-        g_last_setting_state = setting_mode;
-        g_last_working_state = working_mode;
-        g_last_resting_state = resting_mode;
+        g_last_charge_state   = charging;
+        g_last_setting_state  = setting_mode;
+        g_last_hunting_state  = hunting_mode;
+        g_last_standby_state  = standby_mode;
+        g_last_sleeping_state = sleeping_mode;
         return;
     }
 
@@ -463,17 +475,23 @@ void       app_ctrl_status_notify_task(void)
         g_last_setting_state = setting_mode;
         changed              = 1;
     }
-    if (working_mode != g_last_working_state)
+    if (hunting_mode != g_last_hunting_state)
     {
-        BLE_LOG_D("working_mode changed: %d -> %d", g_last_working_state, working_mode);
-        g_last_working_state = working_mode;
+        BLE_LOG_D("hunting_mode changed: %d -> %d", g_last_hunting_state, hunting_mode);
+        g_last_hunting_state = hunting_mode;
         changed              = 1;
     }
-    if (resting_mode != g_last_resting_state)
+    if (standby_mode != g_last_standby_state)
     {
-        BLE_LOG_D("resting_mode changed: %d -> %d", g_last_resting_state, resting_mode);
-        g_last_resting_state = resting_mode;
+        BLE_LOG_D("standby_mode changed: %d -> %d", g_last_standby_state, standby_mode);
+        g_last_standby_state = standby_mode;
         changed              = 1;
+    }
+    if (sleeping_mode != g_last_sleeping_state)
+    {
+        BLE_LOG_D("sleeping_mode changed: %d -> %d", g_last_sleeping_state, sleeping_mode);
+        g_last_sleeping_state = sleeping_mode;
+        changed               = 1;
     }
     if (changed)
     {
@@ -482,7 +500,7 @@ void       app_ctrl_status_notify_task(void)
         {
             status_check_tick = clock_time();
             BLE_LOG_D("height: %d", height_mm);
-            u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
+            u8 pl[10] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, hunting_mode, standby_mode, sleeping_mode};
             app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
         }
     }
@@ -1309,12 +1327,12 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     u8 on_effective = target_on;
     u8 reason       = CTRL_REASON_NONE;
 
-    // 低电量禁止开机：bat_percent < 15 且未充电
+    // 低电量禁止开机：bat_percent < 20 且未充电
     if (target_on && !cur_on)
     {
-        u8 bat_percent = app_adc_dbg_get_bat_percent();
+        u8 bat_percent = app_adc_dbg_get_bat_percent_exact();
         u8 is_charging = app_adc_dbg_is_charging() ? 1 : 0;
-        if (bat_percent < 15)
+        if (bat_percent < 20)
         {
             status       = CTRL_STATUS_REJECT_ERROR;
             reason       = CTRL_REASON_LOW_BATTERY;
@@ -1398,8 +1416,8 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
         return -1;
     }
 
-    u8 rsp[9] = {CTRL_STATUS_OK, 0, 0, 0, 0, 0, 0, 0, 0};
-    rsp[1]    = app_get_power_state() ? 1 : 0;
+    u8 rsp[10] = {CTRL_STATUS_OK, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    rsp[1]     = app_get_power_state() ? 1 : 0;
 #if (UI_RADAR_ENABLE)
     rsp[2]        = 1;
     s32 height_mm = 0;
@@ -1407,7 +1425,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     rsp[3] = (U16_LO((s16)height_mm));
     rsp[4] = (U16_HI((s16)height_mm));
     rsp[5] = app_adc_dbg_is_charging() ? 1 : 0;
-    app_ctrl_calc_exclusive_mode_flags(&rsp[7], &rsp[8], &rsp[6]);
+    app_ctrl_calc_exclusive_mode_flags(&rsp[7], &rsp[8], &rsp[9], &rsp[6]);
 #endif
 
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_STATUS_GET, seq, rsp, sizeof(rsp));
@@ -1667,6 +1685,10 @@ void app_ctrl_init(void)
     }
     g_hieght_angle_10 =
         (s16)(lookup_atan2(6000, h_mm) * RAD_TO_DEG * 10.0f - 900.0f);
+
+    // 初始化狩猎游戏默认参数
+    s16 pan = 0, tilt = 0;
+    app_hunt_get_prey_point_deg10(&pan, &tilt);
 #endif
 }
 
@@ -1864,6 +1886,181 @@ void app_ctrl_onRx(u8 *data, u16 len)
         BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_HEIGHT");
         app_ctrl_handle_radar_config_set_height(seq, payload, payLen);
         break;
+    case CTRL_CMD_HUNT_SETTINGS_ENTER:
+        BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_ENTER");
+#if (UI_RADAR_ENABLE)
+        if (payLen != 0)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            // 进入狩猎设置模式
+            app_ctrl_radar_boundary_enter();  // 复用边界设置模式标志
+            // 光斑位于当前猎物点
+            s16 pan = 0, tilt = 0;
+            app_hunt_get_prey_point_deg10(&pan, &tilt);
+            StepMotor_GimbalSetSpeedUs(1200);
+            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan);
+            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt);
+            u8 rsp[1] = {CTRL_STATUS_OK};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
+    case CTRL_CMD_HUNT_SETTINGS_EXIT:
+        BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_EXIT");
+#if (UI_RADAR_ENABLE)
+        if (payLen < 1)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            u8 apply = payload[0];
+            if (apply)
+            {
+                // 应用全部设置（当前 prey point 已经在全局变量中）
+                BLE_LOG_D("hunt settings applied");
+            }
+            // 清除设置模式
+            g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
+            u8 rsp[1]             = {CTRL_STATUS_OK};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
+    case CTRL_CMD_HUNT_PREY_RANDOM:
+        BLE_LOG_D("CTRL_CMD_HUNT_PREY_RANDOM");
+#if (UI_RADAR_ENABLE)
+        if (payLen < 1)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            u8 start = payload[0];
+            if (start)
+            {
+                app_hunt_prey_random_move();
+            }
+            // 停止随机移动时不需额外动作; 当前停止后光斑停在当前位置
+            u8 rsp[2] = {CTRL_STATUS_OK, start};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
+    case CTRL_CMD_HUNT_PREY_SET:
+        BLE_LOG_D("CTRL_CMD_HUNT_PREY_SET");
+#if (UI_RADAR_ENABLE) && (UI_STEP_MOTOR_ENABLE)
+        {
+            // 当前云台位置设为猎物点
+            s16 pan  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
+            s16 tilt = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
+            app_hunt_set_prey_point_deg10(pan, tilt);
+            BLE_LOG_D("prey point set: pan=%d, tilt=%d", pan, tilt);
+            u8 rsp[1] = {CTRL_STATUS_OK};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
+    case CTRL_CMD_HUNT_SET_DURATION:
+        BLE_LOG_D("CTRL_CMD_HUNT_SET_DURATION");
+#if (UI_RADAR_ENABLE)
+        if (payLen < 2)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            u16 dur_s = (u16)(payload[0] | (payload[1] << 8));
+            app_hunt_set_duration_s(dur_s);
+            BLE_LOG_D("hunt duration set: %d s", app_hunt_get_duration_s());
+            u8 rsp[3] = {CTRL_STATUS_OK, (u8)(app_hunt_get_duration_s() & 0xFF), (u8)((app_hunt_get_duration_s() >> 8) & 0xFF)};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
+    case CTRL_CMD_HUNT_SET_COUNT:
+        BLE_LOG_D("CTRL_CMD_HUNT_SET_COUNT");
+#if (UI_RADAR_ENABLE)
+        if (payLen < 1)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            app_hunt_set_count(payload[0]);
+            BLE_LOG_D("hunt count set: %d", app_hunt_get_count());
+            u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_count()};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
+    case CTRL_CMD_HUNT_SET_SLEEP_DURATION:
+        BLE_LOG_D("CTRL_CMD_HUNT_SET_SLEEP_DURATION");
+#if (UI_RADAR_ENABLE)
+        if (payLen < 1)
+        {
+            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+        }
+        else
+        {
+            app_hunt_set_sleep_duration_min(payload[0]);
+            BLE_LOG_D("sleep duration set: %d min", app_hunt_get_sleep_duration_min());
+            u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_sleep_duration_min()};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+        }
+#else
+        {
+            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+        }
+#endif
+        break;
+
     case CTRL_CMD_DEVICE_REBOOT:
         BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");
         if (payLen != 0)

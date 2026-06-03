@@ -35,6 +35,43 @@
 #define RADAR_PLAY_STATE_ACTIVE           1
 #define RADAR_PLAY_END_ONGOING            0xFFFFFFFFu
 
+/* ========== 狩猎游戏状态机 ========== */
+typedef enum
+{
+    HUNT_STATE_OFF = 0,          // 关机
+    HUNT_STATE_IDLE,             // 逗宠等待 — radar on, 等待移动目标
+    HUNT_STATE_ACTIVE,           // 狩猎中 — 计时+跟踪+镭射开启
+    HUNT_STATE_STANDBY,          // 待机 — 15s无目标, 关闭激光+电机
+    HUNT_STATE_PREY_ZONE_SLEEP,  // 30s休眠 — 目标在猎物点15s, 关闭雷达+激光+电机
+    HUNT_STATE_COMPLETE_MOVING,  // 完成移动 — 移动光斑到猎物点
+    HUNT_STATE_CELEBRATE,        // 停留10秒 — 在猎物点停留, 检查目标是否进入猎物点
+    HUNT_STATE_SLEEP,            // 休眠 — 达成条件后休眠
+} hunt_state_e;
+
+#define HUNT_NO_TARGET_TIMEOUT_US   (15u * 1000000u)  // 15s 无目标 → 待机
+#define HUNT_PREY_ZONE_RADIUS_MM    200               // 猎物点半径 20cm
+#define HUNT_PREY_ZONE_TIMEOUT_US   (15u * 1000000u)  // 15s 目标在猎物点 → 30s休眠
+#define HUNT_PREY_ZONE_SLEEP_DUR_US (30u * 1000000u)  // 30秒休眠
+#define HUNT_CELEBRATION_DUR_US     (10u * 1000000u)  // 停留10秒
+
+/* 狩猎配置与运行时变量 */
+_attribute_data_retention_ static hunt_state_e g_hunt_state              = HUNT_STATE_OFF;
+_attribute_data_retention_ static u16          g_hunt_duration_s         = 30;    // 单次狩猎时长(秒)
+_attribute_data_retention_ static u8           g_hunt_count              = 3;     // 狩猎次数
+_attribute_data_retention_ static u8           g_hunt_sleep_duration_min = 3;     // 休眠时长(分钟)
+_attribute_data_retention_ static u8           g_hunt_completed          = 0;     // 已完成狩猎次数
+_attribute_data_retention_ static u32          g_hunt_total_active_ms    = 0;     // 累计活跃狩猎时长(毫秒)
+_attribute_data_retention_ static u32          g_hunt_session_tick       = 0;     // 当前狩猎开始tick
+_attribute_data_retention_ static u32          g_hunt_session_acc_ms     = 0;     // 当前狩猎累计秒数
+_attribute_data_retention_ static u32          g_hunt_acc_tick_last      = 0;     // 上次累计更新tick
+_attribute_data_retention_ static u32          g_hunt_no_target_tick     = 0;     // 无目标计时开始tick
+_attribute_data_retention_ static u32          g_hunt_prey_zone_tick     = 0;     // 目标在猎物点计时开始tick
+_attribute_data_retention_ static u32          g_hunt_celebration_tick   = 0;     // 庆祝阶段开始tick
+_attribute_data_retention_ static u32          g_hunt_sleep_end_tick     = 0;     // 休眠结束tick
+_attribute_data_retention_ static u8           g_hunt_success            = 0;     // 当前狩猎是否成功
+_attribute_data_retention_ static s16          g_prey_pan_deg10          = 0;     // 猎物点水平角 0°
+_attribute_data_retention_ static s16          g_prey_tilt_deg10         = -200;  // 猎物点俯仰角 20°
+
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte[RADAR_FRAME_LEN];
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte_cnt = 0;
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_flag     = 0;
@@ -222,7 +259,7 @@ static void RadarMotionCachePush(u32 now_tick, s16 x_mm, s16 y_mm)
                     }
                     v_cms_mag = (u32)v;
                 }
-                BLE_LOG_D("add dt_ms %d, v_cms %d", dt_ms, v_cms_mag);
+                // BLE_LOG_D("add dt_ms %d, v_cms %d", dt_ms, v_cms_mag);
                 radar_play_on_cache_displacement_ms(dt_ms, v_cms_mag);
             }
         }
@@ -315,6 +352,7 @@ _attribute_data_retention_ static u8  g_radar_play_active_idx   = 0;
 _attribute_data_retention_ static u32 g_radar_play_start_sec[RADAR_TIME_MAX_RECORDS]     = {0};
 _attribute_data_retention_ static u32 g_radar_play_end_sec[RADAR_TIME_MAX_RECORDS]       = {0};
 _attribute_data_retention_ static s8  g_radar_play_tz_q15[RADAR_TIME_MAX_RECORDS]        = {0};
+_attribute_data_retention_ static u8  g_radar_play_hunt_result[RADAR_TIME_MAX_RECORDS]   = {0};
 _attribute_data_retention_ static u32 g_radar_play_motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
 _attribute_data_retention_ static u16 g_radar_play_avg_speed_cms[RADAR_TIME_MAX_RECORDS] = {0};
 _attribute_data_retention_ static u8  g_radar_play_record_count                          = 0;
@@ -372,7 +410,7 @@ typedef struct
     u32 start_sec[RADAR_TIME_MAX_RECORDS];
     u32 end_sec[RADAR_TIME_MAX_RECORDS];
     s8  tz_q15[RADAR_TIME_MAX_RECORDS];
-    u8  tz_reserved[3];
+    u8  hunt_result[RADAR_TIME_MAX_RECORDS];  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
     u32 motion_sec[RADAR_TIME_MAX_RECORDS];
     u16 avg_speed_cms[RADAR_TIME_MAX_RECORDS];
     u32 crc;
@@ -479,6 +517,7 @@ static void radar_play_records_reset_ram(void)
         g_radar_play_start_sec[i]     = 0;
         g_radar_play_end_sec[i]       = 0;
         g_radar_play_tz_q15[i]        = 0;
+        g_radar_play_hunt_result[i]   = 0;
         g_radar_play_motion_sec[i]    = 0;
         g_radar_play_avg_speed_cms[i] = 0;
     }
@@ -507,13 +546,10 @@ static void radar_play_records_save_to_flash(void)
         stored.start_sec[i]     = g_radar_play_start_sec[i];
         stored.end_sec[i]       = g_radar_play_end_sec[i];
         stored.tz_q15[i]        = g_radar_play_tz_q15[i];
+        stored.hunt_result[i]   = g_radar_play_hunt_result[i];
         stored.motion_sec[i]    = g_radar_play_motion_sec[i];
         stored.avg_speed_cms[i] = g_radar_play_avg_speed_cms[i];
     }
-
-    stored.tz_reserved[0] = 0;
-    stored.tz_reserved[1] = 0;
-    stored.tz_reserved[2] = 0;
 
     stored.crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
 
@@ -550,6 +586,7 @@ static void radar_play_records_load_from_flash(void)
         g_radar_play_start_sec[i]     = stored.start_sec[i];
         g_radar_play_end_sec[i]       = stored.end_sec[i];
         g_radar_play_tz_q15[i]        = stored.tz_q15[i];
+        g_radar_play_hunt_result[i]   = stored.hunt_result[i];
         g_radar_play_motion_sec[i]    = stored.motion_sec[i];
         g_radar_play_avg_speed_cms[i] = stored.avg_speed_cms[i];
     }
@@ -648,6 +685,7 @@ static u8 radar_play_record_push(u32 start_sec, u32 end_sec)
     g_radar_play_start_sec[idx]     = start_sec;
     g_radar_play_end_sec[idx]       = end_sec;
     g_radar_play_tz_q15[idx]        = g_radar_time_tz_q15;
+    g_radar_play_hunt_result[idx]   = HUNT_RESULT_INCOMPLETE;
     g_radar_play_motion_sec[idx]    = 0;
     g_radar_play_avg_speed_cms[idx] = 0;
 
@@ -698,7 +736,6 @@ static void radar_play_record_end(void)
 {
     if (!g_radar_time_valid || g_radar_play_state != RADAR_PLAY_STATE_ACTIVE)
     {
-        // BLE_LOG_D("radar_play_record_end failed");
         return;
     }
     BLE_LOG_D("radar_play_record_end");
@@ -726,6 +763,12 @@ static void radar_play_record_end(void)
         g_radar_play_active_idx--;
         g_radar_play_state = RADAR_PLAY_STATE_IDLE;
         return;
+    }
+
+    // 默认狩猎结果为未完成 unless set otherwise
+    if (g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_INCOMPLETE)
+    {
+        g_radar_play_hunt_result[g_radar_play_active_idx] = HUNT_RESULT_INCOMPLETE;
     }
 
     g_radar_play_state = RADAR_PLAY_STATE_IDLE;
@@ -855,7 +898,7 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
         {
             avg_speed_cms_out[count] = g_radar_play_avg_speed_cms[idx];
         }
-        BLE_LOG_D("count: %d, start: %d, end: %d", count, start, end);
+        BLE_LOG_D("count: %d, start: %d, end: %d, result: %d", count, start, end, g_radar_play_hunt_result[idx]);
         count++;
     }
 
@@ -892,6 +935,7 @@ void app_radar_clear_complete_play_records(void)
     u32 start_tmp[RADAR_TIME_MAX_RECORDS] = {0};
     u32 end_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
     s8  tz_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u8  res_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
     u32 mot_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
     u16 av_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
     u8  keep_count                        = 0;
@@ -908,6 +952,7 @@ void app_radar_clear_complete_play_records(void)
         start_tmp[keep_count] = g_radar_play_start_sec[idx];
         end_tmp[keep_count]   = g_radar_play_end_sec[idx];
         tz_tmp[keep_count]    = g_radar_play_tz_q15[idx];
+        res_tmp[keep_count]   = g_radar_play_hunt_result[idx];
         mot_tmp[keep_count]   = g_radar_play_motion_sec[idx];
         av_tmp[keep_count]    = g_radar_play_avg_speed_cms[idx];
         keep_count++;
@@ -918,6 +963,7 @@ void app_radar_clear_complete_play_records(void)
         g_radar_play_start_sec[i]     = 0;
         g_radar_play_end_sec[i]       = 0;
         g_radar_play_tz_q15[i]        = 0;
+        g_radar_play_hunt_result[i]   = 0;
         g_radar_play_motion_sec[i]    = 0;
         g_radar_play_avg_speed_cms[i] = 0;
     }
@@ -926,6 +972,7 @@ void app_radar_clear_complete_play_records(void)
         g_radar_play_start_sec[i]     = start_tmp[i];
         g_radar_play_end_sec[i]       = end_tmp[i];
         g_radar_play_tz_q15[i]        = tz_tmp[i];
+        g_radar_play_hunt_result[i]   = res_tmp[i];
         g_radar_play_motion_sec[i]    = mot_tmp[i];
         g_radar_play_avg_speed_cms[i] = av_tmp[i];
     }
@@ -1167,34 +1214,8 @@ u8 app_radar_is_working_mode(void)
 static void RadarSessionOnMotion(u32 now_tick)
 {
     g_radar_last_motion_tick = now_tick;
-    BLE_LOG_D("update work tick");
-    g_radar_hold_on_mode = 1;
-    radar_play_record_start();
-    // gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
-}
-
-static u8 RadarSessionCanPredict(u32 now_tick)
-{
-    u32 elapsed = 0;
-
-    if (g_radar_last_motion_tick == 0)
-    {
-        return 0;
-    }
-
-    // 30s没有运动，则停止雷达解析
-    elapsed = (now_tick - g_radar_last_motion_tick) >> 4;
-    if (elapsed >= RADAR_IDLE_TIMEOUT_US)
-    {
-        LOG_D("%ds no motion, stop radar", elapsed);
-        StepMotor_StopAll();
-        radar_play_record_end();
-        RadarSessionStop(0);
-        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-        return 0;
-    }
-
-    return 1;
+    g_radar_hold_on_mode     = 1;
+    // 狩猎状态机负责在 HUNT_ACTIVE 入口调用 radar_play_record_start()
 }
 
 static void RadarSeqBuildAppendPoint(s16 x_mm, s16 y_mm)
@@ -2208,6 +2229,8 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         s16 motion_dir_deg10 = 0;
         if (motion_valid)
         {
+            RadarSessionOnMotion(now_tick);
+
             float d = motion_rad * (float)RAD_TO_DEG * 10.0f;
             if (d > 32767.0f)
             {
@@ -2220,8 +2243,8 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             motion_dir_deg10 = (s16)d;
         }
 #if DEBUG_MODE
-        app_ctrl_radar_dbg_send_prev_raw(
-            g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
+        // app_ctrl_radar_dbg_send_prev_raw(
+        //     g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
 #endif
     }
     g_radar_pred.prev_x_mm = x_mm;
@@ -2363,13 +2386,10 @@ void app_radar_parse_and_report_frame(void)
             u32 now_tick = clock_time();
             if (RadarSpeedAbs(v_avg) > RADAR_TARGET_MOVING_SPEED_THR_CMS)
             {
-                RadarSessionOnMotion(now_tick);
+                // RadarSessionOnMotion(now_tick);
             }
 
-            // if (RadarSessionCanPredict(now_tick))
-            // {
             ReportPredictionSerialized(now_tick, x_in, y_in, v_avg);
-            // }
 
 #if RADAR_FPS_TEST
             u32 current_time = clock_time() >> 4;
@@ -2404,141 +2424,387 @@ void app_radar_set_enabled(u8 on)
     {
         app_radar_power_state_reset();
         app_radar_power_switch(0);
+        g_hunt_state           = HUNT_STATE_OFF;
+        g_hunt_completed       = 0;
+        g_hunt_total_active_ms = 0;
+        g_hunt_session_acc_ms  = 0;
+        g_hunt_no_target_tick  = 0;
+        g_hunt_prey_zone_tick  = 0;
     }
     else
     {
         app_radar_power_state_reset();
-        g_radar_work_acc_tick = clock_time();
-        g_radar_phase_tick    = g_radar_work_acc_tick;
+        g_hunt_state           = HUNT_STATE_IDLE;
+        g_hunt_completed       = 0;
+        g_hunt_total_active_ms = 0;
+        g_hunt_session_acc_ms  = 0;
+        g_hunt_no_target_tick  = 0;
+        g_hunt_prey_zone_tick  = 0;
+        g_hunt_success         = 0;
+        g_hunt_acc_tick_last   = 0;
+        g_hunt_sleep_end_tick  = 0;
+        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+        radar_working_mode_set(1);
+        g_radar_hold_on_mode = 1;
         app_radar_power_switch(1);
     }
 }
 
+/* ========== 狩猎游戏辅助函数 ========== */
+
+/** 将猎物点角度 (pan/tilt deg10) 转换为地面坐标 (x, y mm) */
+static void hunt_prey_point_to_xy(s32 height_mm, s16 *out_x_mm, s16 *out_y_mm)
+{
+    if (!out_x_mm || !out_y_mm)
+        return;
+    if (g_prey_tilt_deg10 >= 0)
+    {
+        *out_x_mm = 0;
+        *out_y_mm = 0;
+        return;
+    }
+    s32 r1_mm = (s32)((float)height_mm * lookup_tan((900 + g_prey_tilt_deg10) * DEG_TO_RAD_10));
+    s32 x_mm  = (s32)((float)r1_mm * lookup_sin(g_prey_pan_deg10 * DEG_TO_RAD_10));
+    s32 y_mm  = (s32)((float)r1_mm * lookup_cos(g_prey_pan_deg10 * DEG_TO_RAD_10));
+    if (x_mm > 32767)
+        x_mm = 32767;
+    else if (x_mm < -32768)
+        x_mm = -32768;
+    if (y_mm > 32767)
+        y_mm = 32767;
+    else if (y_mm < -32768)
+        y_mm = -32768;
+    *out_x_mm = (s16)x_mm;
+    *out_y_mm = (s16)y_mm;
+}
+
+/** 检查最新的雷达目标位置是否在猎物点半径范围内 */
+static u8 hunt_is_target_near_prey_point(void)
+{
+    if (g_radar_pred.motion_cache_count == 0)
+        return 0;
+
+    u8  newest = RadarMotionCacheIndexNewest();
+    s16 tx     = g_radar_motion_cache[newest].x_mm;
+    s16 ty     = g_radar_motion_cache[newest].y_mm;
+
+    s32 height_mm = g_radar_install_height_mm;
+    if (height_mm <= 0)
+        height_mm = 2500;
+
+    s16 px = 0, py = 0;
+    hunt_prey_point_to_xy(height_mm, &px, &py);
+
+    s32 dx = (s32)tx - (s32)px;
+    s32 dy = (s32)ty - (s32)py;
+    s32 d2 = dx * dx + dy * dy;
+
+    return (d2 <= (s32)HUNT_PREY_ZONE_RADIUS_MM * (s32)HUNT_PREY_ZONE_RADIUS_MM) ? 1 : 0;
+}
+
+/** 休眠超时后进入Idle */
+static u32 hunt_sleep_duration_us(void)
+{
+    return (u32)g_hunt_sleep_duration_min * 60u * 1000000u;
+}
+
+/* ========== 狩猎游戏状态机主函数 ========== */
 void app_radar_task_power_schedule(void)
 {
     u32 now_tick = clock_time();
 
-    if (g_radar_rest_mode)
+    // OFF ──(开机)──→ IDLE ──(检测到目标)──→ ACTIVE
+    //                                      │
+    //                 ┌────────────────────┼────────────────────┐
+    //                 ↓                    ↓                    ↓
+    //            STANDBY             PREY_ZONE_SLEEP     COMPLETE_MOVING
+    //        (15s无目标,激光+        (15s在猎物点,           (移动到猎物点)
+    //         电机关闭,雷达保持)      雷达+激光+电机关闭)        │
+    //                 │              30s后→IDLE               ↓
+    //                 │                                 CELEBRATE
+    //                 └──(目标返回)──→ ACTIVE          (停留10秒,检查)
+    //                                                     │
+    //                                           ┌─────────┴────────┐
+    //                                           ↓                  ↓
+    //                                        SLEEP               IDLE
+    //                                   (达成次数或累计        (继续等待)
+    //                                    时长,重置计数)
+    //                                       │
+    //                                       └── 休眠到期 → IDLE
+    switch (g_hunt_state)
     {
-        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_REST)
-        {
-            BLE_LOG_D("radar rest mode!!!!!!!!");
-            radar_play_record_end();
-            radar_working_mode_set(0);
-            g_radar_rest_mode            = 1;
-            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_REST;
-        }
+
+    /* -------- 关机 -------- */
+    case HUNT_STATE_OFF:
         app_radar_power_switch(0);
-        if (clock_time_exceed(g_radar_rest_start_tick, RADAR_REST_EXIT_US))
-        {
-            BLE_LOG_D("radar rest mode exit");
-            radar_working_mode_set(1);
-            g_radar_rest_mode     = 0;
-            g_radar_work_acc_tick = now_tick;
-            g_radar_work_acc_sec  = 0;
-            g_radar_phase_tick    = now_tick;
-            g_radar_hold_on_mode  = 1;
-            app_radar_power_switch(1);
-        }
+        g_radar_hold_on_mode = 0;
+        radar_working_mode_set(0);
         return;
-    }
 
-    if (g_radar_work_acc_sec >= 600u)
-    {
-        g_radar_rest_mode       = 1;
-        g_radar_rest_start_tick = now_tick;
-        g_radar_hold_on_mode    = 0;
-        g_radar_phase_tick      = now_tick;
-        g_radar_work_acc_sec    = 0;
-        app_radar_power_switch(0);
-        StepMotor_GimbalResetStart();
-        return;
-    }
-
-    if (g_radar_hold_on_mode)
-    {
-        if (g_radar_work_acc_tick == 0)
+    /* -------- 逗宠等待: radar on, 检测到目标后启动狩猎 -------- */
+    case HUNT_STATE_IDLE: {
+        if (!g_radar_power_on)
         {
-            g_radar_work_acc_tick = now_tick;
-        }
-
-        if (clock_time_exceed(g_radar_work_acc_tick, 2000000u))
-        {
-            g_radar_work_acc_tick = now_tick;
-            if (g_radar_work_acc_sec < 0xFFFFu)
-            {
-                g_radar_work_acc_sec += 2;
-                BLE_LOG_D("radar work acc sec: %d", g_radar_work_acc_sec);
-            }
-        }
-
-        if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_HOLD_ON)
-        {
-            BLE_LOG_D("radar hold on mode");
+            BLE_LOG_D("HUNT: IDLE -> power on radar");
+            g_radar_hold_on_mode = 1;
             radar_working_mode_set(1);
-            g_radar_rest_mode            = 0;
-            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_HOLD_ON;
             app_radar_power_switch(1);
-            u32 now_tick = clock_time();
-            RadarSessionOnMotion(now_tick);
             return;
         }
-        if (!app_radar_has_recent_motion(RADAR_HOLD_ON_NO_MOTION_US))
+        g_radar_hold_on_mode = 1;
+        // 检测到移动目标 → 开始狩猎
+        if (app_radar_has_recent_motion(HUNT_NO_TARGET_TIMEOUT_US))
         {
-            radar_play_record_end();
-            BLE_LOG_D("radar hold on mode exit");
-            g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_NONE;
-            g_radar_hold_on_mode         = 0;
-            g_radar_low_freq_phase_on    = 0;
-            g_radar_work_acc_tick        = 0;
-            g_radar_phase_tick           = now_tick;
+            BLE_LOG_D("HUNT: IDLE -> ACTIVE (target detected)");
+            g_hunt_state          = HUNT_STATE_ACTIVE;
+            g_hunt_session_acc_ms = 0;
+            g_hunt_acc_tick_last  = now_tick;
+            g_hunt_session_tick   = now_tick;
+            g_hunt_success        = 0;
+            g_hunt_no_target_tick = 0;
+            g_hunt_prey_zone_tick = 0;
+            // 启动逗宠记录
+            RadarSessionOnMotion(now_tick);
+            radar_play_record_start();  // 启动狩猎记录
+            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         }
         return;
     }
 
-    // if (g_radar_phase_tick == 0)
-    // {
-    //     g_radar_phase_tick = now_tick;
-    // }
+    /* -------- 狩猎中: 计时 + 跟踪 + 检测中断条件 -------- */
+    case HUNT_STATE_ACTIVE: {
+        if (!g_radar_power_on)
+        {
+            app_radar_power_switch(1);
+        }
+        g_radar_hold_on_mode = 1;
 
-    // if (g_radar_low_freq_phase_on)
-    // {
-    //     if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_ON)
-    //     {
-    //         BLE_LOG_D("radar low freq phase on");
-    //         g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_ON;
-    //     }
-    //     app_radar_power_switch(1);
-    //     if (app_radar_has_recent_motion(RADAR_LOW_FREQ_ON_US))
-    //     {
-    //         g_radar_hold_on_mode = 1;
-    //         return;
-    //     }
+        // 累计狩猎时间 (每秒)
+        if (g_hunt_acc_tick_last)
+        {
+            u32 elapsed_us = (now_tick - g_hunt_acc_tick_last) >> 4;
+            if (elapsed_us >= 1000000u)
+            {
+                g_hunt_session_acc_ms = g_radar_sess_motion_ms;
+                g_hunt_acc_tick_last  = now_tick;
+                BLE_LOG_D("HUNT: active %ds/%ds last_motion %d", g_hunt_session_acc_ms / 1000, g_hunt_duration_s, g_radar_last_motion_tick);
+            }
+        }
+        else
+        {
+            g_hunt_acc_tick_last = now_tick;
+        }
 
-    //     if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_ON_US))
-    //     {
-    //         BLE_LOG_D("radar low freq phase on exit");
-    //         g_radar_low_freq_phase_on = 0;
-    //         g_radar_phase_tick        = now_tick;
-    //         app_radar_power_switch(0);
-    //     }
-    // }
-    // else
-    // {
-    //     if (g_radar_power_log_last_state != RADAR_POWER_LOG_STATE_LOW_FREQ_OFF)
-    //     {
-    //         BLE_LOG_D("radar low freq phase off");
-    //         g_radar_power_log_last_state = RADAR_POWER_LOG_STATE_LOW_FREQ_OFF;
-    //     }
-    //     app_radar_power_switch(0);
-    //     if (clock_time_exceed(g_radar_phase_tick, RADAR_LOW_FREQ_OFF_US))
-    //     {
-    //         BLE_LOG_D("radar low freq phase off exit");
-    //         g_radar_low_freq_phase_on = 0;
-    //         g_radar_phase_tick        = now_tick;
-    //         app_radar_power_switch(1);
-    //     }
-    // }
+        // 条件1: 连续15s无目标 → 待机
+        if (!app_radar_has_recent_motion(HUNT_NO_TARGET_TIMEOUT_US))
+        {
+            if (g_hunt_no_target_tick == 0)
+                g_hunt_no_target_tick = now_tick;
+            else if (clock_time_exceed(g_hunt_no_target_tick, HUNT_NO_TARGET_TIMEOUT_US))
+            {
+                BLE_LOG_D("HUNT: ACTIVE -> STANDBY (15s no target)");
+                radar_play_record_end();  // 记录为未完成
+                g_hunt_total_active_ms += g_radar_sess_motion_ms;
+                StepMotor_StopAll();
+                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+                g_radar_hold_on_mode  = 0;
+                g_hunt_state          = HUNT_STATE_STANDBY;
+                g_hunt_no_target_tick = 0;
+                g_hunt_prey_zone_tick = 0;
+                return;
+            }
+        }
+        else
+        {
+            g_hunt_no_target_tick = 0;
+        }
+
+        // 条件2: 连续15s目标在猎物点半径20cm内 → 30s休眠
+        if (hunt_is_target_near_prey_point())
+        {
+            if (g_hunt_prey_zone_tick == 0)
+                g_hunt_prey_zone_tick = now_tick;
+            else if (clock_time_exceed(g_hunt_prey_zone_tick, HUNT_PREY_ZONE_TIMEOUT_US))
+            {
+                BLE_LOG_D("HUNT: ACTIVE -> PREY_ZONE_SLEEP (target in prey zone 15s)");
+                radar_play_record_end();  // 记录为未完成
+                g_hunt_total_active_ms += g_radar_sess_motion_ms;
+                radar_working_mode_set(0);
+                StepMotor_StopAll();
+                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+                app_radar_power_switch(0);
+                g_radar_hold_on_mode  = 0;
+                g_hunt_state          = HUNT_STATE_PREY_ZONE_SLEEP;
+                g_hunt_no_target_tick = 0;
+                g_hunt_prey_zone_tick = 0;
+                return;
+            }
+        }
+        else
+        {
+            g_hunt_prey_zone_tick = 0;
+        }
+
+        // 条件3: 狩猎计时到达预设值 → 完成移动
+        if (g_hunt_session_acc_ms / 1000 >= (u32)g_hunt_duration_s)
+        {
+            BLE_LOG_D("HUNT: ACTIVE -> COMPLETE_MOVING (timer %ds)", g_hunt_duration_s);
+            radar_working_mode_set(0);
+            g_hunt_state = HUNT_STATE_COMPLETE_MOVING;
+            return;
+        }
+
+        return;
+    }
+
+    /* -------- 待机: 关闭激光+电机, 雷达保持, 检测到目标则恢复 -------- */
+    case HUNT_STATE_STANDBY: {
+        if (!g_radar_power_on)
+            app_radar_power_switch(1);
+        g_radar_hold_on_mode = 0;  // 不跟踪
+
+        // 检测到目标 → 恢复狩猎
+        if (app_radar_has_recent_motion(HUNT_NO_TARGET_TIMEOUT_US))
+        {
+            BLE_LOG_D("HUNT: STANDBY -> ACTIVE (target returned)");
+            g_hunt_session_acc_ms = 0;
+            g_hunt_acc_tick_last  = now_tick;
+            g_hunt_session_tick   = now_tick;
+            g_hunt_success        = 0;
+            g_hunt_no_target_tick = 0;
+            g_hunt_prey_zone_tick = 0;
+            g_radar_hold_on_mode  = 1;
+            g_hunt_state          = HUNT_STATE_ACTIVE;
+            RadarSessionOnMotion(now_tick);
+            radar_play_record_start();  // 启动新狩猎记录
+            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        }
+        return;
+    }
+
+    /* -------- 30秒休眠 (目标在猎物点): 雷达+激光+电机关闭 -------- */
+    case HUNT_STATE_PREY_ZONE_SLEEP: {
+        if (g_hunt_prey_zone_tick == 0)
+        {
+            g_hunt_prey_zone_tick = now_tick;
+        }
+        app_radar_power_switch(0);
+        g_radar_hold_on_mode = 0;
+        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+
+        if (clock_time_exceed(g_hunt_prey_zone_tick, HUNT_PREY_ZONE_SLEEP_DUR_US))
+        {
+            BLE_LOG_D("HUNT: PREY_ZONE_SLEEP -> IDLE (30s up)");
+            g_hunt_prey_zone_tick = 0;
+            g_hunt_state          = HUNT_STATE_IDLE;
+        }
+        return;
+    }
+
+    /* -------- 移动到猎物点: 等待云台到达 -------- */
+    case HUNT_STATE_COMPLETE_MOVING: {
+        // 移动光斑到猎物点
+        StepMotor_GimbalSetSpeedUs(1200);
+        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
+        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
+        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        g_radar_hold_on_mode = 0;  // 停止雷达跟踪, 由云台移动到猎物点
+        // 等待云台到达猎物点
+        if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) && !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT))
+        {
+            // s16 pan_cur  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
+            // s16 tilt_cur = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
+            // if (abs(pan_cur - g_prey_pan_deg10) <= 10 && abs(tilt_cur - g_prey_tilt_deg10) <= 10)
+            // {
+            BLE_LOG_D("HUNT: COMPLETE_MOVING -> CELEBRATE (at prey point)");
+            // StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
+            // StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
+            g_hunt_celebration_tick = now_tick;
+            g_hunt_success          = 0;
+            g_hunt_state            = HUNT_STATE_CELEBRATE;
+            // }
+        }
+        return;
+    }
+
+    /* -------- 停留10秒: 检查目标是否进入猎物点半径 -------- */
+    case HUNT_STATE_CELEBRATE: {
+        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        // 激光停在猎物点, 电机已停止
+        StepMotor_StopAll();
+
+        // 检查目标是否进入猎物点半径20cm → 记录捕猎成功
+        if (!g_hunt_success && hunt_is_target_near_prey_point())
+        {
+            g_hunt_success = 1;
+            // 标记当前记录为成功
+            g_radar_play_hunt_result[g_radar_play_active_idx] = HUNT_RESULT_SUCCESS;
+            BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! target entered prey zone");
+        }
+
+        // 10秒到 → 判定完成
+        if (clock_time_exceed(g_hunt_celebration_tick, HUNT_CELEBRATION_DUR_US))
+        {
+            // 如果还没标记成功, 标记为完成(非成功)
+            if (!g_hunt_success)
+            {
+                if (g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_INCOMPLETE)
+                {
+                    g_radar_play_hunt_result[g_radar_play_active_idx] = HUNT_RESULT_COMPLETE;
+                }
+            }
+
+            radar_play_record_end();
+            g_hunt_total_active_ms += g_radar_sess_motion_ms;
+
+            g_hunt_completed++;
+            BLE_LOG_D("HUNT: CELEBRATE done. completed=%d/%d, total_active=%ds/%ds",
+                      g_hunt_completed,
+                      g_hunt_count,
+                      g_hunt_total_active_ms,
+                      (u32)g_hunt_duration_s * (u32)g_hunt_count);
+            gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+
+            // 判断是否进入休眠
+            if (g_hunt_completed >= g_hunt_count ||
+                (g_hunt_total_active_ms / 1000) >= (u32)g_hunt_duration_s * (u32)g_hunt_count)
+            {
+                BLE_LOG_D("HUNT: CELEBRATE -> SLEEP (limit reached)");
+                app_radar_power_switch(0);
+                g_radar_hold_on_mode  = 0;
+                g_hunt_state          = HUNT_STATE_SLEEP;
+                g_hunt_sleep_end_tick = now_tick;
+            }
+            else
+            {
+                BLE_LOG_D("HUNT: CELEBRATE -> IDLE");
+                g_hunt_state = HUNT_STATE_IDLE;
+            }
+        }
+        return;
+    }
+
+    /* -------- 休眠: 重置狩猎次数和累计时长, 到期后回到Idle -------- */
+    case HUNT_STATE_SLEEP: {
+        app_radar_power_switch(0);
+        g_radar_hold_on_mode = 0;
+        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+
+        if (clock_time_exceed(g_hunt_sleep_end_tick, hunt_sleep_duration_us()))
+        {
+            BLE_LOG_D("HUNT: SLEEP -> IDLE (sleep %dmin done)", g_hunt_sleep_duration_min);
+            // 重置狩猎完成次数和累计游戏时长
+            g_hunt_completed       = 0;
+            g_hunt_total_active_ms = 0;
+            g_hunt_state           = HUNT_STATE_IDLE;
+        }
+        return;
+    }
+
+    default:
+        g_hunt_state = HUNT_STATE_IDLE;
+        return;
+    }
 }
 
 u8 app_radar_is_power_on(void)
@@ -2774,6 +3040,136 @@ void app_radar_uart_ndma_irq_proc(void)
 #endif
         radar_uart_ndma_rx_push_byte(uart_ndma_read_byte());
     }
+}
+
+/* ========== 狩猎游戏公开 API ========== */
+
+u16 app_hunt_get_duration_s(void)
+{
+    return g_hunt_duration_s;
+}
+
+void app_hunt_set_duration_s(u16 s)
+{
+    if (s < 10)
+        s = 10;
+    if (s > 600)
+        s = 600;
+    g_hunt_duration_s = s;
+}
+
+u8 app_hunt_get_count(void)
+{
+    return g_hunt_count;
+}
+
+void app_hunt_set_count(u8 cnt)
+{
+    if (cnt < 1)
+        cnt = 1;
+    // 最大值: ceil(600 / 单次狩猎时长)
+    u8 max_cnt = (u8)((600u + (u32)g_hunt_duration_s - 1u) / (u32)g_hunt_duration_s);
+    if (cnt > max_cnt)
+        cnt = max_cnt;
+    g_hunt_count = cnt;
+}
+
+u8 app_hunt_get_sleep_duration_min(void)
+{
+    return g_hunt_sleep_duration_min;
+}
+
+void app_hunt_set_sleep_duration_min(u8 min)
+{
+    if (min < 1)
+        min = 1;
+    if (min > 20)
+        min = 20;
+    g_hunt_sleep_duration_min = min;
+}
+
+void app_hunt_get_prey_point_deg10(s16 *pan_deg10, s16 *tilt_deg10)
+{
+    if (pan_deg10)
+        *pan_deg10 = g_prey_pan_deg10;
+    if (tilt_deg10)
+        *tilt_deg10 = g_prey_tilt_deg10;
+}
+
+void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10)
+{
+    // 水平限制 ±60°
+    if (pan_deg10 > GIMBAL_PAN_LIMIT_DEG10_POS)
+        pan_deg10 = GIMBAL_PAN_LIMIT_DEG10_POS;
+    if (pan_deg10 < GIMBAL_PAN_LIMIT_DEG10_NEG)
+        pan_deg10 = GIMBAL_PAN_LIMIT_DEG10_NEG;
+    // 俯仰限制 -10°~-80°
+    if (tilt_deg10 > GIMBAL_TILT_LIMIT_DEG10_POS)
+        tilt_deg10 = GIMBAL_TILT_LIMIT_DEG10_POS;
+    if (tilt_deg10 < GIMBAL_TILT_LIMIT_DEG10_NEG)
+        tilt_deg10 = GIMBAL_TILT_LIMIT_DEG10_NEG;
+    g_prey_pan_deg10  = pan_deg10;
+    g_prey_tilt_deg10 = tilt_deg10;
+}
+
+void app_hunt_prey_random_move(void)
+{
+    // 水平角度（±60°）俯仰角（15°~30°）间随机移动
+    s16 pan_deg10     = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
+    s16 tilt_deg10    = (s16)RadarRandRangeI32(GIMBAL_TILT_LIMIT_DEG10_NEG, -150);  // -30°~-15°
+    g_prey_pan_deg10  = pan_deg10;
+    g_prey_tilt_deg10 = tilt_deg10;
+
+#if (UI_STEP_MOTOR_ENABLE)
+    StepMotor_GimbalSetSpeedUs(1200);
+    StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan_deg10);
+    StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt_deg10);
+#endif
+}
+
+u8 app_hunt_is_hunting(void)
+{
+    return (g_hunt_state == HUNT_STATE_ACTIVE) ? 1 : 0;
+}
+
+u8 app_hunt_is_standby(void)
+{
+    return (g_hunt_state == HUNT_STATE_STANDBY) ? 1 : 0;
+}
+
+u8 app_hunt_is_sleeping(void)
+{
+    return (g_hunt_state == HUNT_STATE_SLEEP || g_hunt_state == HUNT_STATE_PREY_ZONE_SLEEP) ? 1 : 0;
+}
+
+int app_hunt_get_records_with_result(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out, u16 *avg_speed_cms_out, u8 *result_out, u8 max_records)
+{
+    if (!out_buf || !tz_buf || !result_out || max_records == 0)
+    {
+        return 0;
+    }
+
+    u8 count = g_radar_play_record_count;
+    if (count > max_records)
+        count = max_records;
+
+    u8 idx = g_radar_play_record_next;
+    for (u8 i = 0; i < count; i++)
+    {
+        if (idx == 0)
+            idx = RADAR_TIME_MAX_RECORDS;
+        idx--;
+
+        out_buf[i * 2]     = g_radar_play_start_sec[idx];
+        out_buf[i * 2 + 1] = g_radar_play_end_sec[idx];
+        tz_buf[i]          = (u8)g_radar_play_tz_q15[idx];
+        result_out[i]      = g_radar_play_hunt_result[idx];
+        if (motion_sec_out)
+            motion_sec_out[i] = g_radar_play_motion_sec[idx];
+        if (avg_speed_cms_out)
+            avg_speed_cms_out[i] = g_radar_play_avg_speed_cms[idx];
+    }
+    return count;
 }
 
 #endif /* UI_RADAR_ENABLE */

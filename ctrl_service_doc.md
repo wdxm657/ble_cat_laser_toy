@@ -362,7 +362,7 @@ byte8 : 0x04           // reason = BATTERY_TEMP_HIGH
 
 #### 4.6 设备状态查询（STATUS_GET，CMD = 0x13）
 
-用途：获取设备开关机、逗宠区域是否设置、安装高度、充电状态以及模式状态（设置中/工作中/休息中）。
+用途：获取设备开关机、逗宠区域是否设置、安装高度、充电状态以及狩猎模式状态（设置中/狩猎中/待机/休眠）。
 
 **请求帧（APP → 设备）**
 
@@ -382,20 +382,27 @@ byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
 byte2 : 0x13           // cmdId = STATUS_GET
 byte3 : seq
-byte4 : 0x09           // payloadLen = 9
+byte4 : 0x0A           // payloadLen = 10
 byte5 : 0x00
 byte6 : status
 byte7 : power_on       // 0x00=关, 0x01=开
 byte8 : play_zone_set  // 0x00=未设置, 0x01=已设置
 byte9 : height_lo      // 高度 低位
-byte10 : height_hi     // 高度 高位
-byte11 : charging      // 充电状态
-byte12 : setting_mode  // 设置中：0x00/0x01
-byte13 : working_mode  // 工作中：0x00/0x01
-byte14 : resting_mode  // 休息中：0x00/0x01
+byte10: height_hi      // 高度 高位
+byte11: charging       // 充电状态
+byte12: setting_mode   // 设置中：0x00/0x01
+byte13: hunting_mode   // 狩猎中：0x00/0x01
+byte14: standby_mode   // 待机：0x00/0x01
+byte15: sleeping_mode  // 休眠：0x00/0x01
 ```
 
-`setting_mode`、`working_mode`、`resting_mode` 三者互斥，任意时刻最多只有一个为 `1`。
+四种状态互斥：`setting_mode` > `hunting_mode` > `standby_mode` > `sleeping_mode`，任意时刻最多只有一个为 `1`。
+
+- 设备开机后处于逗宠等待状态，检测到目标自动开始狩猎（`hunting_mode=1`）。
+- 15 秒无目标进入待机（`standby_mode=1`），激光和电机关闭，雷达保持检测。
+- 15 秒目标停在猎物点附近进入 30 秒休眠（`sleeping_mode=1`），雷达+激光+电机关闭。
+- 达到狩猎完成次数或累计活跃时长上限后进入长期休眠（`sleeping_mode=1`）。
+- 狩猎设置模式下 `setting_mode=1`。
 
 **事件帧（设备 → APP）**
 
@@ -404,17 +411,18 @@ byte0 : 0x01
 byte1 : 0x03           // msgType = EVENT
 byte2 : 0x13           // cmdId = STATUS_GET
 byte3 : seq
-byte4 : 0x09           // payloadLen = 9
+byte4 : 0x0A           // payloadLen = 10
 byte5 : 0x00
 byte6 : status
 byte7 : power_on       // 0x00=关, 0x01=开
 byte8 : play_zone_set  // 0x00=未设置, 0x01=已设置
 byte9 : height_lo      // 高度 低位
-byte10 : height_hi     // 高度 高位
-byte11 : charging      // 充电状态
-byte12 : setting_mode  // 设置中：0x00/0x01
-byte13 : working_mode  // 工作中：0x00/0x01
-byte14 : resting_mode  // 休息中：0x00/0x01
+byte10: height_hi      // 高度 高位
+byte11: charging       // 充电状态
+byte12: setting_mode   // 设置中：0x00/0x01
+byte13: hunting_mode   // 狩猎中：0x00/0x01
+byte14: standby_mode   // 待机：0x00/0x01
+byte15: sleeping_mode  // 休眠：0x00/0x01
 ```
 
 #### 4.7 设置设备时间（TIME_SET，CMD = 0x32）
@@ -458,8 +466,9 @@ byte7 : 0x00
 
 #### 4.8 逗宠记录主动上报与 ACK（PLAY_RECORD_GET，CMD = 0x33）
 
-用途：设备主动上报“完整逗宠记录”，APP 成功接收后发送 ACK 通知设备清理记录。  
+用途：设备主动上报"完整逗宠记录"（即狩猎结果记录），APP 成功接收后发送 ACK 通知设备清理记录。  
 说明：完整记录指同时有 `start_sec` 和 `end_sec`；仅有开始时间（`end_sec = 0xFFFFFFFF`）的进行中记录不会上报。
+每条记录包含狩猎结果：`0=未完成`、`1=完成`、`2=捕猎成功`。
 
 **触发时机（设备 → APP）**
 
@@ -469,7 +478,7 @@ byte7 : 0x00
 **长度约束（与实现对齐）**
 
 - 控制面单帧总长须满足 `6 + payloadLen ≤ CTRL_TX_MAX_LEN`（当前 **20** 字节，见 §1 / `app_ctrl.h`）。
-- 本事件 **payload 固定 14 字节**（`payloadLen = 0x000E`），总长 **20 字节**。
+- 本事件 **payload 固定 15 字节**（`payloadLen = 0x000F`），总长 **21 字节**。
 
 **主动上报帧（设备 → APP，EVENT）**
 
@@ -484,6 +493,7 @@ byte7 : 0x00
 | 7 | 4 | u32 LE | `end_sec`：逗宠段结束 Unix 秒 |
 | 11 | 2 | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535** |
 | 13 | 1 | u8 | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255** |
+| 14 | 1 | u8 | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)` |
 
 **运动统计（与固件 `RadarMotionCachePush` / `radar_play_on_cache_displacement_ms` 对齐）**
 
@@ -492,20 +502,20 @@ byte7 : 0x00
 - 弦速（cm/s）：`v = √(Δx²+Δy²)_mm × 100 / Δt_ms`（`Δx/Δy` 为相对 newest 的毫米位移）；位移小于 0.5mm 时 `v` 按 0，仍累加 **`Δt_ms`**。
 - 段结束时写入 flash / 上报：`motion_sec` 为秒，`avg_speed_cm_s` 为上述加权平均（u16 存 flash，经 BLE 再截断为 u8）。
 
-**整帧 20 字节示例（6 字节头 + 14 字节 payload；`payloadLen` 小端为 `0x0E 0x00`）**
+**整帧 21 字节示例（6 字节头 + 15 字节 payload；`payloadLen` 小端为 `0x0F 0x00`）**
 
 ```
 byte0 : 0x01
 byte1 : 0x03           // msgType = EVENT
 byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
-byte4 : 0x0E           // payloadLen L0 = 14
+byte4 : 0x0F           // payloadLen L0 = 15
 byte5 : 0x00           // payloadLen L1 = 0
 byte6 : status         // payload[0]
 byte7 : total          // payload[1]
 byte8 : index          // payload[2]
 byte9 : start_sec_L0   // payload[3..6]
-byte10 : start_sec_L1
+byte10: start_sec_L1
 byte11: start_sec_L2
 byte12: start_sec_L3
 byte13: end_sec_L0     // payload[7..10]
@@ -515,12 +525,8 @@ byte16: end_sec_L3
 byte17: motion_sec_L0  // payload[11..12]
 byte18: motion_sec_L1
 byte19: avg_speed_cm_s // payload[13]
+byte20: result         // payload[14] 狩猎结果: 0=未完成 1=完成 2=捕猎成功
 ```
-
-**破坏性变更说明**
-
-- 较旧文档：此前 payload 曾描述为 11 字节或与固件 12 字节（首字节恒为 0 预留）不一致；当前固件为 **14 字节 payload**，首字节为 **`total`**，不再发送前置恒 0 字节。
-- APP 须按 **`payloadLen`** 解析：为 `14` 时按上表读取 `motion_sec` / `avg_speed_cm_s`；若需兼容更老固件，可根据 `payloadLen == 12` 走旧布局（无运动字段）。
 
 **ACK 请求帧（APP → 设备，CMD）**
 
@@ -759,6 +765,244 @@ Battery Service
 UUID:0000180F-0000-1000-8000-00805F9B34FB
 Battery Level
 UUID:00002A19-0000-1000-8000-00805F9B34FB
+
+#### 4.15 狩猎游戏设置（CMD = 0x60 ~ 0x66）
+
+用途：APP 配置狩猎游戏的各项参数，包括猎物点、狩猎时长、狩猎次数、休眠时长等。
+
+---
+
+##### 4.15.1 进入狩猎设置模式（HUNT_SETTINGS_ENTER，CMD = 0x60）
+
+进入后光斑移动到当前猎物点，设备进入设置模式（`setting_mode=1`），停止自动狩猎。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x60           // cmdId = HUNT_SETTINGS_ENTER
+byte3 : seq
+byte4 : 0x00           // payloadLen = 0
+byte5 : 0x00
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x60           // cmdId = HUNT_SETTINGS_ENTER
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : status
+```
+
+---
+
+##### 4.15.2 退出狩猎设置模式（HUNT_SETTINGS_EXIT，CMD = 0x61）
+
+退出时可以选择应用或丢弃设置。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x61           // cmdId = HUNT_SETTINGS_EXIT
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : apply          // 0x00=丢弃，0x01=应用全部设置
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x61           // cmdId = HUNT_SETTINGS_EXIT
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : status
+```
+
+---
+
+##### 4.15.3 猎物点随机移动（HUNT_PREY_RANDOM，CMD = 0x62）
+
+在设置模式下，控制猎物点在水平±60°、俯仰15°~30°范围内随机移动。停止随机移动时光斑停在当前位置，可用 `HUNT_PREY_SET` 设为猎物点。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x62           // cmdId = HUNT_PREY_RANDOM
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : start          // 0x00=停止, 0x01=开始随机移动
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x62           // cmdId = HUNT_PREY_RANDOM
+byte3 : seq
+byte4 : 0x02           // payloadLen = 2
+byte5 : 0x00
+byte6 : status
+byte7 : start          // 回显 0x00/0x01
+```
+
+---
+
+##### 4.15.4 设置当前云台位置为猎物点（HUNT_PREY_SET，CMD = 0x63）
+
+将当前云台角度设为猎物点（覆盖原值）。需先在设置模式下通过方向键或随机移动将光斑移动到目标位置。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x63           // cmdId = HUNT_PREY_SET
+byte3 : seq
+byte4 : 0x00           // payloadLen = 0
+byte5 : 0x00
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x63           // cmdId = HUNT_PREY_SET
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : status
+```
+
+---
+
+##### 4.15.5 设置单次狩猎时长（HUNT_SET_DURATION，CMD = 0x64）
+
+设置单次狩猎的时长（秒），范围 10~600 秒，默认 60 秒。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x64           // cmdId = HUNT_SET_DURATION
+byte3 : seq
+byte4 : 0x02           // payloadLen = 2
+byte5 : 0x00
+byte6 : duration_L     // u16 LE 时长(秒)
+byte7 : duration_H
+```
+
+**示例**：
+
+```
+（设置 90 秒）
+01 01 64 01 02 00 5A 00
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x64           // cmdId = HUNT_SET_DURATION
+byte3 : seq
+byte4 : 0x03           // payloadLen = 3
+byte5 : 0x00
+byte6 : status
+byte7 : applied_L      // 实际生效值低位
+byte8 : applied_H      // 实际生效值高位
+```
+
+---
+
+##### 4.15.6 设置狩猎次数（HUNT_SET_COUNT，CMD = 0x65）
+
+设置达成多少次狩猎后进入休眠。最大值 = `ceil(600 / 单次狩猎时长)`。默认 3 次。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x65           // cmdId = HUNT_SET_COUNT
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : count          // 狩猎次数（u8）
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x65           // cmdId = HUNT_SET_COUNT
+byte3 : seq
+byte4 : 0x02           // payloadLen = 2
+byte5 : 0x00
+byte6 : status
+byte7 : applied        // 实际生效值（u8）
+```
+
+---
+
+##### 4.15.7 设置休眠时长（HUNT_SET_SLEEP_DURATION，CMD = 0x66）
+
+设置达成狩猎次数后休眠的时长（分钟），范围 1~20 分钟，默认 3 分钟。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x66           // cmdId = HUNT_SET_SLEEP_DURATION
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : minutes        // 休眠时长（分钟，u8）
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x66           // cmdId = HUNT_SET_SLEEP_DURATION
+byte3 : seq
+byte4 : 0x02           // payloadLen = 2
+byte5 : 0x00
+byte6 : status
+byte7 : applied        // 实际生效值（u8）
+```
+
+---
+
+##### 狩猎设置流程示例
+
+1. APP 发送 `HUNT_SETTINGS_ENTER(0x60)` → 光斑移动到当前猎物点
+2. APP 发送 `HUNT_PREY_RANDOM(0x62) start=1` → 光斑开始随机移动
+3. 用户观察光斑位置合适时，发送 `HUNT_PREY_RANDOM(0x62) start=0` → 停止移动
+4. APP 发送 `HUNT_PREY_SET(0x63)` → 当前云台位置设为猎物点
+5. APP 发送 `HUNT_SET_DURATION(0x64)` 设置时长为 90s
+6. APP 发送 `HUNT_SET_COUNT(0x65)` 设置次数为 3
+7. APP 发送 `HUNT_SET_SLEEP_DURATION(0x66)` 设置休眠 5 分钟
+8. APP 发送 `HUNT_SETTINGS_EXIT(0x61) apply=1` → 应用全部设置，返回自动狩猎
 
 ---
 

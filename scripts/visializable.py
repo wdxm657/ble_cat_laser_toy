@@ -691,6 +691,25 @@ class RadarVisualizer:
                 return f"[EVT][0x33] 逗宠记录 {idx + 1}/{total} payload={pld.hex()}"
             return f"[EVT][0x33] pl={pld.hex()}"
 
+        # 狩猎游戏命令 RSP 解码
+        if fr.msg_type == CTRL_MSG_TYPE_RSP:
+            st = pld[0] if len(pld) >= 1 else -1
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SETTINGS_ENTER:
+                return f"[RSP][0x60] HUNT_SETTINGS_ENTER status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SETTINGS_EXIT:
+                return f"[RSP][0x61] HUNT_SETTINGS_EXIT status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_PREY_RANDOM:
+                start = pld[1] if len(pld) >= 2 else 0
+                return f"[RSP][0x62] HUNT_PREY_RANDOM status={st} start={start}"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_PREY_SET:
+                return f"[RSP][0x63] HUNT_PREY_SET status={st}"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_DURATION and len(pld) >= 3:
+                applied = pld[1] | (pld[2] << 8)
+                return f"[RSP][0x64] HUNT_SET_DURATION status={st} applied={applied}s"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_COUNT and len(pld) >= 2:
+                return f"[RSP][0x65] HUNT_SET_COUNT status={st} applied={pld[1]}"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_SLEEP_DURATION and len(pld) >= 2:
+                return f"[RSP][0x66] HUNT_SET_SLEEP_DURATION status={st} applied={pld[1]}min"
         if (
             fr.msg_type == CTRL_MSG_TYPE_EVENT
             and fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL
@@ -755,10 +774,9 @@ class RadarVisualizer:
     _play_record_info: str = ""
 
     def _apply_play_record_event(self, payload: bytes) -> None:
-        """解析逗宠记录 EVENT payload (14 字节)。"""
-        if len(payload) < 14:
+        """解析逗宠记录 EVENT payload (15 字节, 含狩猎结果)。"""
+        if len(payload) < 15:
             return
-        status = int(payload[0])
         total = int(payload[1])
         index = int(payload[2])
         start_sec = (
@@ -775,8 +793,10 @@ class RadarVisualizer:
         )
         motion_sec = int(payload[11]) | (int(payload[12]) << 8)
         avg_speed = int(payload[13])
+        result = int(payload[14])  # 狩猎结果
 
-        # 转为可读时间
+        RESULT_TEXT = {0: "未完成", 1: "完成", 2: "捕猎成功"}
+
         def _fmt_ts(epoch: int) -> str:
             if epoch == 0:
                 return "--"
@@ -789,13 +809,15 @@ class RadarVisualizer:
 
         start_str = _fmt_ts(start_sec)
         end_str = _fmt_ts(end_sec)
+        result_str = RESULT_TEXT.get(result, f"未知({result})")
 
         with self._lock:
             self._play_record_count = total
             self._play_record_index = index
             self._play_record_info = (
                 f"记录 {index + 1}/{total}: {start_str} ~ {end_str}  "
-                f"运动 {motion_sec}s  速度 {avg_speed}cm/s"
+                f"运动 {motion_sec}s  速度 {avg_speed}cm/s  "
+                f"结果: {result_str}"
             )
 
     def _parse_line(self, line: str):
@@ -1079,11 +1101,75 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         b_config_height.clicked.connect(self._on_new_config_step1)
         g.addWidget(b_config_height, 7, 2)
 
+        # ===== 狩猎游戏设置 (0x60-0x66) =====
+        g.addWidget(QtWidgets.QLabel("狩猎设置 (0x60~0x66)"), 8, 0, 1, 4)
+        self.row = 9  # track current grid row
+
+        def _nrow(inc=1):
+            r = self.row
+            self.row += inc
+            return r
+
+        # 进入/退出设置
+        b_hunt_enter = QtWidgets.QPushButton("进入设置(0x60)")
+        b_hunt_enter.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_enter()))
+        b_hunt_exit_apply = QtWidgets.QPushButton("退出并应用(0x61)")
+        b_hunt_exit_apply.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_exit(True)))
+        b_hunt_exit_discard = QtWidgets.QPushButton("退出丢弃(0x61)")
+        b_hunt_exit_discard.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_exit(False)))
+        g.addWidget(QtWidgets.QLabel("设置模式"), _nrow(), 0)
+        g.addWidget(b_hunt_enter, self.row-1, 1)
+        g.addWidget(b_hunt_exit_apply, self.row-1, 2)
+        g.addWidget(b_hunt_exit_discard, self.row-1, 3)
+
+        # 猎物点操作
+        b_prey_random_start = QtWidgets.QPushButton("开始随机(0x62)")
+        b_prey_random_start.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(True)))
+        b_prey_random_stop = QtWidgets.QPushButton("停止随机(0x62)")
+        b_prey_random_stop.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(False)))
+        b_prey_set = QtWidgets.QPushButton("设为猎物点(0x63)")
+        b_prey_set.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_set()))
+        g.addWidget(QtWidgets.QLabel("猎物点"), _nrow(), 0)
+        g.addWidget(b_prey_random_start, self.row-1, 1)
+        g.addWidget(b_prey_random_stop, self.row-1, 2)
+        g.addWidget(b_prey_set, self.row-1, 3)
+
+        # 狩猎时长
+        g.addWidget(QtWidgets.QLabel("狩猎时长(秒)"), _nrow(), 0)
+        self.hunt_dur_spin = QtWidgets.QSpinBox()
+        self.hunt_dur_spin.setRange(10, 600)
+        self.hunt_dur_spin.setValue(60)
+        g.addWidget(self.hunt_dur_spin, self.row-1, 1)
+        b_hunt_dur = QtWidgets.QPushButton("设置(0x64)")
+        b_hunt_dur.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_duration(self.hunt_dur_spin.value())))
+        g.addWidget(b_hunt_dur, self.row-1, 2)
+
+        # 狩猎次数
+        g.addWidget(QtWidgets.QLabel("狩猎次数"), _nrow(), 0)
+        self.hunt_cnt_spin = QtWidgets.QSpinBox()
+        self.hunt_cnt_spin.setRange(1, 60)
+        self.hunt_cnt_spin.setValue(3)
+        g.addWidget(self.hunt_cnt_spin, self.row-1, 1)
+        b_hunt_cnt = QtWidgets.QPushButton("设置(0x65)")
+        b_hunt_cnt.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_count(self.hunt_cnt_spin.value())))
+        g.addWidget(b_hunt_cnt, self.row-1, 2)
+
+        # 休眠时长
+        g.addWidget(QtWidgets.QLabel("休眠时长(分)"), _nrow(), 0)
+        self.hunt_sleep_spin = QtWidgets.QSpinBox()
+        self.hunt_sleep_spin.setRange(1, 20)
+        self.hunt_sleep_spin.setValue(3)
+        g.addWidget(self.hunt_sleep_spin, self.row-1, 1)
+        b_hunt_sleep = QtWidgets.QPushButton("设置(0x66)")
+        b_hunt_sleep.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_sleep_duration(self.hunt_sleep_spin.value())))
+        g.addWidget(b_hunt_sleep, self.row-1, 2)
+
         # 逗宠记录（逐条上传）
-        g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), 8, 0, 1, 4)
+        g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), _nrow(), 0, 1, 4)
         self.play_record_info = QtWidgets.QLabel("尚未收到记录")
         self.play_record_info.setStyleSheet("color: #a6e3a1; font-size: 11px;")
-        g.addWidget(self.play_record_info, 15, 0, 1, 4)
+        g.addWidget(self.play_record_info, self.row, 0, 1, 4)
+        _nrow()
 
         b_play_record_ack = QtWidgets.QPushButton("确认收到 (ACK)")
         b_play_record_ack.setStyleSheet(
@@ -1094,18 +1180,20 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         b_play_record_ack.setToolTip(
             "告知设备已收到当前逗宠记录，设备将在 1 秒后发送下一条（如有）"
         )
-        g.addWidget(b_play_record_ack, 16, 0, 1, 4)
+        g.addWidget(b_play_record_ack, self.row, 0, 1, 4)
+        _nrow()
 
         # 复位和重启
-        g.addWidget(QtWidgets.QLabel("系统控制"), 17, 0, 1, 4)
+        g.addWidget(QtWidgets.QLabel("系统控制"), _nrow(), 0, 1, 4)
         b_reset = QtWidgets.QPushButton("复位配置(0x56)")
         b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
-        g.addWidget(b_reset, 18, 0, 1, 2)
+        g.addWidget(b_reset, self.row, 0, 1, 2)
+        _nrow()
         
         b_reboot = QtWidgets.QPushButton("重启MCU(0x5A)")
         b_reboot.clicked.connect(lambda: self._send(*vc.cmd_device_reboot()))
         b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
-        g.addWidget(b_reboot, 18, 2, 1, 2)
+        g.addWidget(b_reboot, self.row-1, 2, 1, 2)
 
         if self.vis._transport != "ble":
             self.time_use_local_tz.setEnabled(False)

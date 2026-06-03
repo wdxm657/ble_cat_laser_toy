@@ -61,6 +61,45 @@ void app_radar_set_enabled(u8 on);
 void app_radar_task_power_schedule(void);
 u8   app_radar_is_power_on(void);
 
+/* ========== 狩猎游戏状态机 ========== */
+typedef enum {
+    HUNT_RESULT_INCOMPLETE = 0,  // 未完成
+    HUNT_RESULT_COMPLETE   = 1,  // 完成
+    HUNT_RESULT_SUCCESS    = 2,  // 捕猎成功
+} hunt_result_e;
+
+/** 狩猎设置参数：单次狩猎时长 (秒) */
+u16 app_hunt_get_duration_s(void);
+void app_hunt_set_duration_s(u16 s);
+
+/** 狩猎设置参数：连续狩猎次数 */
+u8  app_hunt_get_count(void);
+void app_hunt_set_count(u8 cnt);
+
+/** 狩猎设置参数：休眠时长 (分钟) */
+u8  app_hunt_get_sleep_duration_min(void);
+void app_hunt_set_sleep_duration_min(u8 min);
+
+/** 猎物点 */
+void app_hunt_get_prey_point_deg10(s16 *pan_deg10, s16 *tilt_deg10);
+void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10);
+
+/** 随机移动猎物点（在水平±60° 俯仰15°~30°之间随机） */
+void app_hunt_prey_random_move(void);
+
+/** 当前状态：是否处于狩猎活跃状态（狩猎中） */
+u8 app_hunt_is_hunting(void);
+
+/** 当前状态：是否处于待机 */
+u8 app_hunt_is_standby(void);
+
+/** 当前状态：是否处于休眠 */
+u8 app_hunt_is_sleeping(void);
+
+/** 获取当前捕猎记录（附带结果），用于上报 */
+int app_hunt_get_records_with_result(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out,
+                                     u16 *avg_speed_cms_out, u8 *result_out, u8 max_records);
+
 #else
 static inline void app_radar_debug_rx_poll(void)
 {
@@ -73,6 +112,20 @@ static inline void app_radar_reset_boundary_default(void)
 static inline void app_radar_clear_install_height_and_boundary_flash(void)
 {
 }
+
+static inline u16 app_hunt_get_duration_s(void) { return 60; }
+static inline void app_hunt_set_duration_s(u16 s) { (void)s; }
+static inline u8 app_hunt_get_count(void) { return 3; }
+static inline void app_hunt_set_count(u8 cnt) { (void)cnt; }
+static inline u8 app_hunt_get_sleep_duration_min(void) { return 3; }
+static inline void app_hunt_set_sleep_duration_min(u8 min) { (void)min; }
+static inline void app_hunt_get_prey_point_deg10(s16 *pan, s16 *tilt) { *pan=0; *tilt=-200; }
+static inline void app_hunt_set_prey_point_deg10(s16 pan, s16 tilt) { (void)pan; (void)tilt; }
+static inline void app_hunt_prey_random_move(void) {}
+static inline u8 app_hunt_is_hunting(void) { return 0; }
+static inline u8 app_hunt_is_standby(void) { return 0; }
+static inline u8 app_hunt_is_sleeping(void) { return 0; }
+static inline int app_hunt_get_records_with_result(u32 *a, u8 *b, u32 *c, u16 *d, u8 *e, u8 f) { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f; return 0; }
 #endif /* UI_RADAR_ENABLE */
 
 #endif /* APP_RADAR_H_ */
