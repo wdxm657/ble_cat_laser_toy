@@ -383,7 +383,7 @@ _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INS
 #define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)   // 1s
 #define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)   // 4s
 #define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)  // 30s
-#define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u * 10u)
+#define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u * 1u)
 #define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
 #define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
 #define RADAR_UART_WARMUP_US       (1000000u * 7u / 10u)  // 700ms

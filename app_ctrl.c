@@ -37,7 +37,7 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 6  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 1  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -478,13 +478,13 @@ void       app_ctrl_status_notify_task(void)
     if (changed)
     {
         // 状态最多允许1s更新1次，避免过于频繁地通知APP（尤其是充电状态可能会有较大波动）
-        if (clock_time_exceed(status_check_tick, 1000000))
-        {
-            status_check_tick = clock_time();
-            BLE_LOG_D("height: %d", height_mm);
-            u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
-            app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
-        }
+        // if (clock_time_exceed(status_check_tick, 1000000))
+        // {
+        status_check_tick = clock_time();
+        // BLE_LOG_D("height: %d", height_mm);
+        u8 pl[9] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, working_mode, resting_mode};
+        app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
+        // }
     }
 #endif
 }

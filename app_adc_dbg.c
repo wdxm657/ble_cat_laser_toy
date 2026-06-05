@@ -701,7 +701,7 @@ void app_adc_dbg_poll(void)
         }
 
         s_bat_mv = (mv_bat_avg > 0xFFFFu) ? 0xFFFFu : (u16)mv_bat_avg;
-        if (clock_time_exceed(s_bat_flash_save_tick, 1000000) && s_bat_percent != last_s_bat_percent)
+        if (clock_time_exceed(s_bat_flash_save_tick, 1000000) /*&& s_bat_percent != last_s_bat_percent*/)
         {
             last_s_bat_percent = s_bat_percent;
             BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
