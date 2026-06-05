@@ -126,36 +126,36 @@ void app_ui_led_task(void)
     }
     if (app_get_power_state())
     {
-        // - 蓝色灯常亮
-        //     - 代表有蓝牙连接的软件开机状态
-        if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_blue(1);
-        }
-        // - 蓝色灯闪烁
-        //     - 代表没有蓝牙连接的软件开机状态
-        else
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_blue(g_led_blink_on);
-        }
-    }
-    else
-    {
         // - 绿色灯常亮
-        //     - 代表软件关机状态，且有蓝牙连接
+        //     - 代表有蓝牙连接的软件开机状态
         if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
         {
             app_ui_led_all_off();
             app_ui_led_set_green(1);
         }
         // - 绿色灯闪烁
-        //     - 代表软件关机状态，且没有蓝牙连接
+        //     - 代表没有蓝牙连接的软件开机状态
         else
         {
             app_ui_led_all_off();
             app_ui_led_set_green(g_led_blink_on);
+        }
+    }
+    else
+    {
+        // - 蓝色灯常亮
+        //     - 代表软件关机状态，且有蓝牙连接
+        if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_blue(1);
+        }
+        // - 蓝色灯闪烁
+        //     - 代表软件关机状态，且没有蓝牙连接
+        else
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_blue(g_led_blink_on);
         }
     }
 
@@ -173,18 +173,18 @@ void app_ui_power_led_task(void)
 
     if (bat_percent >= 80)
     {
-        app_ui_power_led_set_green(1);
+        app_ui_power_led_set_green(0);
+        app_ui_power_led_set_red(0);
+    }
+    else if (charging)
+    {
+        app_ui_power_led_set_green(g_led_blink_on);
         app_ui_power_led_set_red(0);
     }
     else if (bat_percent < 20)
     {
         app_ui_power_led_set_red(g_led_blink_on);
         app_ui_power_led_set_green(0);
-    }
-    else if (charging)
-    {
-        app_ui_power_led_set_green(g_led_blink_on);
-        app_ui_power_led_set_red(0);
     }
     else
     {
