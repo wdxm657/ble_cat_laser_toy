@@ -3088,7 +3088,7 @@ void app_hunt_prey_random_move(void)
 {
     // 水平角度（±60°）俯仰角（15°~30°）间随机移动
     s16 pan_deg10  = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
-    s16 tilt_deg10 = (s16)RadarRandRangeI32(GIMBAL_TILT_LIMIT_DEG10_NEG, -150);  // -30°~-15°
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(-300, -150);  // -30°~-15°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);
@@ -3166,7 +3166,7 @@ void app_hunt_prey_random_reset(void)
     g_prey_random_active = 0;
     g_prey_random_state  = 0;
     g_prey_pan_deg10     = 0;
-    g_prey_tilt_deg10    = -200;  // -45°
+    g_prey_tilt_deg10    = -200;
 }
 
 u8 app_hunt_is_hunting(void)
