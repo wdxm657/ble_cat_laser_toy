@@ -380,17 +380,8 @@ _attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4
     {-6000, 500},
 };
 
-#define RADAR_BOUNDARY_FLASH_MAGIC       0x52424452u  // "RBDR"
 #define RADAR_INSTALL_HEIGHT_FLASH_MAGIC 0x52444948u  // "RDIH"
 #define RADAR_PLAY_RECORD_FLASH_MAGIC    0x5244504Du  // "RDPM" 含运动统计，与旧 RDPL 布局不兼容
-
-typedef struct
-{
-    u32 magic;
-    s32 x_mm[4];
-    s32 y_mm[4];
-    u32 crc;
-} radar_boundary_flash_t;
 
 typedef struct
 {
@@ -982,39 +973,9 @@ void app_radar_clear_complete_play_records(void)
     radar_play_records_save_to_flash();
 }
 
-u8 app_radar_is_boundary_set(void)
-{
-    return g_radar_boundary_configured;
-}
-
 u8 app_radar_is_install_height_set(void)
 {
     return g_radar_install_height_set;
-}
-
-int radar_boundary_load_from_flash(s32 x_mm[4], s32 y_mm[4])
-{
-    radar_boundary_flash_t stored;
-    flash_read_page(RADAR_BOUNDARY_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
-
-    if (stored.magic != RADAR_BOUNDARY_FLASH_MAGIC)
-    {
-        return 0;
-    }
-
-    u32 crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
-    if (crc != stored.crc)
-    {
-        return 0;
-    }
-
-    for (int i = 0; i < 4; i++)
-    {
-        x_mm[i] = stored.x_mm[i];
-        y_mm[i] = stored.y_mm[i];
-    }
-
-    return 1;
 }
 
 static int radar_install_height_load_from_flash(void)
@@ -1042,11 +1003,10 @@ static int radar_install_height_load_from_flash(void)
     return 1;
 }
 
-void app_radar_clear_install_height_and_boundary_flash(void)
+void app_radar_clear_install_height_and_record_flash(void)
 {
-    g_radar_install_height_mm   = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
-    g_radar_install_height_set  = 0;
-    g_radar_boundary_configured = 0;
+    g_radar_install_height_mm  = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
+    g_radar_install_height_set = 0;
 
     for (int i = 0; i < 4; i++)
     {
@@ -1056,35 +1016,9 @@ void app_radar_clear_install_height_and_boundary_flash(void)
 
     radar_play_records_reset_ram();
 
-    flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
+    // flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
     flash_erase_sector(RADAR_INSTALL_HEIGHT_FLASH_ADDR);
     flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
-}
-
-int app_radar_save_boundary_quad_to_flash(const s32 x_mm[4], const s32 y_mm[4])
-{
-    if (!x_mm || !y_mm)
-    {
-        return 0;
-    }
-
-    radar_boundary_flash_t stored;
-    stored.magic = RADAR_BOUNDARY_FLASH_MAGIC;
-    for (int i = 0; i < 4; i++)
-    {
-        stored.x_mm[i] = x_mm[i];
-        stored.y_mm[i] = y_mm[i];
-    }
-    stored.crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
-
-    flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
-    flash_write_page(RADAR_BOUNDARY_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
-    LOG_D("radar_boundary_save_to_flash success");
-    for (int i = 0; i < 4; i++)
-    {
-        LOG_D("x_mm[%d]: %d, y_mm[%d]: %d", i, x_mm[i], i, y_mm[i]);
-    }
-    return 1;
 }
 
 void app_radar_init(void)
@@ -1092,22 +1026,7 @@ void app_radar_init(void)
     s32 x_mm[4];
     s32 y_mm[4];
 
-    if (radar_boundary_load_from_flash(x_mm, y_mm))
-    {
-        LOG_D("radar_boundary_load_from_flash success");
-        app_radar_set_boundary_quad(x_mm, y_mm);
-        for (int i = 0; i < 4; i++)
-        {
-            LOG_D("x_mm[%d]: %d, y_mm[%d]: %d", i, x_mm[i], i, y_mm[i]);
-        }
-        g_radar_boundary_configured = 1;
-    }
-    else
-    {
-        LOG_D("radar_boundary_load_from_flash failed");
-        app_radar_reset_boundary_default();
-        g_radar_boundary_configured = 0;
-    }
+    app_radar_reset_boundary_default();
 
     if (radar_install_height_load_from_flash())
     {
@@ -1334,29 +1253,12 @@ void app_radar_get_boundary_quad_by_index(u8 index, s32 *x_mm, s32 *y_mm)
     *y_mm = g_radar_boundary_quad[index].y_mm;
 }
 
-void app_radar_set_boundary_quad(s32 x_mm[4], s32 y_mm[4])
-{
-    if (!x_mm || !y_mm)
-    {
-        return;
-    }
-
-    for (int i = 0; i < 4; i++)
-    {
-        g_radar_boundary_quad[i].x_mm = x_mm[i];
-        g_radar_boundary_quad[i].y_mm = y_mm[i];
-    }
-
-    g_radar_boundary_configured = 1;
-}
-
 void app_radar_reset_boundary_default(void)
 {
     for (int i = 0; i < 4; i++)
     {
         g_radar_boundary_quad[i] = g_radar_boundary_quad_default[i];
     }
-    g_radar_boundary_configured = 0;
 }
 
 static s16 DecodeRadarSigned15(u8 low, u8 high)
@@ -3125,6 +3027,12 @@ void app_hunt_prey_random_move(void)
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt_deg10);
 #endif
+}
+
+void app_hunt_prey_random_reset(void)
+{
+    g_prey_pan_deg10  = 0;
+    g_prey_tilt_deg10 = -200;  // -45°
 }
 
 u8 app_hunt_is_hunting(void)

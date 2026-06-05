@@ -36,14 +36,9 @@ void app_radar_clear_complete_play_records(void);
 void app_radar_set_install_height_mm(s32 height_mm);
 void app_radar_get_install_height_mm(s32 *height_mm);
 u8   app_radar_is_install_height_set(void);
-u8   app_radar_is_boundary_set(void);
-void app_radar_set_boundary_quad(s32 x_mm[4], s32 y_mm[4]);
 void app_radar_get_boundary_quad_by_index(u8 index, s32 *x_mm, s32 *y_mm);
 void app_radar_reset_boundary_default(void);
-int  app_radar_save_boundary_quad_to_flash(const s32 x_mm[4], const s32 y_mm[4]);
 
-u8 app_radar_is_boundary_set(void);
-u8 app_radar_is_install_height_set(void);
 u8 RadarSessionIsResting(void);
 u8 app_radar_is_working_mode(void);
 
@@ -51,8 +46,6 @@ u8 app_radar_is_working_mode(void);
 float app_radar_mysqrt_3(float x);
 
 void app_radar_point_to_pan_tilt(s32 x_mm, s32 y_mm, s32 height_mm, s16 *pan_deg10, s16 *tilt_deg10);
-int  radar_boundary_load_from_flash(s32 x_mm[4], s32 y_mm[4]);
-void app_radar_clear_install_height_and_boundary_flash(void);
 
 /** 雷达跟踪时云台步进间隔 (µs)；无步进电机编译时为空操作 */
 void app_radar_set_track_gimbal_interval_us(u32 interval_us);
@@ -86,6 +79,8 @@ void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10);
 
 /** 随机移动猎物点（在水平±60° 俯仰15°~30°之间随机） */
 void app_hunt_prey_random_move(void);
+void app_hunt_prey_random_reset(void);
+void app_radar_clear_install_height_and_record_flash(void);
 
 /** 当前状态：是否处于狩猎活跃状态（狩猎中） */
 u8 app_hunt_is_hunting(void);
