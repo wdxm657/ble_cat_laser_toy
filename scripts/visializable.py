@@ -722,6 +722,11 @@ class RadarVisualizer:
                 return f"[RSP][0x65] HUNT_SET_COUNT status={st} applied={pld[1]}"
             if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_SLEEP_DURATION and len(pld) >= 2:
                 return f"[RSP][0x66] HUNT_SET_SLEEP_DURATION status={st} applied={pld[1]}min"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SETTINGS_GET and len(pld) >= 5:
+                dur_s = pld[1] | (pld[2] << 8)
+                cnt = pld[3]
+                slp = pld[4]
+                return f"[RSP][0x67] HUNT_SETTINGS_GET status={st} duration={dur_s}s count={cnt} sleep={slp}min"
         if (
             fr.msg_type == CTRL_MSG_TYPE_EVENT
             and fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL
@@ -1079,6 +1084,16 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         b_hunt_sleep = QtWidgets.QPushButton("设置(0x66)")
         b_hunt_sleep.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_sleep_duration(self.hunt_sleep_spin.value())))
         g.addWidget(b_hunt_sleep, row-1, 2)
+
+        # 获取当前设置
+        b_hunt_get = QtWidgets.QPushButton("获取当前设置(0x67)")
+        b_hunt_get.setStyleSheet(
+            "QPushButton { background: #585b70; font-weight: bold; }"
+            "QPushButton:hover { background: #6c7086; }"
+        )
+        b_hunt_get.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_get()))
+        b_hunt_get.setToolTip("获取当前狩猎时长、次数、休眠时长")
+        g.addWidget(b_hunt_get, row-1, 3)
 
         # 逗宠记录
         g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), _nrow(), 0, 1, 4)

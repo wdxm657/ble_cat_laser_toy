@@ -486,16 +486,16 @@ byte7 : 0x00
 
 帧头（6 字节）同 §1，以下为 **payload 内偏移**（从首字节算起，**小端 LE**）：
 
-| payload 偏移 | 长度 | 类型 | 说明 |
-|----------------|------|------|------|
-| 0 | 1 | u8 | `status` |
-| 1 | 1 | u8 | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致） |
-| 2 | 1 | u8 | `index`：当前条在批次中的序号 `0 .. total-1` |
-| 3 | 4 | u32 LE | `start_sec`：逗宠段开始 Unix 秒 |
-| 7 | 2 | u16 LE | `duration_sec`：**逗宠持续秒数**。`duration_sec = end_sec − start_sec`（u16，饱和 65535）。APP 恢复 `end_sec = start_sec + duration_sec`。替代原 4 字节 `end_sec` 以符合 20 字节单帧限制 |
-| 9 | 2 | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535** |
-| 11 | 1 | u8 | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255** |
-| 12 | 1 | u8 | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)` |
+| payload 偏移 | 长度 | 类型   | 说明                                                                                                                                                                                     |
+| ------------ | ---- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0            | 1    | u8     | `status`                                                                                                                                                                                 |
+| 1            | 1    | u8     | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致）                                                                                                                             |
+| 2            | 1    | u8     | `index`：当前条在批次中的序号 `0 .. total-1`                                                                                                                                             |
+| 3            | 4    | u32 LE | `start_sec`：逗宠段开始 Unix 秒                                                                                                                                                          |
+| 7            | 2    | u16 LE | `duration_sec`：**逗宠持续秒数**。`duration_sec = end_sec − start_sec`（u16，饱和 65535）。APP 恢复 `end_sec = start_sec + duration_sec`。替代原 4 字节 `end_sec` 以符合 20 字节单帧限制 |
+| 9            | 2    | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535**                                  |
+| 11           | 1    | u8     | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255**                            |
+| 12           | 1    | u8     | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)`                                                            |
 
 **运动统计（与固件 `RadarMotionCachePush` / `radar_play_on_cache_displacement_ms` 对齐）**
 
@@ -766,7 +766,7 @@ UUID:0000180F-0000-1000-8000-00805F9B34FB
 Battery Level
 UUID:00002A19-0000-1000-8000-00805F9B34FB
 
-#### 4.15 狩猎游戏设置（CMD = 0x60 ~ 0x66）
+#### 4.15 狩猎游戏设置（CMD = 0x60 ~ 0x67）
 
 用途：APP 配置狩猎游戏的各项参数，包括猎物点、狩猎时长、狩猎次数、休眠时长等。
 
@@ -989,6 +989,45 @@ byte4 : 0x02           // payloadLen = 2
 byte5 : 0x00
 byte6 : status
 byte7 : applied        // 实际生效值（u8）
+```
+
+---
+
+##### 4.15.8 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x67）
+
+获取当前配置的单次狩猎时长、狩猎次数和休眠时长。无需 payload。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x67           // cmdId = HUNT_SETTINGS_GET
+byte3 : seq
+byte4 : 0x00           // payloadLen = 0
+byte5 : 0x00
+```
+
+**示例**：
+
+```
+01 01 67 01 00 00
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x67           // cmdId = HUNT_SETTINGS_GET
+byte3 : seq
+byte4 : 0x05           // payloadLen = 5
+byte5 : 0x00
+byte6 : status
+byte7 : duration_L     // 单次狩猎时长(秒) u16 LE
+byte8 : duration_H
+byte9 : count          // 狩猎次数 u8
+byte10: sleep_min      // 休眠时长(分钟) u8
 ```
 
 ---

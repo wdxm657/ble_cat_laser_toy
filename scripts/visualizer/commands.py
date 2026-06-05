@@ -97,3 +97,8 @@ def cmd_hunt_set_count(count: int) -> tuple[int, bytes, str]:
 def cmd_hunt_set_sleep_duration(minutes: int) -> tuple[int, bytes, str]:
     """设置休眠时长 (0x66), u8 分钟"""
     return p.CTRL_CMD_HUNT_SET_SLEEP_DURATION, bytes([minutes & 0xFF]), f"HUNT_SET_SLEEP_DURATION min={minutes}"
+
+
+def cmd_hunt_settings_get() -> tuple[int, bytes, str]:
+    """获取当前狩猎设置 (0x67); 无 payload"""
+    return p.CTRL_CMD_HUNT_SETTINGS_GET, b"", "HUNT_SETTINGS_GET"

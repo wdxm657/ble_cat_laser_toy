@@ -1896,6 +1896,26 @@ static int app_ctrl_handle_hunt_set_sleep_duration(u8 seq, u8 *payload, u16 len)
 #endif
 }
 
+// ----------------------- handler: hunt settings get -----------------------
+static int app_ctrl_handle_hunt_settings_get(u8 seq, u8 *payload, u16 len)
+{
+    (void)payload;
+    (void)len;
+#if (UI_RADAR_ENABLE)
+    u16 dur_s = app_hunt_get_duration_s();
+    u8  count = app_hunt_get_count();
+    u8  sleep = app_hunt_get_sleep_duration_min();
+    u8  rsp[5] = {CTRL_STATUS_OK, (u8)(dur_s & 0xFF), (u8)((dur_s >> 8) & 0xFF), count, sleep};
+    BLE_LOG_D("hunt settings get: dur=%d count=%d sleep=%d", dur_s, count, sleep);
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_GET, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_GET, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
 // ----------------------- handler: device reboot -----------------------
 static int app_ctrl_handle_device_reboot(u8 seq, u8 *payload, u16 len)
 {
@@ -2133,6 +2153,11 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_HUNT_SET_SLEEP_DURATION:
         BLE_LOG_D("CTRL_CMD_HUNT_SET_SLEEP_DURATION");
         app_ctrl_handle_hunt_set_sleep_duration(seq, payload, payLen);
+        break;
+
+    case CTRL_CMD_HUNT_SETTINGS_GET:
+        BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_GET");
+        app_ctrl_handle_hunt_settings_get(seq, payload, payLen);
         break;
 
     case CTRL_CMD_DEVICE_REBOOT:
