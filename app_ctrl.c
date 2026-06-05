@@ -1665,6 +1665,253 @@ static int app_ctrl_handle_text_chunk(u8 seq, u8 *payload, u16 len)
     return 0;
 }
 
+// ----------------------- handler: radar reset flash config -----------------------
+static int app_ctrl_handle_radar_reset_flash_config(u8 seq, u8 *payload, u16 len)
+{
+    (void)payload;
+    (void)len;
+    app_radar_clear_install_height_and_boundary_flash();
+    u8 rsp[1] = {CTRL_STATUS_OK};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
+    return 0;
+}
+
+// ----------------------- handler: radar track speed -----------------------
+static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 2)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    u16 us = payload[0] | (payload[1] << 8);
+    app_radar_set_track_gimbal_interval_us((u32)us);
+    u8 rsp[3] = {CTRL_STATUS_OK, payload[0], payload[1]};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: radar debug get boundary -----------------------
+static int app_ctrl_handle_radar_debug_get_boundary(u8 seq, u8 *payload, u16 len)
+{
+    (void)payload;
+    (void)len;
+#if (UI_RADAR_ENABLE)
+    app_ctrl_radar_dbg_send_boundary_quad_all();
+    return 0;
+#else
+    u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt settings enter -----------------------
+static int app_ctrl_handle_hunt_settings_enter(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len != 0)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    // 进入狩猎设置模式
+    app_ctrl_radar_boundary_enter();  // 复用边界设置模式标志
+    // 光斑位于当前猎物点
+    s16 pan = 0, tilt = 0;
+    app_hunt_get_prey_point_deg10(&pan, &tilt);
+    StepMotor_GimbalSetSpeedUs(1200);
+    StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan);
+    StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt);
+    u8 rsp[1] = {CTRL_STATUS_OK};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt settings exit -----------------------
+static int app_ctrl_handle_hunt_settings_exit(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 1)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    u8 apply = payload[0];
+    if (apply)
+    {
+        BLE_LOG_D("hunt settings applied");
+    }
+    // 清除设置模式
+    g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
+    u8 rsp[1]             = {CTRL_STATUS_OK};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt prey random -----------------------
+static int app_ctrl_handle_hunt_prey_random(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 1)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    u8 start = payload[0];
+    if (start)
+    {
+        app_hunt_prey_random_move();
+    }
+    // 停止随机移动时不需额外动作; 当前停止后光斑停在当前位置
+    u8 rsp[2] = {CTRL_STATUS_OK, start};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt prey set -----------------------
+static int app_ctrl_handle_hunt_prey_set(u8 seq, u8 *payload, u16 len)
+{
+    (void)payload;
+    (void)len;
+#if (UI_RADAR_ENABLE) && (UI_STEP_MOTOR_ENABLE)
+    // 当前云台位置设为猎物点
+    s16 pan  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
+    s16 tilt = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
+    app_hunt_set_prey_point_deg10(pan, tilt);
+    BLE_LOG_D("prey point set: pan=%d, tilt=%d", pan, tilt);
+    u8 rsp[1] = {CTRL_STATUS_OK};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt set duration -----------------------
+static int app_ctrl_handle_hunt_set_duration(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 2)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    u16 dur_s = (u16)(payload[0] | (payload[1] << 8));
+    app_hunt_set_duration_s(dur_s);
+    BLE_LOG_D("hunt duration set: %d s", app_hunt_get_duration_s());
+    u8 rsp[3] = {CTRL_STATUS_OK, (u8)(app_hunt_get_duration_s() & 0xFF), (u8)((app_hunt_get_duration_s() >> 8) & 0xFF)};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt set count -----------------------
+static int app_ctrl_handle_hunt_set_count(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 1)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    app_hunt_set_count(payload[0]);
+    BLE_LOG_D("hunt count set: %d", app_hunt_get_count());
+    u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_count()};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: hunt set sleep duration -----------------------
+static int app_ctrl_handle_hunt_set_sleep_duration(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 1)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    app_hunt_set_sleep_duration_min(payload[0]);
+    BLE_LOG_D("sleep duration set: %d min", app_hunt_get_sleep_duration_min());
+    u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_sleep_duration_min()};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: device reboot -----------------------
+static int app_ctrl_handle_device_reboot(u8 seq, u8 *payload, u16 len)
+{
+    if (len != 0)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    u8 rsp[1] = {CTRL_STATUS_OK};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
+    s_ctrl_reboot_pending = 1;
+    s_ctrl_reboot_tick    = clock_time();
+    return 0;
+}
+
 // ----------------------- public APIs -----------------------
 void app_ctrl_init(void)
 {
@@ -1839,48 +2086,15 @@ void app_ctrl_onRx(u8 *data, u16 len)
         break;
     case CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
         BLE_LOG_D("CTRL_CMD_RADAR_RESET_FLASH_CONFIG");
-        app_radar_clear_install_height_and_boundary_flash();
-        {
-            u8 rsp[1] = {CTRL_STATUS_OK};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
-        }
+        app_ctrl_handle_radar_reset_flash_config(seq, payload, payLen);
         break;
     case CTRL_CMD_RADAR_TRACK_SPEED:
-#if (UI_RADAR_ENABLE)
         BLE_LOG_D("CTRL_CMD_RADAR_TRACK_SPEED");
-        if (payLen < 2)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            u16 us = payload[0] | (payload[1] << 8);
-            app_radar_set_track_gimbal_interval_us((u32)us);
-            u8 rsp[3] = {CTRL_STATUS_OK, payload[0], payload[1]};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
-        }
-#else
-    {
-        u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_TRACK_SPEED, seq, rsp, sizeof(rsp));
-    }
-#endif
+        app_ctrl_handle_radar_track_speed(seq, payload, payLen);
         break;
     case CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY:
-#if (UI_RADAR_ENABLE)
         BLE_LOG_D("CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY");
-        app_ctrl_radar_dbg_send_boundary_quad_all();
-        // {
-        //     u8 rsp[1] = {CTRL_STATUS_OK};
-        //     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
-        // }
-#else
-    {
-        u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, seq, rsp, sizeof(rsp));
-    }
-#endif
+        app_ctrl_handle_radar_debug_get_boundary(seq, payload, payLen);
         break;
     case CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
         BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_HEIGHT");
@@ -1888,193 +2102,42 @@ void app_ctrl_onRx(u8 *data, u16 len)
         break;
     case CTRL_CMD_HUNT_SETTINGS_ENTER:
         BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_ENTER");
-#if (UI_RADAR_ENABLE)
-        if (payLen != 0)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            // 进入狩猎设置模式
-            app_ctrl_radar_boundary_enter();  // 复用边界设置模式标志
-            // 光斑位于当前猎物点
-            s16 pan = 0, tilt = 0;
-            app_hunt_get_prey_point_deg10(&pan, &tilt);
-            StepMotor_GimbalSetSpeedUs(1200);
-            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan);
-            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt);
-            u8 rsp[1] = {CTRL_STATUS_OK};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_ENTER, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_settings_enter(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_SETTINGS_EXIT:
         BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_EXIT");
-#if (UI_RADAR_ENABLE)
-        if (payLen < 1)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            u8 apply = payload[0];
-            if (apply)
-            {
-                // 应用全部设置（当前 prey point 已经在全局变量中）
-                BLE_LOG_D("hunt settings applied");
-            }
-            // 清除设置模式
-            g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
-            u8 rsp[1]             = {CTRL_STATUS_OK};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_settings_exit(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_PREY_RANDOM:
         BLE_LOG_D("CTRL_CMD_HUNT_PREY_RANDOM");
-#if (UI_RADAR_ENABLE)
-        if (payLen < 1)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            u8 start = payload[0];
-            if (start)
-            {
-                app_hunt_prey_random_move();
-            }
-            // 停止随机移动时不需额外动作; 当前停止后光斑停在当前位置
-            u8 rsp[2] = {CTRL_STATUS_OK, start};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_prey_random(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_PREY_SET:
         BLE_LOG_D("CTRL_CMD_HUNT_PREY_SET");
-#if (UI_RADAR_ENABLE) && (UI_STEP_MOTOR_ENABLE)
-        {
-            // 当前云台位置设为猎物点
-            s16 pan  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
-            s16 tilt = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
-            app_hunt_set_prey_point_deg10(pan, tilt);
-            BLE_LOG_D("prey point set: pan=%d, tilt=%d", pan, tilt);
-            u8 rsp[1] = {CTRL_STATUS_OK};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_prey_set(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_SET_DURATION:
         BLE_LOG_D("CTRL_CMD_HUNT_SET_DURATION");
-#if (UI_RADAR_ENABLE)
-        if (payLen < 2)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            u16 dur_s = (u16)(payload[0] | (payload[1] << 8));
-            app_hunt_set_duration_s(dur_s);
-            BLE_LOG_D("hunt duration set: %d s", app_hunt_get_duration_s());
-            u8 rsp[3] = {CTRL_STATUS_OK, (u8)(app_hunt_get_duration_s() & 0xFF), (u8)((app_hunt_get_duration_s() >> 8) & 0xFF)};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_set_duration(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_SET_COUNT:
         BLE_LOG_D("CTRL_CMD_HUNT_SET_COUNT");
-#if (UI_RADAR_ENABLE)
-        if (payLen < 1)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            app_hunt_set_count(payload[0]);
-            BLE_LOG_D("hunt count set: %d", app_hunt_get_count());
-            u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_count()};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_set_count(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_SET_SLEEP_DURATION:
         BLE_LOG_D("CTRL_CMD_HUNT_SET_SLEEP_DURATION");
-#if (UI_RADAR_ENABLE)
-        if (payLen < 1)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            app_hunt_set_sleep_duration_min(payload[0]);
-            BLE_LOG_D("sleep duration set: %d min", app_hunt_get_sleep_duration_min());
-            u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_sleep_duration_min()};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
-        }
-#else
-        {
-            u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
-        }
-#endif
+        app_ctrl_handle_hunt_set_sleep_duration(seq, payload, payLen);
         break;
 
     case CTRL_CMD_DEVICE_REBOOT:
         BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");
-        if (payLen != 0)
-        {
-            u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
-        }
-        else
-        {
-            u8 rsp[1] = {CTRL_STATUS_OK};
-            app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
-            s_ctrl_reboot_pending = 1;
-            s_ctrl_reboot_tick    = clock_time();
-        }
+        app_ctrl_handle_device_reboot(seq, payload, payLen);
         break;
     default: {
         u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};

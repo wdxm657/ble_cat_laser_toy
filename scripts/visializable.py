@@ -894,6 +894,312 @@ QLabel { color: #bac2de; }
 """
 
 
+class CtrlServiceWindow(QtWidgets.QMainWindow):
+    """控制服务面板 - 独立窗口，包含电源/时间/电机/狩猎等控制命令"""
+
+    def __init__(self, vis: RadarVisualizer, parent=None):
+        super().__init__(parent)
+        self.vis = vis
+        self.setWindowTitle("控制服务面板")
+        self.setMinimumWidth(500)
+        self.setStyleSheet(NIGHT_STYLESHEET)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root = QtWidgets.QVBoxLayout(central)
+        root.setSpacing(8)
+
+        # Build the control panel grid
+        self._build_panel(root)
+
+        # Log text area
+        self.log_text = QtWidgets.QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(100)
+        self.log_text.setPlaceholderText("操作日志")
+        self.log_text.document().setDefaultFont(
+            QtGui.QFont("Consolas", 10)
+            if sys.platform == "win32"
+            else QtGui.QFont("monospace", 10)
+        )
+        root.addWidget(self.log_text, 1)
+
+        # Auto power toggle timer
+        self._auto_power_timer = QtCore.QTimer(self)
+        self._auto_power_interval = 35
+        self._auto_power_timer.setInterval(self._auto_power_interval * 1000)
+        self._auto_power_timer.timeout.connect(self._on_auto_power_tick)
+        self._auto_power_on_phase = True
+
+        # Timer for periodic UI updates (play record info + disconnect check)
+        self._svc_update_timer = QtCore.QTimer(self)
+        self._svc_update_timer.setInterval(200)
+        self._svc_update_timer.timeout.connect(self._on_svc_update_tick)
+        self._svc_update_timer.start()
+
+    def log(self, msg: str) -> None:
+        self.log_text.appendPlainText(msg)
+
+    def _send(self, cmd_id: int, payload: bytes, desc: str) -> None:
+        ok = self.vis.send_cmd(cmd_id, payload, desc)
+        if not ok:
+            self.log("下发失败（非 BLE 或未连接）")
+
+    def _build_panel(self, root: QtWidgets.QVBoxLayout) -> None:
+        g = QtWidgets.QGridLayout()
+        g.setHorizontalSpacing(6)
+        g.setVerticalSpacing(6)
+        root.addLayout(g)
+
+        # Power
+        def _power_on():
+            self._stop_auto_power_if_running()
+            self._send(*vc.cmd_power_ctrl(1))
+        def _power_off():
+            self._stop_auto_power_if_running()
+            self._send(*vc.cmd_power_ctrl(0))
+        b_power_on = QtWidgets.QPushButton("PowerOn")
+        b_power_on.clicked.connect(_power_on)
+        b_power_off = QtWidgets.QPushButton("PowerOff")
+        b_power_off.clicked.connect(_power_off)
+        self._auto_power_btn = QtWidgets.QPushButton("AutoToggle(30s)")
+        self._auto_power_btn.setCheckable(True)
+        self._auto_power_btn.clicked.connect(self._on_auto_power_toggle)
+        g.addWidget(QtWidgets.QLabel("电源 (0x12)"), 0, 0)
+        g.addWidget(b_power_on, 0, 1)
+        g.addWidget(b_power_off, 0, 2)
+        g.addWidget(self._auto_power_btn, 0, 3)
+
+        # Time set
+        g.addWidget(QtWidgets.QLabel("时间同步 (0x32)"), 1, 0)
+        self.time_use_local_tz = QtWidgets.QCheckBox("本机时区")
+        self.time_use_local_tz.setChecked(True)
+        g.addWidget(self.time_use_local_tz, 1, 1)
+        self.time_tz = QtWidgets.QSpinBox()
+        self.time_tz.setRange(-128, 127)
+        self.time_tz.setValue(0)
+        self.time_tz.setToolTip("tz_q15（s8）。通常为时区偏移(UTC)的 15 分钟单位。")
+        g.addWidget(self.time_tz, 1, 2)
+        self.time_btn = QtWidgets.QPushButton("同步PC时间")
+        self.time_btn.clicked.connect(self._on_time_sync)
+        g.addWidget(self.time_btn, 1, 3)
+
+        # Direction control: press move, release stop
+        g.addWidget(QtWidgets.QLabel("电机方向 (0x22, 按下动/松开停)"), 2, 0, 1, 4)
+        self.dir_speed = QtWidgets.QSpinBox()
+        self.dir_speed.setRange(0, 3)
+        self.dir_speed.setValue(2)
+        g.addWidget(QtWidgets.QLabel("speed"), 3, 0)
+        g.addWidget(self.dir_speed, 3, 1)
+        self.btn_up = QtWidgets.QPushButton("↑")
+        self.btn_down = QtWidgets.QPushButton("↓")
+        self.btn_left = QtWidgets.QPushButton("←")
+        self.btn_right = QtWidgets.QPushButton("→")
+        g.addWidget(self.btn_up, 4, 1)
+        g.addWidget(self.btn_left, 5, 0)
+        g.addWidget(self.btn_down, 5, 1)
+        g.addWidget(self.btn_right, 5, 2)
+        self._bind_press_release(self.btn_up, 0)
+        self._bind_press_release(self.btn_down, 1)
+        self._bind_press_release(self.btn_left, 2)
+        self._bind_press_release(self.btn_right, 3)
+
+        # 设置高度
+        g.addWidget(QtWidgets.QLabel("设置高度 (0x50)"), 6, 0, 1, 4)
+        g.addWidget(QtWidgets.QLabel("高度(mm):"), 7, 0)
+        self.new_h_mm = QtWidgets.QSpinBox()
+        self.new_h_mm.setRange(500, 10000)
+        self.new_h_mm.setValue(2500)
+        g.addWidget(self.new_h_mm, 7, 1)
+        b_config_height = QtWidgets.QPushButton("设置高度")
+        b_config_height.clicked.connect(self._on_new_config_step1)
+        g.addWidget(b_config_height, 7, 2)
+
+        # ===== 狩猎游戏设置 (0x60-0x66) =====
+        g.addWidget(QtWidgets.QLabel("狩猎设置 (0x60~0x66)"), 8, 0, 1, 4)
+        row = 9
+
+        def _nrow(inc=1):
+            nonlocal row
+            r = row
+            row += inc
+            return r
+
+        # 进入/退出设置
+        b_hunt_enter = QtWidgets.QPushButton("进入设置(0x60)")
+        b_hunt_enter.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_enter()))
+        b_hunt_exit_apply = QtWidgets.QPushButton("退出并应用(0x61)")
+        b_hunt_exit_apply.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_exit(True)))
+        b_hunt_exit_discard = QtWidgets.QPushButton("退出丢弃(0x61)")
+        b_hunt_exit_discard.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_exit(False)))
+        g.addWidget(QtWidgets.QLabel("设置模式"), _nrow(), 0)
+        g.addWidget(b_hunt_enter, row-1, 1)
+        g.addWidget(b_hunt_exit_apply, row-1, 2)
+        g.addWidget(b_hunt_exit_discard, row-1, 3)
+
+        # 猎物点操作
+        b_prey_random_start = QtWidgets.QPushButton("开始随机(0x62)")
+        b_prey_random_start.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(True)))
+        b_prey_random_stop = QtWidgets.QPushButton("停止随机(0x62)")
+        b_prey_random_stop.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(False)))
+        b_prey_set = QtWidgets.QPushButton("设为猎物点(0x63)")
+        b_prey_set.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_set()))
+        g.addWidget(QtWidgets.QLabel("猎物点"), _nrow(), 0)
+        g.addWidget(b_prey_random_start, row-1, 1)
+        g.addWidget(b_prey_random_stop, row-1, 2)
+        g.addWidget(b_prey_set, row-1, 3)
+
+        # 狩猎时长
+        g.addWidget(QtWidgets.QLabel("狩猎时长(秒)"), _nrow(), 0)
+        self.hunt_dur_spin = QtWidgets.QSpinBox()
+        self.hunt_dur_spin.setRange(10, 600)
+        self.hunt_dur_spin.setValue(60)
+        g.addWidget(self.hunt_dur_spin, row-1, 1)
+        b_hunt_dur = QtWidgets.QPushButton("设置(0x64)")
+        b_hunt_dur.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_duration(self.hunt_dur_spin.value())))
+        g.addWidget(b_hunt_dur, row-1, 2)
+
+        # 狩猎次数
+        g.addWidget(QtWidgets.QLabel("狩猎次数"), _nrow(), 0)
+        self.hunt_cnt_spin = QtWidgets.QSpinBox()
+        self.hunt_cnt_spin.setRange(1, 60)
+        self.hunt_cnt_spin.setValue(3)
+        g.addWidget(self.hunt_cnt_spin, row-1, 1)
+        b_hunt_cnt = QtWidgets.QPushButton("设置(0x65)")
+        b_hunt_cnt.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_count(self.hunt_cnt_spin.value())))
+        g.addWidget(b_hunt_cnt, row-1, 2)
+
+        # 休眠时长
+        g.addWidget(QtWidgets.QLabel("休眠时长(分)"), _nrow(), 0)
+        self.hunt_sleep_spin = QtWidgets.QSpinBox()
+        self.hunt_sleep_spin.setRange(1, 20)
+        self.hunt_sleep_spin.setValue(3)
+        g.addWidget(self.hunt_sleep_spin, row-1, 1)
+        b_hunt_sleep = QtWidgets.QPushButton("设置(0x66)")
+        b_hunt_sleep.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_sleep_duration(self.hunt_sleep_spin.value())))
+        g.addWidget(b_hunt_sleep, row-1, 2)
+
+        # 逗宠记录
+        g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), _nrow(), 0, 1, 4)
+        self.play_record_info = QtWidgets.QLabel("尚未收到记录")
+        self.play_record_info.setStyleSheet("color: #a6e3a1; font-size: 11px;")
+        g.addWidget(self.play_record_info, row, 0, 1, 4)
+        _nrow()
+
+        b_play_record_ack = QtWidgets.QPushButton("确认收到 (ACK)")
+        b_play_record_ack.setStyleSheet(
+            "QPushButton { background: #45475a; font-weight: bold; color: #a6e3a1; }"
+            "QPushButton:hover { background: #585b70; }"
+        )
+        b_play_record_ack.clicked.connect(self._on_play_record_ack)
+        b_play_record_ack.setToolTip(
+            "告知设备已收到当前逗宠记录，设备将在 1 秒后发送下一条（如有）"
+        )
+        g.addWidget(b_play_record_ack, row, 0, 1, 4)
+        _nrow()
+
+        # 复位和重启
+        g.addWidget(QtWidgets.QLabel("系统控制"), _nrow(), 0, 1, 4)
+        b_reset = QtWidgets.QPushButton("复位配置(0x56)")
+        b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
+        g.addWidget(b_reset, row, 0, 1, 2)
+        _nrow()
+
+        b_reboot = QtWidgets.QPushButton("重启MCU(0x5A)")
+        b_reboot.clicked.connect(lambda: self._send(*vc.cmd_device_reboot()))
+        b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
+        g.addWidget(b_reboot, row-1, 2, 1, 2)
+
+        if self.vis._transport != "ble":
+            self.time_use_local_tz.setEnabled(False)
+            self.time_tz.setEnabled(False)
+            self.time_btn.setEnabled(False)
+            self.time_btn.setToolTip("仅 BLE 模式可下发")
+
+    def _on_time_sync(self) -> None:
+        tz_q15 = self.time_tz.value()
+        if self.time_use_local_tz.isChecked():
+            try:
+                now = datetime.datetime.now(datetime.timezone.utc).astimezone()
+                off = now.utcoffset()
+                off_sec = int(off.total_seconds()) if off else 0
+                tz_q15 = int(round(off_sec / 900.0))
+                tz_q15 = max(-128, min(127, tz_q15))
+                self.time_tz.setValue(tz_q15)
+            except Exception:
+                pass
+        epoch_sec = int(time.time())
+        ok = self.vis.send_cmd(*vc.cmd_time_set(epoch_sec, tz_q15))
+        if not ok:
+            self.log("下发失败（非 BLE 或未连接）")
+
+    def _on_new_config_step1(self) -> None:
+        height_mm = self.new_h_mm.value()
+        ok = self.vis.send_cmd(*vc.cmd_radar_config_set_height(height_mm))
+        if not ok:
+            self.log("下发失败（非 BLE 或未连接）")
+        else:
+            self.log(f"已发送：设置高度 {height_mm}mm (0x50)")
+
+    def _on_play_record_ack(self) -> None:
+        ok = self.vis.send_cmd(*vc.cmd_play_record_ack())
+        if not ok:
+            self.log("ACK 下发失败（非 BLE 或未连接）")
+        else:
+            self.log("已发送逗宠记录 ACK (0x33)")
+
+    def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
+        btn.pressed.connect(
+            lambda d=direction: self._send(*vc.cmd_motor_dir_start(d, self.dir_speed.value()))
+        )
+        btn.released.connect(
+            lambda d=direction: self._send(*vc.cmd_motor_dir_stop(d, self.dir_speed.value()))
+        )
+
+    def _stop_auto_power_if_running(self) -> None:
+        if self._auto_power_timer.isActive():
+            self._auto_power_timer.stop()
+            self._auto_power_btn.setChecked(False)
+            self.log("手动操作中断自动开关循环")
+
+    def _on_auto_power_toggle(self) -> None:
+        btn = self._auto_power_btn
+        if btn.isChecked():
+            self._auto_power_on_phase = True
+            self._auto_power_timer.start()
+            self._send(*vc.cmd_power_ctrl(1))
+            self.log(f"开始循环：{self._auto_power_interval}s开→{self._auto_power_interval}s关")
+        else:
+            self._auto_power_timer.stop()
+            self.log("自动开关已停止")
+
+    def _on_auto_power_tick(self) -> None:
+        if self._auto_power_on_phase:
+            self._send(*vc.cmd_power_ctrl(0))
+            self._auto_power_on_phase = False
+        else:
+            self._send(*vc.cmd_power_ctrl(1))
+            self._auto_power_on_phase = True
+
+    def _on_svc_update_tick(self) -> None:
+        # Update play record info from vis state
+        with self.vis._lock:
+            rec_info = self.vis._play_record_info
+        cur_text = self.play_record_info.text()
+        if rec_info and rec_info != cur_text:
+            self.play_record_info.setText(rec_info)
+
+        # Check BLE disconnect for auto power stop
+        with self.vis._lock:
+            need_stop = self.vis._ble_disconnect_need_stop_auto_power
+            if need_stop:
+                self.vis._ble_disconnect_need_stop_auto_power = False
+        if need_stop:
+            self._stop_auto_power_if_running()
+            self.log("断开连接，自动开关机已停止")
+
+
 class RadarNightWindow(QtWidgets.QMainWindow):
     """夜间模式：左侧坐标图，右侧雷达数据 + 跟踪步间隔下发 (0x58)。"""
 
@@ -1008,11 +1314,10 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.conn_btn.setToolTip("仅 BLE 模式可用")
         right_l.addWidget(conn_box)
 
-        svc_box = QtWidgets.QGroupBox("控制服务面板")
-        svc_l = QtWidgets.QVBoxLayout(svc_box)
-        svc_l.setSpacing(6)
-        self._build_service_panel(svc_l)
-        right_l.addWidget(svc_box, 1)
+        self._ctrl_svc_window = None
+        self._open_svc_btn = QtWidgets.QPushButton("打开控制服务面板")
+        self._open_svc_btn.clicked.connect(self._open_ctrl_service_window)
+        right_l.addWidget(self._open_svc_btn)
 
         self.ctrl_text = QtWidgets.QPlainTextEdit()
         self.ctrl_text.setReadOnly(True)
@@ -1041,14 +1346,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.ctrl_timer.timeout.connect(self._flush_ctrl_log)
         self.ctrl_timer.start()
 
-        # Auto power toggle timer
-        self._auto_power_timer = QtCore.QTimer(self)
-        # AutoToggle
-        self._auto_power_interbal = 35
-        self._auto_power_timer.setInterval(self._auto_power_interbal * 1000)
-        self._auto_power_timer.timeout.connect(self._on_auto_power_tick)
-        self._auto_power_on_phase = True
-
     def _on_send_speed(self) -> None:
         ok = self.vis.send_radar_track_interval_us(self.speed_spin.value())
         if not ok:
@@ -1071,267 +1368,11 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"[本地] BLE {'连接请求' if enabled else '已断开'}: {addr}"
         )
 
-    def _stop_auto_power_if_running(self) -> None:
-        """如果自动开关循环正在运行，停止它并取消按钮选中状态。"""
-        if self._auto_power_timer.isActive():
-            self._auto_power_timer.stop()
-            self._auto_power_btn.setChecked(False)
-            self.radar_text.appendPlainText("[自动开关] 手动{操作中断循环")
-
-    def _on_auto_power_toggle(self) -> None:
-        btn = self.sender()
-        if btn.isChecked():
-            self._auto_power_on_phase = True
-            self._auto_power_timer.start()
-            self._send(*vc.cmd_power_ctrl(1))
-            self.radar_text.appendPlainText(f"[自动开关] 开始循环：{self._auto_power_interbal}s开→{self._auto_power_interbal}s关")
-        else:
-            self._auto_power_timer.stop()
-            self.radar_text.appendPlainText("[自动开关] 已停止")
-
-    def _on_auto_power_tick(self) -> None:
-        if self._auto_power_on_phase:
-            self._send(*vc.cmd_power_ctrl(0))
-            self._auto_power_on_phase = False
-        else:
-            self._send(*vc.cmd_power_ctrl(1))
-            self._auto_power_on_phase = True
-
-    def _build_service_panel(self, root: QtWidgets.QVBoxLayout) -> None:
-        g = QtWidgets.QGridLayout()
-        g.setHorizontalSpacing(6)
-        g.setVerticalSpacing(6)
-        root.addLayout(g)
-
-        # Power
-        def _power_on():
-            self._stop_auto_power_if_running()
-            self._send(*vc.cmd_power_ctrl(1))
-        def _power_off():
-            self._stop_auto_power_if_running()
-            self._send(*vc.cmd_power_ctrl(0))
-        b_power_on = QtWidgets.QPushButton("PowerOn")
-        b_power_on.clicked.connect(_power_on)
-        b_power_off = QtWidgets.QPushButton("PowerOff")
-        b_power_off.clicked.connect(_power_off)
-        self._auto_power_btn = QtWidgets.QPushButton("AutoToggle(30s)")
-        self._auto_power_btn.setCheckable(True)
-        self._auto_power_btn.clicked.connect(self._on_auto_power_toggle)
-        g.addWidget(QtWidgets.QLabel("电源 (0x12)"), 0, 0)
-        g.addWidget(b_power_on, 0, 1)
-        g.addWidget(b_power_off, 0, 2)
-        g.addWidget(self._auto_power_btn, 0, 3)
-
-        # Time set
-        g.addWidget(QtWidgets.QLabel("时间同步 (0x32)"), 1, 0)
-        self.time_use_local_tz = QtWidgets.QCheckBox("本机时区")
-        self.time_use_local_tz.setChecked(True)
-        g.addWidget(self.time_use_local_tz, 1, 1)
-        self.time_tz = QtWidgets.QSpinBox()
-        self.time_tz.setRange(-128, 127)
-        self.time_tz.setValue(0)
-        self.time_tz.setToolTip("tz_q15（s8）。通常为时区偏移(UTC)的 15 分钟单位。")
-        g.addWidget(self.time_tz, 1, 2)
-        self.time_btn = QtWidgets.QPushButton("同步PC时间")
-        self.time_btn.clicked.connect(self._on_time_sync)
-        g.addWidget(self.time_btn, 1, 3)
-
-        # Direction control: press move, release stop
-        g.addWidget(QtWidgets.QLabel("电机方向 (0x22, 按下动/松开停)"), 2, 0, 1, 4)
-        self.dir_speed = QtWidgets.QSpinBox()
-        self.dir_speed.setRange(0, 3)
-        self.dir_speed.setValue(2)
-        g.addWidget(QtWidgets.QLabel("speed"), 3, 0)
-        g.addWidget(self.dir_speed, 3, 1)
-        self.btn_up = QtWidgets.QPushButton("↑")
-        self.btn_down = QtWidgets.QPushButton("↓")
-        self.btn_left = QtWidgets.QPushButton("←")
-        self.btn_right = QtWidgets.QPushButton("→")
-        g.addWidget(self.btn_up, 4, 1)
-        g.addWidget(self.btn_left, 5, 0)
-        g.addWidget(self.btn_down, 5, 1)
-        g.addWidget(self.btn_right, 5, 2)
-        self._bind_press_release(self.btn_up, 0)
-        self._bind_press_release(self.btn_down, 1)
-        self._bind_press_release(self.btn_left, 2)
-        self._bind_press_release(self.btn_right, 3)
-
-        # 设置高度
-        g.addWidget(QtWidgets.QLabel("设置高度 (0x50)"), 6, 0, 1, 4)
-        g.addWidget(QtWidgets.QLabel("高度(mm):"), 7, 0)
-        self.new_h_mm = QtWidgets.QSpinBox()
-        self.new_h_mm.setRange(500, 10000)
-        self.new_h_mm.setValue(2500)
-        g.addWidget(self.new_h_mm, 7, 1)
-        b_config_height = QtWidgets.QPushButton("设置高度")
-        b_config_height.clicked.connect(self._on_new_config_step1)
-        g.addWidget(b_config_height, 7, 2)
-
-        # ===== 狩猎游戏设置 (0x60-0x66) =====
-        g.addWidget(QtWidgets.QLabel("狩猎设置 (0x60~0x66)"), 8, 0, 1, 4)
-        self.row = 9  # track current grid row
-
-        def _nrow(inc=1):
-            r = self.row
-            self.row += inc
-            return r
-
-        # 进入/退出设置
-        b_hunt_enter = QtWidgets.QPushButton("进入设置(0x60)")
-        b_hunt_enter.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_enter()))
-        b_hunt_exit_apply = QtWidgets.QPushButton("退出并应用(0x61)")
-        b_hunt_exit_apply.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_exit(True)))
-        b_hunt_exit_discard = QtWidgets.QPushButton("退出丢弃(0x61)")
-        b_hunt_exit_discard.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_exit(False)))
-        g.addWidget(QtWidgets.QLabel("设置模式"), _nrow(), 0)
-        g.addWidget(b_hunt_enter, self.row-1, 1)
-        g.addWidget(b_hunt_exit_apply, self.row-1, 2)
-        g.addWidget(b_hunt_exit_discard, self.row-1, 3)
-
-        # 猎物点操作
-        b_prey_random_start = QtWidgets.QPushButton("开始随机(0x62)")
-        b_prey_random_start.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(True)))
-        b_prey_random_stop = QtWidgets.QPushButton("停止随机(0x62)")
-        b_prey_random_stop.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(False)))
-        b_prey_set = QtWidgets.QPushButton("设为猎物点(0x63)")
-        b_prey_set.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_set()))
-        g.addWidget(QtWidgets.QLabel("猎物点"), _nrow(), 0)
-        g.addWidget(b_prey_random_start, self.row-1, 1)
-        g.addWidget(b_prey_random_stop, self.row-1, 2)
-        g.addWidget(b_prey_set, self.row-1, 3)
-
-        # 狩猎时长
-        g.addWidget(QtWidgets.QLabel("狩猎时长(秒)"), _nrow(), 0)
-        self.hunt_dur_spin = QtWidgets.QSpinBox()
-        self.hunt_dur_spin.setRange(10, 600)
-        self.hunt_dur_spin.setValue(60)
-        g.addWidget(self.hunt_dur_spin, self.row-1, 1)
-        b_hunt_dur = QtWidgets.QPushButton("设置(0x64)")
-        b_hunt_dur.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_duration(self.hunt_dur_spin.value())))
-        g.addWidget(b_hunt_dur, self.row-1, 2)
-
-        # 狩猎次数
-        g.addWidget(QtWidgets.QLabel("狩猎次数"), _nrow(), 0)
-        self.hunt_cnt_spin = QtWidgets.QSpinBox()
-        self.hunt_cnt_spin.setRange(1, 60)
-        self.hunt_cnt_spin.setValue(3)
-        g.addWidget(self.hunt_cnt_spin, self.row-1, 1)
-        b_hunt_cnt = QtWidgets.QPushButton("设置(0x65)")
-        b_hunt_cnt.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_count(self.hunt_cnt_spin.value())))
-        g.addWidget(b_hunt_cnt, self.row-1, 2)
-
-        # 休眠时长
-        g.addWidget(QtWidgets.QLabel("休眠时长(分)"), _nrow(), 0)
-        self.hunt_sleep_spin = QtWidgets.QSpinBox()
-        self.hunt_sleep_spin.setRange(1, 20)
-        self.hunt_sleep_spin.setValue(3)
-        g.addWidget(self.hunt_sleep_spin, self.row-1, 1)
-        b_hunt_sleep = QtWidgets.QPushButton("设置(0x66)")
-        b_hunt_sleep.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_sleep_duration(self.hunt_sleep_spin.value())))
-        g.addWidget(b_hunt_sleep, self.row-1, 2)
-
-        # 逗宠记录（逐条上传）
-        g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), _nrow(), 0, 1, 4)
-        self.play_record_info = QtWidgets.QLabel("尚未收到记录")
-        self.play_record_info.setStyleSheet("color: #a6e3a1; font-size: 11px;")
-        g.addWidget(self.play_record_info, self.row, 0, 1, 4)
-        _nrow()
-
-        b_play_record_ack = QtWidgets.QPushButton("确认收到 (ACK)")
-        b_play_record_ack.setStyleSheet(
-            "QPushButton { background: #45475a; font-weight: bold; color: #a6e3a1; }"
-            "QPushButton:hover { background: #585b70; }"
-        )
-        b_play_record_ack.clicked.connect(self._on_play_record_ack)
-        b_play_record_ack.setToolTip(
-            "告知设备已收到当前逗宠记录，设备将在 1 秒后发送下一条（如有）"
-        )
-        g.addWidget(b_play_record_ack, self.row, 0, 1, 4)
-        _nrow()
-
-        # 复位和重启
-        g.addWidget(QtWidgets.QLabel("系统控制"), _nrow(), 0, 1, 4)
-        b_reset = QtWidgets.QPushButton("复位配置(0x56)")
-        b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
-        g.addWidget(b_reset, self.row, 0, 1, 2)
-        _nrow()
-        
-        b_reboot = QtWidgets.QPushButton("重启MCU(0x5A)")
-        b_reboot.clicked.connect(lambda: self._send(*vc.cmd_device_reboot()))
-        b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
-        g.addWidget(b_reboot, self.row-1, 2, 1, 2)
-
-        if self.vis._transport != "ble":
-            self.time_use_local_tz.setEnabled(False)
-            self.time_tz.setEnabled(False)
-            self.time_btn.setEnabled(False)
-            self.time_btn.setToolTip("仅 BLE 模式可下发")
-
-    def _on_time_sync(self) -> None:
-        # tz_q15: 15-minute units of UTC offset (common convention in this project doc).
-        tz_q15 = self.time_tz.value()
-        if self.time_use_local_tz.isChecked():
-            try:
-                now = datetime.datetime.now(datetime.timezone.utc).astimezone()
-                off = now.utcoffset()
-                off_sec = int(off.total_seconds()) if off else 0
-                tz_q15 = int(round(off_sec / 900.0))
-                tz_q15 = max(-128, min(127, tz_q15))
-                self.time_tz.setValue(tz_q15)
-            except Exception:
-                pass
-
-        epoch_sec = int(time.time())
-        ok = self.vis.send_cmd(*vc.cmd_time_set(epoch_sec, tz_q15))
-        if not ok:
-            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
-
-    def _on_new_config_step1(self) -> None:
-        """新简化配置：步骤1 - 设置高度并进入配置模式 (CMD 0x50)"""
-        height_mm = self.new_h_mm.value()
-        ok = self.vis.send_cmd(*vc.cmd_radar_config_set_height(height_mm))
-        if not ok:
-            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
-        else:
-            self.radar_text.appendPlainText(f"[本地] 已发送：设置高度 {height_mm}mm (0x50)")
-
-    def _on_new_config_all(self) -> None:
-        """新简化配置：一键配置 - 先设置高度，再设置坐标"""
-        self.radar_text.appendPlainText("[本地] 开始一键配置...")
-        
-        # 步骤1：设置高度
-        height_mm = self.new_h_mm.value()
-        ok1 = self.vis.send_cmd(*vc.cmd_radar_config_set_height(height_mm))
-        if not ok1:
-            self.radar_text.appendPlainText("[本地] 步骤1失败：设置高度失败")
-            return
-        self.radar_text.appendPlainText(f"[本地] 步骤1完成：设置高度 {height_mm}mm")
-        self.radar_text.appendPlainText("[本地] 配置完成！等待设备响应...")
-
-    def _on_play_record_ack(self) -> None:
-        """用户点击"确认收到"按钮：告知设备已收到当前逗宠记录。"""
-        ok = self.vis.send_cmd(*vc.cmd_play_record_ack())
-        if not ok:
-            self.radar_text.appendPlainText("[本地] ACK 下发失败（非 BLE 或未连接）")
-        else:
-            self.radar_text.appendPlainText("[本地] 已发送逗宠记录 ACK (0x33)")
-
-    def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
-        btn.pressed.connect(
-            lambda d=direction: self._send(
-                *vc.cmd_motor_dir_start(d, self.dir_speed.value())
-            )
-        )
-        btn.released.connect(
-            lambda d=direction: self._send(
-                *vc.cmd_motor_dir_stop(d, self.dir_speed.value())
-            )
-        )
-
-    def _send(self, cmd_id: int, payload: bytes, desc: str) -> None:
-        ok = self.vis.send_cmd(cmd_id, payload, desc)
-        if not ok:
-            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）")
+    def _open_ctrl_service_window(self) -> None:
+        if self._ctrl_svc_window is None:
+            self._ctrl_svc_window = CtrlServiceWindow(self.vis, self)
+        self._ctrl_svc_window.show()
+        self._ctrl_svc_window.raise_()
 
     def _setup_plot(self):
         C_TEXT = "#cdd6f4"
@@ -1439,9 +1480,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             mdeg10 = self.vis.motion_dir_deg10
             disconnect_count = self.vis._ble_disconnect_count
             last_disconnect_time = self.vis._ble_last_disconnect_time
-            need_stop_auto_power = self.vis._ble_disconnect_need_stop_auto_power
-            if need_stop_auto_power:
-                self.vis._ble_disconnect_need_stop_auto_power = False
 
         if bepoch != self._last_boundary_epoch:
             self._last_boundary_epoch = bepoch
@@ -1505,18 +1543,6 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"UI 待下发 interval: {self.speed_spin.value()} µs  (CMD 0x58)",
         ]
         self.radar_text.setPlainText("\n".join(lines))
-
-        # 更新逗宠记录信息
-        with self.vis._lock:
-            rec_info = self.vis._play_record_info
-        cur_text = self.play_record_info.text()
-        if rec_info and rec_info != cur_text:
-            self.play_record_info.setText(rec_info)
-
-        # 断开时自动关闭自动开关机
-        if need_stop_auto_power:
-            self._stop_auto_power_if_running()
-            self.radar_text.appendPlainText("[本地] 断开连接，自动开关机已停止")
 
         # 更新 BLE 断开次数标签
         disc_time_str = last_disconnect_time if last_disconnect_time else "--"
