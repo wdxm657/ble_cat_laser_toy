@@ -77,6 +77,9 @@ void app_hunt_set_sleep_duration_min(u8 min);
 void app_hunt_get_prey_point_deg10(s16 *pan_deg10, s16 *tilt_deg10);
 void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10);
 
+/** 保存猎物点和狩猎配置到 flash（在设置变化时调用） */
+void radar_prey_point_cfg_save_to_flash(void);
+
 /** 随机移动猎物点（在水平±60° 俯仰15°~30°之间随机） */
 void app_hunt_prey_random_move(void);
 void app_hunt_prey_random_set_active(u8 active);

@@ -381,8 +381,8 @@ _attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4
 };
 
 #define RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC 0x52445343u  // "RDSC"
-#define RADAR_INSTALL_HEIGHT_FLASH_MAGIC 0x52444948u  // "RDIH"
-#define RADAR_PLAY_RECORD_FLASH_MAGIC    0x5244504Du  // "RDPM" 含运动统计，与旧 RDPL 布局不兼容
+#define RADAR_INSTALL_HEIGHT_FLASH_MAGIC     0x52444948u  // "RDIH"
+#define RADAR_PLAY_RECORD_FLASH_MAGIC        0x5244504Du  // "RDPM" 含运动统计，与旧 RDPL 布局不兼容
 
 typedef struct
 {
@@ -474,6 +474,66 @@ static u32 radar_boundary_crc32(const u8 *data, u32 len)
         }
     }
     return ~crc;
+}
+
+/* 猎物点 + 狩猎配置 flash 结构（magic "RDSC"） */
+typedef struct
+{
+    u32 magic;       // RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC
+    s16 pan_deg10;   // 猎物点水平角 deg×10
+    s16 tilt_deg10;  // 猎物点俯仰角 deg×10
+    u16 duration_s;  // 单次狩猎时长(秒)
+    u8  count;       // 狩猎次数
+    u8  sleep_min;   // 休眠时长(分钟)
+    u8  reserved[4];
+    u32 crc;
+} radar_prey_point_cfg_flash_t;
+
+void radar_prey_point_cfg_save_to_flash(void)
+{
+    radar_prey_point_cfg_flash_t stored;
+    stored.magic      = RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC;
+    stored.pan_deg10  = g_prey_pan_deg10;
+    stored.tilt_deg10 = g_prey_tilt_deg10;
+    stored.duration_s = g_hunt_duration_s;
+    stored.count      = g_hunt_count;
+    stored.sleep_min  = g_hunt_sleep_duration_min;
+    memset(stored.reserved, 0, sizeof(stored.reserved));
+    stored.crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+    flash_erase_sector(RADAR_PREY_POINT_CFG_FLASH_ADDR);
+    flash_write_page(RADAR_PREY_POINT_CFG_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    BLE_LOG_D("prey+cfg saved to flash: pan=%d tilt=%d dur=%d cnt=%d slp=%d",
+              stored.pan_deg10,
+              stored.tilt_deg10,
+              stored.duration_s,
+              stored.count,
+              stored.sleep_min);
+}
+
+static void radar_prey_point_cfg_load_from_flash(void)
+{
+    radar_prey_point_cfg_flash_t stored;
+    flash_read_page(RADAR_PREY_POINT_CFG_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    if (stored.magic != RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC)
+    {
+        return;
+    }
+    u32 crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+    if (crc != stored.crc)
+    {
+        return;
+    }
+    g_prey_pan_deg10          = stored.pan_deg10;
+    g_prey_tilt_deg10         = stored.tilt_deg10;
+    g_hunt_duration_s         = stored.duration_s;
+    g_hunt_count              = stored.count;
+    g_hunt_sleep_duration_min = stored.sleep_min;
+    BLE_LOG_D("prey+cfg loaded from flash: pan=%d tilt=%d dur=%d cnt=%d slp=%d",
+              g_prey_pan_deg10,
+              g_prey_tilt_deg10,
+              g_hunt_duration_s,
+              g_hunt_count,
+              g_hunt_sleep_duration_min);
 }
 
 /** 轨迹缓存刷新且 (x,y) 相对 newest 变化时：在工作模式 + 逗宠进行中累加 Δt(ms) 与 v×Δt（v 由位移/mm 与 Δt/ms 得到，cm/s） */
@@ -1040,6 +1100,7 @@ void app_radar_init(void)
     }
 
     radar_play_records_load_from_flash();
+    radar_prey_point_cfg_load_from_flash();
 }
 
 static u8 RadarGimbalIsBusy(void)
@@ -3013,6 +3074,7 @@ void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10)
         tilt_deg10 = GIMBAL_TILT_LIMIT_DEG10_NEG;
     g_prey_pan_deg10  = pan_deg10;
     g_prey_tilt_deg10 = tilt_deg10;
+    radar_prey_point_cfg_save_to_flash();
 }
 
 // 随机移动循环状态机

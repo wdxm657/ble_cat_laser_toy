@@ -273,6 +273,7 @@ static u8 g_last_setting_state  = 0xFF;
 static u8 g_last_hunting_state  = 0xFF;
 static u8 g_last_standby_state  = 0xFF;
 static u8 g_last_sleeping_state = 0xFF;
+static u8 g_last_power_on       = 0xFF;
 
 static void app_ctrl_calc_exclusive_mode_flags(u8 *hunting, u8 *standby, u8 *sleeping, u8 *setting)
 {
@@ -331,6 +332,7 @@ void       app_ctrl_status_notify_task(void)
     /* 首次仅建立基线，不上报 */
     if (g_last_charge_state == 0xFF)
     {
+        g_last_power_on       = power_on;
         g_last_charge_state   = charging;
         g_last_setting_state  = setting_mode;
         g_last_hunting_state  = hunting_mode;
@@ -345,6 +347,13 @@ void       app_ctrl_status_notify_task(void)
         g_last_charge_state = charging;
         changed             = 1;
     }
+    if (power_on != g_last_power_on)
+    {
+        BLE_LOG_D("power_on changed: %d -> %d", g_last_power_on, power_on);
+        g_last_power_on = power_on;
+        changed         = 1;
+    }
+
     if (setting_mode != g_last_setting_state)
     {
         BLE_LOG_D("setting_mode changed: %d -> %d", g_last_setting_state, setting_mode);
@@ -1310,6 +1319,7 @@ static int app_ctrl_handle_hunt_settings_set(u8 seq, u8 *payload, u16 len)
     app_hunt_set_duration_s(dur_s);
     app_hunt_set_count(count);
     app_hunt_set_sleep_duration_min(sleep);
+    radar_prey_point_cfg_save_to_flash();
     BLE_LOG_D("hunt settings set: dur=%d count=%d sleep=%d",
               app_hunt_get_duration_s(),
               app_hunt_get_count(),
