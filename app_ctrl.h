@@ -59,18 +59,12 @@ enum{
     CTRL_CMD_HUNT_SETTINGS_ENTER      = 0x60,
     /** 退出狩猎设置模式; payload[0]=0 丢弃, =1 应用 */
     CTRL_CMD_HUNT_SETTINGS_EXIT       = 0x61,
-    /** 猎物点随机移动; payload[0]=1 开始, =0 停止 */
+    /** 猎物点随机移动循环; payload[0]=1 开始, =0 停止(自动保存) */
     CTRL_CMD_HUNT_PREY_RANDOM         = 0x62,
-    /** 当前云台位置设为猎物点; 无 payload */
-    CTRL_CMD_HUNT_PREY_SET            = 0x63,
-    /** 设置单次狩猎时长(秒); payload u16 LE */
-    CTRL_CMD_HUNT_SET_DURATION        = 0x64,
-    /** 设置狩猎次数; payload u8 */
-    CTRL_CMD_HUNT_SET_COUNT           = 0x65,
-    /** 设置休眠时长(分钟); payload u8 */
-    CTRL_CMD_HUNT_SET_SLEEP_DURATION  = 0x66,
+    /** 统一设置狩猎参数(时长/次数/休眠)；payload [1-2]=duration_s(u16 LE) [3]=count [4]=sleep_min */
+    CTRL_CMD_HUNT_SETTINGS_SET        = 0x63,
     /** 获取当前狩猎设置；无 payload；RSP payload[0]=status [1-2]=duration_s(u16 LE) [3]=count [4]=sleep_min */
-    CTRL_CMD_HUNT_SETTINGS_GET        = 0x67,
+    CTRL_CMD_HUNT_SETTINGS_GET        = 0x64,
 };
 
 /** payload[0] for radar debug EVENTs (cmdId=0x57) */

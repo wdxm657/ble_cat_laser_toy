@@ -79,26 +79,12 @@ def cmd_hunt_prey_random(start: bool = True) -> tuple[int, bytes, str]:
     return p.CTRL_CMD_HUNT_PREY_RANDOM, bytes([1 if start else 0]), f"HUNT_PREY_RANDOM start={start}"
 
 
-def cmd_hunt_prey_set() -> tuple[int, bytes, str]:
-    """当前云台位置设为猎物点 (0x63)"""
-    return p.CTRL_CMD_HUNT_PREY_SET, b"", "HUNT_PREY_SET"
-
-
-def cmd_hunt_set_duration(seconds: int) -> tuple[int, bytes, str]:
-    """设置单次狩猎时长 (0x64), u16 LE 秒"""
-    return p.CTRL_CMD_HUNT_SET_DURATION, p.u16le(seconds), f"HUNT_SET_DURATION s={seconds}"
-
-
-def cmd_hunt_set_count(count: int) -> tuple[int, bytes, str]:
-    """设置狩猎次数 (0x65), u8"""
-    return p.CTRL_CMD_HUNT_SET_COUNT, bytes([count & 0xFF]), f"HUNT_SET_COUNT cnt={count}"
-
-
-def cmd_hunt_set_sleep_duration(minutes: int) -> tuple[int, bytes, str]:
-    """设置休眠时长 (0x66), u8 分钟"""
-    return p.CTRL_CMD_HUNT_SET_SLEEP_DURATION, bytes([minutes & 0xFF]), f"HUNT_SET_SLEEP_DURATION min={minutes}"
+def cmd_hunt_settings_set(duration_s: int, count: int, sleep_min: int) -> tuple[int, bytes, str]:
+    """统一设置狩猎参数 (0x63): duration(u16 LE) + count(u8) + sleep(u8)"""
+    payload = p.u16le(duration_s) + bytes([count & 0xFF, sleep_min & 0xFF])
+    return p.CTRL_CMD_HUNT_SETTINGS_SET, payload, f"HUNT_SETTINGS_SET dur={duration_s}s cnt={count} slp={sleep_min}min"
 
 
 def cmd_hunt_settings_get() -> tuple[int, bytes, str]:
-    """获取当前狩猎设置 (0x67); 无 payload"""
+    """获取当前狩猎设置 (0x64); 无 payload"""
     return p.CTRL_CMD_HUNT_SETTINGS_GET, b"", "HUNT_SETTINGS_GET"

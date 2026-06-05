@@ -766,7 +766,7 @@ UUID:0000180F-0000-1000-8000-00805F9B34FB
 Battery Level
 UUID:00002A19-0000-1000-8000-00805F9B34FB
 
-#### 4.15 狩猎游戏设置（CMD = 0x60 ~ 0x67）
+#### 4.15 狩猎游戏设置（CMD = 0x60 ~ 0x64）
 
 用途：APP 配置狩猎游戏的各项参数，包括猎物点、狩猎时长、狩猎次数、休眠时长等。
 
@@ -833,7 +833,9 @@ byte6 : status
 
 ##### 4.15.3 猎物点随机移动（HUNT_PREY_RANDOM，CMD = 0x62）
 
-在设置模式下，控制猎物点在水平±60°、俯仰15°~30°范围内随机移动。停止随机移动时光斑停在当前位置，可用 `HUNT_PREY_SET` 设为猎物点。
+在设置模式下，控制光斑在水平±60°、俯仰15°~30°范围内连续随机移动。
+- `start=1`：光斑开始移动到随机点，到达后停留 **0.5 秒**，然后自动移动到下一个随机点，不断循环。
+- `start=0`：停止随机循环，**自动将当前光斑位置保存为猎物点**（无需额外 `HUNT_PREY_SET` 命令）。
 
 **请求帧（APP → 设备）**
 
@@ -844,7 +846,7 @@ byte2 : 0x62           // cmdId = HUNT_PREY_RANDOM
 byte3 : seq
 byte4 : 0x01           // payloadLen = 1
 byte5 : 0x00
-byte6 : start          // 0x00=停止, 0x01=开始随机移动
+byte6 : start          // 0x00=停止并自动保存, 0x01=开始连续随机移动
 ```
 
 **响应帧（设备 → APP）**
@@ -862,57 +864,30 @@ byte7 : start          // 回显 0x00/0x01
 
 ---
 
-##### 4.15.4 设置当前云台位置为猎物点（HUNT_PREY_SET，CMD = 0x63）
+##### 4.15.4 统一设置狩猎参数（HUNT_SETTINGS_SET，CMD = 0x63）
 
-将当前云台角度设为猎物点（覆盖原值）。需先在设置模式下通过方向键或随机移动将光斑移动到目标位置。
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x63           // cmdId = HUNT_PREY_SET
-byte3 : seq
-byte4 : 0x00           // payloadLen = 0
-byte5 : 0x00
-```
-
-**响应帧（设备 → APP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x63           // cmdId = HUNT_PREY_SET
-byte3 : seq
-byte4 : 0x01           // payloadLen = 1
-byte5 : 0x00
-byte6 : status
-```
-
----
-
-##### 4.15.5 设置单次狩猎时长（HUNT_SET_DURATION，CMD = 0x64）
-
-设置单次狩猎的时长（秒），范围 10~600 秒，默认 60 秒。
+一次设置单次狩猎时长、次数和休眠时长。payload 共 4 字节：u16 LE 时长 + u8 次数 + u8 休眠分钟。
 
 **请求帧（APP → 设备）**
 
 ```
 byte0 : 0x01
 byte1 : 0x01           // msgType = CMD
-byte2 : 0x64           // cmdId = HUNT_SET_DURATION
+byte2 : 0x63           // cmdId = HUNT_SETTINGS_SET
 byte3 : seq
-byte4 : 0x02           // payloadLen = 2
+byte4 : 0x04           // payloadLen = 4
 byte5 : 0x00
-byte6 : duration_L     // u16 LE 时长(秒)
+byte6 : duration_L     // 单次狩猎时长(秒) u16 LE
 byte7 : duration_H
+byte8 : count          // 狩猎次数 u8
+byte9 : sleep_min      // 休眠时长(分钟) u8
 ```
 
 **示例**：
 
 ```
-（设置 90 秒）
-01 01 64 01 02 00 5A 00
+（设置 90s + 3次 + 5min 休眠）
+01 01 63 01 04 00 5A 00 03 05
 ```
 
 **响应帧（设备 → APP）**
@@ -920,80 +895,20 @@ byte7 : duration_H
 ```
 byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
-byte2 : 0x64           // cmdId = HUNT_SET_DURATION
+byte2 : 0x63           // cmdId = HUNT_SETTINGS_SET
 byte3 : seq
-byte4 : 0x03           // payloadLen = 3
+byte4 : 0x05           // payloadLen = 5（回显实际生效值）
 byte5 : 0x00
 byte6 : status
-byte7 : applied_L      // 实际生效值低位
-byte8 : applied_H      // 实际生效值高位
+byte7 : duration_L     // 实际生效时长(秒) u16 LE
+byte8 : duration_H
+byte9 : count          // 实际生效次数 u8
+byte10: sleep_min      // 实际生效休眠分钟 u8
 ```
 
 ---
 
-##### 4.15.6 设置狩猎次数（HUNT_SET_COUNT，CMD = 0x65）
-
-设置达成多少次狩猎后进入休眠。最大值 = `ceil(600 / 单次狩猎时长)`。默认 3 次。
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x65           // cmdId = HUNT_SET_COUNT
-byte3 : seq
-byte4 : 0x01           // payloadLen = 1
-byte5 : 0x00
-byte6 : count          // 狩猎次数（u8）
-```
-
-**响应帧（设备 → APP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x65           // cmdId = HUNT_SET_COUNT
-byte3 : seq
-byte4 : 0x02           // payloadLen = 2
-byte5 : 0x00
-byte6 : status
-byte7 : applied        // 实际生效值（u8）
-```
-
----
-
-##### 4.15.7 设置休眠时长（HUNT_SET_SLEEP_DURATION，CMD = 0x66）
-
-设置达成狩猎次数后休眠的时长（分钟），范围 1~20 分钟，默认 3 分钟。
-
-**请求帧（APP → 设备）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x66           // cmdId = HUNT_SET_SLEEP_DURATION
-byte3 : seq
-byte4 : 0x01           // payloadLen = 1
-byte5 : 0x00
-byte6 : minutes        // 休眠时长（分钟，u8）
-```
-
-**响应帧（设备 → APP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x66           // cmdId = HUNT_SET_SLEEP_DURATION
-byte3 : seq
-byte4 : 0x02           // payloadLen = 2
-byte5 : 0x00
-byte6 : status
-byte7 : applied        // 实际生效值（u8）
-```
-
----
-
-##### 4.15.8 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x67）
+##### 4.15.5 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x64）
 
 获取当前配置的单次狩猎时长、狩猎次数和休眠时长。无需 payload。
 
@@ -1002,7 +917,7 @@ byte7 : applied        // 实际生效值（u8）
 ```
 byte0 : 0x01
 byte1 : 0x01           // msgType = CMD
-byte2 : 0x67           // cmdId = HUNT_SETTINGS_GET
+byte2 : 0x64           // cmdId = HUNT_SETTINGS_GET
 byte3 : seq
 byte4 : 0x00           // payloadLen = 0
 byte5 : 0x00
@@ -1011,7 +926,7 @@ byte5 : 0x00
 **示例**：
 
 ```
-01 01 67 01 00 00
+01 01 64 01 00 00
 ```
 
 **响应帧（设备 → APP）**
@@ -1019,7 +934,7 @@ byte5 : 0x00
 ```
 byte0 : 0x01
 byte1 : 0x02           // msgType = RSP
-byte2 : 0x67           // cmdId = HUNT_SETTINGS_GET
+byte2 : 0x64           // cmdId = HUNT_SETTINGS_GET
 byte3 : seq
 byte4 : 0x05           // payloadLen = 5
 byte5 : 0x00
@@ -1035,13 +950,10 @@ byte10: sleep_min      // 休眠时长(分钟) u8
 ##### 狩猎设置流程示例
 
 1. APP 发送 `HUNT_SETTINGS_ENTER(0x60)` → 光斑移动到当前猎物点
-2. APP 发送 `HUNT_PREY_RANDOM(0x62) start=1` → 光斑开始随机移动
-3. 用户观察光斑位置合适时，发送 `HUNT_PREY_RANDOM(0x62) start=0` → 停止移动
-4. APP 发送 `HUNT_PREY_SET(0x63)` → 当前云台位置设为猎物点
-5. APP 发送 `HUNT_SET_DURATION(0x64)` 设置时长为 90s
-6. APP 发送 `HUNT_SET_COUNT(0x65)` 设置次数为 3
-7. APP 发送 `HUNT_SET_SLEEP_DURATION(0x66)` 设置休眠 5 分钟
-8. APP 发送 `HUNT_SETTINGS_EXIT(0x61) apply=1` → 应用全部设置，返回自动狩猎
+2. APP 发送 `HUNT_PREY_RANDOM(0x62) start=1` → 光斑开始在随机点间连续循环移动（到达后停 0.5s 自动继续）
+3. 用户观察光斑位置合适时，发送 `HUNT_PREY_RANDOM(0x62) start=0` → 停止移动，**自动保存当前位置为猎物点**
+4. APP 发送 `HUNT_SETTINGS_SET(0x63)` payload = `5A 00 03 05` → 设置时长 90s、次数 3、休眠 5min
+5. APP 发送 `HUNT_SETTINGS_EXIT(0x61) apply=1` → 应用全部设置，返回自动狩猎
 
 ---
 

@@ -1260,6 +1260,8 @@ static int app_ctrl_handle_hunt_settings_exit(u8 seq, u8 *payload, u16 len)
 }
 
 // ----------------------- handler: hunt prey random -----------------------
+// start=1: 开始随机移动循环（连续随机点，到达后停 0.5s 自动下一随机点）
+// start=0: 停止循环，自动保存当前云台位置为猎物点
 static int app_ctrl_handle_hunt_prey_random(u8 seq, u8 *payload, u16 len)
 {
 #if (UI_RADAR_ENABLE)
@@ -1272,9 +1274,14 @@ static int app_ctrl_handle_hunt_prey_random(u8 seq, u8 *payload, u16 len)
     u8 start = payload[0];
     if (start)
     {
-        app_hunt_prey_random_move();
+        // 开始循环随机移动（首次移动由 task 完成）
+        app_hunt_prey_random_set_active(1);
     }
-    // 停止随机移动时不需额外动作; 当前停止后光斑停在当前位置
+    else
+    {
+        // 停止并自动保存当前位置为猎物点
+        app_hunt_prey_random_set_active(0);
+    }
     u8 rsp[2] = {CTRL_STATUS_OK, start};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_RANDOM, seq, rsp, sizeof(rsp));
     return 0;
@@ -1287,96 +1294,38 @@ static int app_ctrl_handle_hunt_prey_random(u8 seq, u8 *payload, u16 len)
 #endif
 }
 
-// ----------------------- handler: hunt prey set -----------------------
-static int app_ctrl_handle_hunt_prey_set(u8 seq, u8 *payload, u16 len)
-{
-    (void)payload;
-    (void)len;
-#if (UI_RADAR_ENABLE) && (UI_STEP_MOTOR_ENABLE)
-    // 当前云台位置设为猎物点
-    s16 pan  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
-    s16 tilt = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
-    app_hunt_set_prey_point_deg10(pan, tilt);
-    BLE_LOG_D("prey point set: pan=%d, tilt=%d", pan, tilt);
-    u8 rsp[1] = {CTRL_STATUS_OK};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
-    return 0;
-#else
-    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_PREY_SET, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-// ----------------------- handler: hunt set duration -----------------------
-static int app_ctrl_handle_hunt_set_duration(u8 seq, u8 *payload, u16 len)
+// ----------------------- handler: hunt settings set (combined) -----------------------
+static int app_ctrl_handle_hunt_settings_set(u8 seq, u8 *payload, u16 len)
 {
 #if (UI_RADAR_ENABLE)
-    if (len < 2)
+    if (len < 4)
     {
         u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_SET, seq, rsp, sizeof(rsp));
         return -1;
     }
     u16 dur_s = (u16)(payload[0] | (payload[1] << 8));
+    u8  count = payload[2];
+    u8  sleep = payload[3];
     app_hunt_set_duration_s(dur_s);
-    BLE_LOG_D("hunt duration set: %d s", app_hunt_get_duration_s());
-    u8 rsp[3] = {CTRL_STATUS_OK, (u8)(app_hunt_get_duration_s() & 0xFF), (u8)((app_hunt_get_duration_s() >> 8) & 0xFF)};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
+    app_hunt_set_count(count);
+    app_hunt_set_sleep_duration_min(sleep);
+    BLE_LOG_D("hunt settings set: dur=%d count=%d sleep=%d",
+              app_hunt_get_duration_s(),
+              app_hunt_get_count(),
+              app_hunt_get_sleep_duration_min());
+    u8 rsp[5] = {CTRL_STATUS_OK,
+                 (u8)(app_hunt_get_duration_s() & 0xFF),
+                 (u8)((app_hunt_get_duration_s() >> 8) & 0xFF),
+                 app_hunt_get_count(),
+                 app_hunt_get_sleep_duration_min()};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_SET, seq, rsp, sizeof(rsp));
     return 0;
 #else
     (void)payload;
     (void)len;
     u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_DURATION, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-// ----------------------- handler: hunt set count -----------------------
-static int app_ctrl_handle_hunt_set_count(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    if (len < 1)
-    {
-        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-    app_hunt_set_count(payload[0]);
-    BLE_LOG_D("hunt count set: %d", app_hunt_get_count());
-    u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_count()};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
-    return 0;
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_COUNT, seq, rsp, sizeof(rsp));
-    return -1;
-#endif
-}
-
-// ----------------------- handler: hunt set sleep duration -----------------------
-static int app_ctrl_handle_hunt_set_sleep_duration(u8 seq, u8 *payload, u16 len)
-{
-#if (UI_RADAR_ENABLE)
-    if (len < 1)
-    {
-        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
-        return -1;
-    }
-    app_hunt_set_sleep_duration_min(payload[0]);
-    BLE_LOG_D("sleep duration set: %d min", app_hunt_get_sleep_duration_min());
-    u8 rsp[2] = {CTRL_STATUS_OK, app_hunt_get_sleep_duration_min()};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
-    return 0;
-#else
-    (void)payload;
-    (void)len;
-    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SET_SLEEP_DURATION, seq, rsp, sizeof(rsp));
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_SET, seq, rsp, sizeof(rsp));
     return -1;
 #endif
 }
@@ -1477,6 +1426,9 @@ void app_ctrl_task(void)
         g_play_upload_tick  = clock_time();
         g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
     }
+
+    // 猎物质点随机移动循环
+    app_hunt_prey_random_task();
 #endif
 
     // Soft reboot requested by BLE control command.
@@ -1601,24 +1553,9 @@ void app_ctrl_onRx(u8 *data, u16 len)
         app_ctrl_handle_hunt_prey_random(seq, payload, payLen);
         break;
 
-    case CTRL_CMD_HUNT_PREY_SET:
-        BLE_LOG_D("CTRL_CMD_HUNT_PREY_SET");
-        app_ctrl_handle_hunt_prey_set(seq, payload, payLen);
-        break;
-
-    case CTRL_CMD_HUNT_SET_DURATION:
-        BLE_LOG_D("CTRL_CMD_HUNT_SET_DURATION");
-        app_ctrl_handle_hunt_set_duration(seq, payload, payLen);
-        break;
-
-    case CTRL_CMD_HUNT_SET_COUNT:
-        BLE_LOG_D("CTRL_CMD_HUNT_SET_COUNT");
-        app_ctrl_handle_hunt_set_count(seq, payload, payLen);
-        break;
-
-    case CTRL_CMD_HUNT_SET_SLEEP_DURATION:
-        BLE_LOG_D("CTRL_CMD_HUNT_SET_SLEEP_DURATION");
-        app_ctrl_handle_hunt_set_sleep_duration(seq, payload, payLen);
+    case CTRL_CMD_HUNT_SETTINGS_SET:
+        BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_SET");
+        app_ctrl_handle_hunt_settings_set(seq, payload, payLen);
         break;
 
     case CTRL_CMD_HUNT_SETTINGS_GET:

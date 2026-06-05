@@ -380,6 +380,7 @@ _attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4
     {-6000, 500},
 };
 
+#define RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC 0x52445343u  // "RDSC"
 #define RADAR_INSTALL_HEIGHT_FLASH_MAGIC 0x52444948u  // "RDIH"
 #define RADAR_PLAY_RECORD_FLASH_MAGIC    0x5244504Du  // "RDPM" 含运动统计，与旧 RDPL 布局不兼容
 
@@ -3014,13 +3015,18 @@ void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10)
     g_prey_tilt_deg10 = tilt_deg10;
 }
 
+// 随机移动循环状态机
+static u8  g_prey_random_active = 0;
+static u8  g_prey_random_state  = 0;  // 0=IDLE, 1=MOVING, 2=WAITING
+static u32 g_prey_random_tick   = 0;
+
+#define PREY_RANDOM_WAIT_US 000000u  // 到达后停留 0.5s
+
 void app_hunt_prey_random_move(void)
 {
     // 水平角度（±60°）俯仰角（15°~30°）间随机移动
-    s16 pan_deg10     = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
-    s16 tilt_deg10    = (s16)RadarRandRangeI32(GIMBAL_TILT_LIMIT_DEG10_NEG, -150);  // -30°~-15°
-    g_prey_pan_deg10  = pan_deg10;
-    g_prey_tilt_deg10 = tilt_deg10;
+    s16 pan_deg10  = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(GIMBAL_TILT_LIMIT_DEG10_NEG, -150);  // -30°~-15°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);
@@ -3029,10 +3035,76 @@ void app_hunt_prey_random_move(void)
 #endif
 }
 
+void app_hunt_prey_random_set_active(u8 active)
+{
+    if (active)
+    {
+        g_prey_random_active = 1;
+        g_prey_random_state  = 0;  // IDLE → task will trigger first move
+        g_prey_random_tick   = clock_time();
+    }
+    else
+    {
+        g_prey_random_active = 0;
+        g_prey_random_state  = 0;
+        // 停止时自动保存当前云台位置为猎物点
+#if (UI_STEP_MOTOR_ENABLE)
+        s16 pan  = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_PAN);
+        s16 tilt = (s16)StepMotor_GimbalGetCurrentDeg10(STEP_MOTOR_AXIS_TILT);
+        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan);
+        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt);
+        StepMotor_StopAll();
+        app_hunt_set_prey_point_deg10(pan, tilt);
+        BLE_LOG_D("prey random stop, auto-save: pan=%d, tilt=%d", pan, tilt);
+#endif
+    }
+}
+
+u8 app_hunt_prey_random_is_active(void)
+{
+    return g_prey_random_active;
+}
+
+void app_hunt_prey_random_task(void)
+{
+    if (!g_prey_random_active)
+    {
+        return;
+    }
+
+    switch (g_prey_random_state)
+    {
+    case 0:  // IDLE — 启动第一次移动
+        app_hunt_prey_random_move();
+        g_prey_random_state = 1;
+        break;
+
+    case 1:  // MOVING — 检查电机是否到达目标
+#if (UI_STEP_MOTOR_ENABLE)
+        if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) && !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT))
+        {
+            g_prey_random_tick  = clock_time();
+            g_prey_random_state = 2;
+        }
+#endif
+        break;
+
+    case 2:  // WAITING — 停留 0.5s 后继续下一随机点
+        if (clock_time_exceed(g_prey_random_tick, PREY_RANDOM_WAIT_US))
+        {
+            app_hunt_prey_random_move();
+            g_prey_random_state = 1;
+        }
+        break;
+    }
+}
+
 void app_hunt_prey_random_reset(void)
 {
-    g_prey_pan_deg10  = 0;
-    g_prey_tilt_deg10 = -200;  // -45°
+    g_prey_random_active = 0;
+    g_prey_random_state  = 0;
+    g_prey_pan_deg10     = 0;
+    g_prey_tilt_deg10    = -200;  // -45°
 }
 
 u8 app_hunt_is_hunting(void)

@@ -713,20 +713,16 @@ class RadarVisualizer:
             if fr.cmd_id == cp.CTRL_CMD_HUNT_PREY_RANDOM:
                 start = pld[1] if len(pld) >= 2 else 0
                 return f"[RSP][0x62] HUNT_PREY_RANDOM status={st} start={start}"
-            if fr.cmd_id == cp.CTRL_CMD_HUNT_PREY_SET:
-                return f"[RSP][0x63] HUNT_PREY_SET status={st}"
-            if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_DURATION and len(pld) >= 3:
-                applied = pld[1] | (pld[2] << 8)
-                return f"[RSP][0x64] HUNT_SET_DURATION status={st} applied={applied}s"
-            if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_COUNT and len(pld) >= 2:
-                return f"[RSP][0x65] HUNT_SET_COUNT status={st} applied={pld[1]}"
-            if fr.cmd_id == cp.CTRL_CMD_HUNT_SET_SLEEP_DURATION and len(pld) >= 2:
-                return f"[RSP][0x66] HUNT_SET_SLEEP_DURATION status={st} applied={pld[1]}min"
+            if fr.cmd_id == cp.CTRL_CMD_HUNT_SETTINGS_SET and len(pld) >= 5:
+                dur_s = pld[1] | (pld[2] << 8)
+                cnt = pld[3]
+                slp = pld[4]
+                return f"[RSP][0x63] HUNT_SETTINGS_SET status={st} duration={dur_s}s count={cnt} sleep={slp}min"
             if fr.cmd_id == cp.CTRL_CMD_HUNT_SETTINGS_GET and len(pld) >= 5:
                 dur_s = pld[1] | (pld[2] << 8)
                 cnt = pld[3]
                 slp = pld[4]
-                return f"[RSP][0x67] HUNT_SETTINGS_GET status={st} duration={dur_s}s count={cnt} sleep={slp}min"
+                return f"[RSP][0x64] HUNT_SETTINGS_GET status={st} duration={dur_s}s count={cnt} sleep={slp}min"
         if (
             fr.msg_type == CTRL_MSG_TYPE_EVENT
             and fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL
@@ -1048,52 +1044,48 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         b_prey_random_start.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(True)))
         b_prey_random_stop = QtWidgets.QPushButton("停止随机(0x62)")
         b_prey_random_stop.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_random(False)))
-        b_prey_set = QtWidgets.QPushButton("设为猎物点(0x63)")
-        b_prey_set.clicked.connect(lambda: self._send(*vc.cmd_hunt_prey_set()))
         g.addWidget(QtWidgets.QLabel("猎物点"), _nrow(), 0)
         g.addWidget(b_prey_random_start, row-1, 1)
         g.addWidget(b_prey_random_stop, row-1, 2)
-        g.addWidget(b_prey_set, row-1, 3)
 
-        # 狩猎时长
-        g.addWidget(QtWidgets.QLabel("狩猎时长(秒)"), _nrow(), 0)
+        # 统一设置狩猎参数
+        g.addWidget(QtWidgets.QLabel("狩猎参数设置(0x63)"), _nrow(), 0, 1, 4)
         self.hunt_dur_spin = QtWidgets.QSpinBox()
         self.hunt_dur_spin.setRange(10, 600)
         self.hunt_dur_spin.setValue(60)
-        g.addWidget(self.hunt_dur_spin, row-1, 1)
-        b_hunt_dur = QtWidgets.QPushButton("设置(0x64)")
-        b_hunt_dur.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_duration(self.hunt_dur_spin.value())))
-        g.addWidget(b_hunt_dur, row-1, 2)
-
-        # 狩猎次数
-        g.addWidget(QtWidgets.QLabel("狩猎次数"), _nrow(), 0)
         self.hunt_cnt_spin = QtWidgets.QSpinBox()
         self.hunt_cnt_spin.setRange(1, 60)
         self.hunt_cnt_spin.setValue(3)
-        g.addWidget(self.hunt_cnt_spin, row-1, 1)
-        b_hunt_cnt = QtWidgets.QPushButton("设置(0x65)")
-        b_hunt_cnt.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_count(self.hunt_cnt_spin.value())))
-        g.addWidget(b_hunt_cnt, row-1, 2)
-
-        # 休眠时长
-        g.addWidget(QtWidgets.QLabel("休眠时长(分)"), _nrow(), 0)
         self.hunt_sleep_spin = QtWidgets.QSpinBox()
         self.hunt_sleep_spin.setRange(1, 20)
         self.hunt_sleep_spin.setValue(3)
+        g.addWidget(QtWidgets.QLabel("时长(秒)"), _nrow(), 0)
+        g.addWidget(self.hunt_dur_spin, row-1, 1)
+        g.addWidget(QtWidgets.QLabel("次数"), row-1, 2)
+        g.addWidget(self.hunt_cnt_spin, row-1, 3)
+        g.addWidget(QtWidgets.QLabel("休眠(分)"), _nrow(), 0)
         g.addWidget(self.hunt_sleep_spin, row-1, 1)
-        b_hunt_sleep = QtWidgets.QPushButton("设置(0x66)")
-        b_hunt_sleep.clicked.connect(lambda: self._send(*vc.cmd_hunt_set_sleep_duration(self.hunt_sleep_spin.value())))
-        g.addWidget(b_hunt_sleep, row-1, 2)
+        b_hunt_set_all = QtWidgets.QPushButton("统一设置(0x63)")
+        b_hunt_set_all.setStyleSheet(
+            "QPushButton { background: #585b70; font-weight: bold; }"
+            "QPushButton:hover { background: #6c7086; }"
+        )
+        b_hunt_set_all.clicked.connect(
+            lambda: self._send(*vc.cmd_hunt_settings_set(
+                self.hunt_dur_spin.value(), self.hunt_cnt_spin.value(), self.hunt_sleep_spin.value()
+            ))
+        )
+        g.addWidget(b_hunt_set_all, row-1, 2, 1, 2)
 
         # 获取当前设置
-        b_hunt_get = QtWidgets.QPushButton("获取当前设置(0x67)")
+        b_hunt_get = QtWidgets.QPushButton("获取设置(0x64)")
         b_hunt_get.setStyleSheet(
             "QPushButton { background: #585b70; font-weight: bold; }"
             "QPushButton:hover { background: #6c7086; }"
         )
         b_hunt_get.clicked.connect(lambda: self._send(*vc.cmd_hunt_settings_get()))
         b_hunt_get.setToolTip("获取当前狩猎时长、次数、休眠时长")
-        g.addWidget(b_hunt_get, row-1, 3)
+        g.addWidget(b_hunt_get, _nrow(), 0, 1, 4)
 
         # 逗宠记录
         g.addWidget(QtWidgets.QLabel("逗宠记录 (0x33)"), _nrow(), 0, 1, 4)

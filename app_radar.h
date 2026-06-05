@@ -79,6 +79,9 @@ void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10);
 
 /** 随机移动猎物点（在水平±60° 俯仰15°~30°之间随机） */
 void app_hunt_prey_random_move(void);
+void app_hunt_prey_random_set_active(u8 active);
+u8   app_hunt_prey_random_is_active(void);
+void app_hunt_prey_random_task(void);
 void app_hunt_prey_random_reset(void);
 void app_radar_clear_install_height_and_record_flash(void);
 
