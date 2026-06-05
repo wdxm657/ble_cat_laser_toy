@@ -173,18 +173,18 @@ void app_ui_power_led_task(void)
 
     if (bat_percent >= 80)
     {
-        app_ui_power_led_set_green(1);
+        app_ui_power_led_set_green(0);
+        app_ui_power_led_set_red(0);
+    }
+    else if (charging)
+    {
+        app_ui_power_led_set_green(g_led_blink_on);
         app_ui_power_led_set_red(0);
     }
     else if (bat_percent < 20)
     {
         app_ui_power_led_set_red(g_led_blink_on);
         app_ui_power_led_set_green(0);
-    }
-    else if (charging)
-    {
-        app_ui_power_led_set_green(g_led_blink_on);
-        app_ui_power_led_set_red(0);
     }
     else
     {

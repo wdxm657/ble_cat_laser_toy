@@ -267,6 +267,11 @@ class RadarVisualizer:
         self.log_lines = deque(maxlen=2000)
         self.ctrl_lines = deque(maxlen=2000)
 
+        # BLE 断开连接次数统计
+        self._ble_disconnect_count: int = 0
+        self._ble_last_disconnect_time: Optional[str] = None
+        self._ble_disconnect_need_stop_auto_power: bool = False
+
         # BLE text chunk reassembly (EVENT 0x40). Firmware streams in-order chunks.
         self._text_rx_transfer_id: Optional[int] = None
         self._text_rx_chunk_total: int = 0
@@ -358,6 +363,10 @@ class RadarVisualizer:
 
         def on_disconnected(*_args):
             print("[BLE] stack reported disconnect", file=sys.stderr)
+            with self._lock:
+                self._ble_disconnect_count += 1
+                self._ble_last_disconnect_time = datetime.datetime.now().strftime("%H:%M:%S")
+                self._ble_disconnect_need_stop_auto_power = True
 
         # Reconnect loop: peripheral or host may drop link (supervision ~4s on this firmware).
         while not self._stop.is_set():
@@ -524,12 +533,15 @@ class RadarVisualizer:
                 if self._stop.is_set():
                     break
                 print("[BLE] session error (reconnecting):", ex, file=sys.stderr)
+                with self._lock:
+                    self._ble_disconnect_count += 1
+                    self._ble_last_disconnect_time = datetime.datetime.now().strftime("%H:%M:%S")
+                    self._ble_disconnect_need_stop_auto_power = True
                 traceback.print_exc()
                 await asyncio.sleep(1.5)
 
     def _apply_ble_frame(self, data: bytes) -> None:
         # 打印16进制数据
-        print(data.hex())
         fr = cp.parse_ctrl_frame(data)
         if fr is None:
             return
@@ -685,7 +697,7 @@ class RadarVisualizer:
             return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
 
         if fr.msg_type == CTRL_MSG_TYPE_EVENT and fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET:
-            if len(pld) >= 14:
+            if len(pld) >= 12:
                 total = pld[1]
                 idx = pld[2]
                 return f"[EVT][0x33] 逗宠记录 {idx + 1}/{total} payload={pld.hex()}"
@@ -774,8 +786,13 @@ class RadarVisualizer:
     _play_record_info: str = ""
 
     def _apply_play_record_event(self, payload: bytes) -> None:
-        """解析逗宠记录 EVENT payload (15 字节, 含狩猎结果)。"""
-        if len(payload) < 15:
+        """解析逗宠记录 EVENT payload (13 字节, 含狩猎结果)。
+
+        BLE 20 字节限制 (CTRL_TX_MAX_LEN): 6 字节头 + payload ≤ 20。
+        end_sec 用 duration_sec (u16) 替代以压缩 payload：duration_sec = end_sec - start_sec。
+        APP 侧恢复：end_sec = start_sec + duration_sec。
+        """
+        if len(payload) < 13:
             return
         total = int(payload[1])
         index = int(payload[2])
@@ -785,15 +802,11 @@ class RadarVisualizer:
             | (int(payload[5]) << 16)
             | (int(payload[6]) << 24)
         )
-        end_sec = (
-            int(payload[7])
-            | (int(payload[8]) << 8)
-            | (int(payload[9]) << 16)
-            | (int(payload[10]) << 24)
-        )
-        motion_sec = int(payload[11]) | (int(payload[12]) << 8)
-        avg_speed = int(payload[13])
-        result = int(payload[14])  # 狩猎结果
+        duration_sec = int(payload[7]) | (int(payload[8]) << 8)  # u16 LE, 替代原 4 字节 end_sec
+        end_sec = start_sec + duration_sec
+        motion_sec = int(payload[9]) | (int(payload[10]) << 8)   # 原偏移 [11..12]
+        avg_speed = int(payload[11])                              # 原偏移 [13]
+        result = int(payload[12])                                 # 原偏移 [14]
 
         RESULT_TEXT = {0: "未完成", 1: "完成", 2: "捕猎成功"}
 
@@ -819,6 +832,9 @@ class RadarVisualizer:
                 f"运动 {motion_sec}s  速度 {avg_speed}cm/s  "
                 f"结果: {result_str}"
             )
+
+        # 自动 ACK：告知设备已收到，请求发送下一条（如有）
+        self.send_cmd(*vc.cmd_play_record_ack())
 
     def _parse_line(self, line: str):
         s = line.strip()
@@ -980,6 +996,12 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self._update_conn_btn_text()
         self.conn_btn.clicked.connect(self._on_toggle_ble_conn)
         conn_l.addWidget(self.conn_btn)
+
+        # BLE 断开次数显示
+        self.disconnect_count_label = QtWidgets.QLabel("断开连接次数: 0")
+        self.disconnect_count_label.setStyleSheet("color: #f38ba8; font-size: 12px; font-weight: bold;")
+        conn_l.addWidget(self.disconnect_count_label)
+
         if vis._transport != "ble":
             self.addr_edit.setEnabled(False)
             self.conn_btn.setEnabled(False)
@@ -1019,6 +1041,14 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.ctrl_timer.timeout.connect(self._flush_ctrl_log)
         self.ctrl_timer.start()
 
+        # Auto power toggle timer
+        self._auto_power_timer = QtCore.QTimer(self)
+        # AutoToggle
+        self._auto_power_interbal = 35
+        self._auto_power_timer.setInterval(self._auto_power_interbal * 1000)
+        self._auto_power_timer.timeout.connect(self._on_auto_power_tick)
+        self._auto_power_on_phase = True
+
     def _on_send_speed(self) -> None:
         ok = self.vis.send_radar_track_interval_us(self.speed_spin.value())
         if not ok:
@@ -1041,6 +1071,32 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"[本地] BLE {'连接请求' if enabled else '已断开'}: {addr}"
         )
 
+    def _stop_auto_power_if_running(self) -> None:
+        """如果自动开关循环正在运行，停止它并取消按钮选中状态。"""
+        if self._auto_power_timer.isActive():
+            self._auto_power_timer.stop()
+            self._auto_power_btn.setChecked(False)
+            self.radar_text.appendPlainText("[自动开关] 手动{操作中断循环")
+
+    def _on_auto_power_toggle(self) -> None:
+        btn = self.sender()
+        if btn.isChecked():
+            self._auto_power_on_phase = True
+            self._auto_power_timer.start()
+            self._send(*vc.cmd_power_ctrl(1))
+            self.radar_text.appendPlainText(f"[自动开关] 开始循环：{self._auto_power_interbal}s开→{self._auto_power_interbal}s关")
+        else:
+            self._auto_power_timer.stop()
+            self.radar_text.appendPlainText("[自动开关] 已停止")
+
+    def _on_auto_power_tick(self) -> None:
+        if self._auto_power_on_phase:
+            self._send(*vc.cmd_power_ctrl(0))
+            self._auto_power_on_phase = False
+        else:
+            self._send(*vc.cmd_power_ctrl(1))
+            self._auto_power_on_phase = True
+
     def _build_service_panel(self, root: QtWidgets.QVBoxLayout) -> None:
         g = QtWidgets.QGridLayout()
         g.setHorizontalSpacing(6)
@@ -1048,13 +1104,23 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         root.addLayout(g)
 
         # Power
+        def _power_on():
+            self._stop_auto_power_if_running()
+            self._send(*vc.cmd_power_ctrl(1))
+        def _power_off():
+            self._stop_auto_power_if_running()
+            self._send(*vc.cmd_power_ctrl(0))
         b_power_on = QtWidgets.QPushButton("PowerOn")
-        b_power_on.clicked.connect(lambda: self._send(*vc.cmd_power_ctrl(1)))
+        b_power_on.clicked.connect(_power_on)
         b_power_off = QtWidgets.QPushButton("PowerOff")
-        b_power_off.clicked.connect(lambda: self._send(*vc.cmd_power_ctrl(0)))
+        b_power_off.clicked.connect(_power_off)
+        self._auto_power_btn = QtWidgets.QPushButton("AutoToggle(30s)")
+        self._auto_power_btn.setCheckable(True)
+        self._auto_power_btn.clicked.connect(self._on_auto_power_toggle)
         g.addWidget(QtWidgets.QLabel("电源 (0x12)"), 0, 0)
         g.addWidget(b_power_on, 0, 1)
         g.addWidget(b_power_off, 0, 2)
+        g.addWidget(self._auto_power_btn, 0, 3)
 
         # Time set
         g.addWidget(QtWidgets.QLabel("时间同步 (0x32)"), 1, 0)
@@ -1342,7 +1408,9 @@ class RadarNightWindow(QtWidgets.QMainWindow):
                 return
             lines = list(self.vis.log_lines)
             self.vis.log_lines.clear()
-        self.log_text.appendPlainText("\n".join(lines))
+        now_str = datetime.datetime.now().strftime("%H:%M:%S")
+        timestamped_lines = [f"[{now_str}] {l}" for l in lines]
+        self.log_text.appendPlainText("\n".join(timestamped_lines))
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
@@ -1369,6 +1437,11 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             bquad = [tuple(p) for p in self.vis.boundary_quad]
             mdir_ok = self.vis.motion_dir_valid
             mdeg10 = self.vis.motion_dir_deg10
+            disconnect_count = self.vis._ble_disconnect_count
+            last_disconnect_time = self.vis._ble_last_disconnect_time
+            need_stop_auto_power = self.vis._ble_disconnect_need_stop_auto_power
+            if need_stop_auto_power:
+                self.vis._ble_disconnect_need_stop_auto_power = False
 
         if bepoch != self._last_boundary_epoch:
             self._last_boundary_epoch = bepoch
@@ -1425,6 +1498,10 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             f"Boundary epoch: {bepoch}",
             f"Quad: {bquad}",
             "",
+            f"── BLE ──",
+            f"断开连接次数: {disconnect_count}",
+            f"最近断开时间: {last_disconnect_time if last_disconnect_time else '--'}",
+            "",
             f"UI 待下发 interval: {self.speed_spin.value()} µs  (CMD 0x58)",
         ]
         self.radar_text.setPlainText("\n".join(lines))
@@ -1435,6 +1512,15 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         cur_text = self.play_record_info.text()
         if rec_info and rec_info != cur_text:
             self.play_record_info.setText(rec_info)
+
+        # 断开时自动关闭自动开关机
+        if need_stop_auto_power:
+            self._stop_auto_power_if_running()
+            self.radar_text.appendPlainText("[本地] 断开连接，自动开关机已停止")
+
+        # 更新 BLE 断开次数标签
+        disc_time_str = last_disconnect_time if last_disconnect_time else "--"
+        self.disconnect_count_label.setText(f"断开连接次数: {disconnect_count}  最近: {disc_time_str}")
 
         self.canvas.draw_idle()
 

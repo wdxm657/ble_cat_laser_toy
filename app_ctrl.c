@@ -37,7 +37,7 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 6  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 1  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -154,16 +154,18 @@ static u32 g_play_upload_tick                               = 0;
  */
 static void app_ctrl_upload_one_record_from_cache(void)
 {
-    u8  i         = g_play_cache_index;
-    u32 start_sec = g_play_cache_records[i * 2];
-    u32 end_sec   = g_play_cache_records[i * 2 + 1];
-    u32 msec      = g_play_cache_motion[i];
-    u16 avs       = g_play_cache_speed[i];
-    u8  result    = g_play_cache_result[i];
-    u16 m16       = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
-    u8  av8       = (avs > 255u) ? 255u : (u8)avs;
+    u8  i          = g_play_cache_index;
+    u32 start_sec  = g_play_cache_records[i * 2];
+    u32 end_sec    = g_play_cache_records[i * 2 + 1];
+    u32 duration   = (end_sec > start_sec) ? (end_sec - start_sec) : 0;
+    u16 dur16      = (duration > 0xFFFFu) ? 0xFFFFu : (u16)duration;
+    u32 msec       = g_play_cache_motion[i];
+    u16 avs        = g_play_cache_speed[i];
+    u8  result     = g_play_cache_result[i];
+    u16 m16        = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
+    u8  av8        = (avs > 255u) ? 255u : (u8)avs;
 
-    u8 evt[15] = {0};
+    u8 evt[13] = {0};
     evt[0]     = CTRL_STATUS_OK;
     // 由于APP端需要收到总数后才会发送ACK给设备，所以每次上传记录的total数量都需要是1
     evt[1]  = 1;
@@ -172,19 +174,18 @@ static void app_ctrl_upload_one_record_from_cache(void)
     evt[4]  = (u8)((start_sec >> 8) & 0xFF);
     evt[5]  = (u8)((start_sec >> 16) & 0xFF);
     evt[6]  = (u8)((start_sec >> 24) & 0xFF);
-    evt[7]  = (u8)(end_sec & 0xFF);
-    evt[8]  = (u8)((end_sec >> 8) & 0xFF);
-    evt[9]  = (u8)((end_sec >> 16) & 0xFF);
-    evt[10] = (u8)((end_sec >> 24) & 0xFF);
-    evt[11] = (u8)(m16 & 0xFF);
-    evt[12] = (u8)((m16 >> 8) & 0xFF);
-    evt[13] = av8;
-    evt[14] = result;  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
-    BLE_LOG_D("upload record %d/%d start:%d end:%d tz:%d mot:%d av:%d res:%d",
+    // duration_sec = end_sec - start_sec (u16 LE), 替换原 4 字节 end_sec 以将整帧控制在 20 字节内
+    evt[7]  = (u8)(dur16 & 0xFF);
+    evt[8]  = (u8)((dur16 >> 8) & 0xFF);
+    evt[9]  = (u8)(m16 & 0xFF);
+    evt[10] = (u8)((m16 >> 8) & 0xFF);
+    evt[11] = av8;
+    evt[12] = result;  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
+    BLE_LOG_D("upload record %d/%d start:%d dur:%d tz:%d mot:%d av:%d res:%d",
               i + 1,
               g_play_cache_total,
               start_sec,
-              end_sec,
+              dur16,
               g_play_cache_timezones[i],
               (u32)m16,
               (u32)av8,
@@ -496,13 +497,12 @@ void       app_ctrl_status_notify_task(void)
     if (changed)
     {
         // 状态最多允许1s更新1次，避免过于频繁地通知APP（尤其是充电状态可能会有较大波动）
-        if (clock_time_exceed(status_check_tick, 1000000))
-        {
-            status_check_tick = clock_time();
-            BLE_LOG_D("height: %d", height_mm);
-            u8 pl[10] = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, hunting_mode, standby_mode, sleeping_mode};
-            app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
-        }
+        // if (clock_time_exceed(status_check_tick, 1000000))
+        // {
+        status_check_tick = clock_time();
+        u8 pl[10]         = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, hunting_mode, standby_mode, sleeping_mode};
+        app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
+        // }
     }
 #endif
 }

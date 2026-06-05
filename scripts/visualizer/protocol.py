@@ -64,6 +64,12 @@ def build_ctrl_cmd_frame(cmd_id: int, seq: int, payload: bytes) -> bytes:
         ]
     ) + payload
 
+# int转hex字符串，0-255范围内，前面补0
+def int_to_hex(num):
+    if num < 0 or num > 255:
+        raise ValueError("Input must be an integer between 0 and 255")
+    return f"{num:02X}"
+    
 
 def parse_ctrl_frame(data: bytes) -> Optional[CtrlFrame]:
     if len(data) < 6:
@@ -76,6 +82,8 @@ def parse_ctrl_frame(data: bytes) -> Optional[CtrlFrame]:
     if len(data) < 6 + payload_len:
         return None
     payload = data[6 : 6 + payload_len]
+    # print(data.hex())
+    print(f"type:{msg_type} id:{int_to_hex(cmd_id)} payload:{payload.hex()}")
     return CtrlFrame(version, msg_type, cmd_id, seq, payload_len, payload)
 
 

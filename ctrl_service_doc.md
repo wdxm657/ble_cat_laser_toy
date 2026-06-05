@@ -469,6 +469,7 @@ byte7 : 0x00
 用途：设备主动上报"完整逗宠记录"（即狩猎结果记录），APP 成功接收后发送 ACK 通知设备清理记录。  
 说明：完整记录指同时有 `start_sec` 和 `end_sec`；仅有开始时间（`end_sec = 0xFFFFFFFF`）的进行中记录不会上报。
 每条记录包含狩猎结果：`0=未完成`、`1=完成`、`2=捕猎成功`。
+为满足 BLE 单帧 20 字节（`CTRL_TX_MAX_LEN`）限制，`end_sec` 压缩为 `duration_sec = end_sec − start_sec`（u16 LE），APP 侧恢复：`end_sec = start_sec + duration_sec`。
 
 **触发时机（设备 → APP）**
 
@@ -478,7 +479,8 @@ byte7 : 0x00
 **长度约束（与实现对齐）**
 
 - 控制面单帧总长须满足 `6 + payloadLen ≤ CTRL_TX_MAX_LEN`（当前 **20** 字节，见 §1 / `app_ctrl.h`）。
-- 本事件 **payload 固定 15 字节**（`payloadLen = 0x000F`），总长 **21 字节**。
+- 由于 20 字节限制，本事件的 `end_sec` 字段压缩为 `duration_sec = end_sec - start_sec`（u16 LE），APP 端恢复：`end_sec = start_sec + duration_sec`。
+- 本事件 **payload 固定 13 字节**（`payloadLen = 0x000D`），总长 **19 字节**。
 
 **主动上报帧（设备 → APP，EVENT）**
 
@@ -490,10 +492,10 @@ byte7 : 0x00
 | 1 | 1 | u8 | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致） |
 | 2 | 1 | u8 | `index`：当前条在批次中的序号 `0 .. total-1` |
 | 3 | 4 | u32 LE | `start_sec`：逗宠段开始 Unix 秒 |
-| 7 | 4 | u32 LE | `end_sec`：逗宠段结束 Unix 秒 |
-| 11 | 2 | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535** |
-| 13 | 1 | u8 | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255** |
-| 14 | 1 | u8 | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)` |
+| 7 | 2 | u16 LE | `duration_sec`：**逗宠持续秒数**。`duration_sec = end_sec − start_sec`（u16，饱和 65535）。APP 恢复 `end_sec = start_sec + duration_sec`。替代原 4 字节 `end_sec` 以符合 20 字节单帧限制 |
+| 9 | 2 | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535** |
+| 11 | 1 | u8 | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255** |
+| 12 | 1 | u8 | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)` |
 
 **运动统计（与固件 `RadarMotionCachePush` / `radar_play_on_cache_displacement_ms` 对齐）**
 
@@ -502,14 +504,14 @@ byte7 : 0x00
 - 弦速（cm/s）：`v = √(Δx²+Δy²)_mm × 100 / Δt_ms`（`Δx/Δy` 为相对 newest 的毫米位移）；位移小于 0.5mm 时 `v` 按 0，仍累加 **`Δt_ms`**。
 - 段结束时写入 flash / 上报：`motion_sec` 为秒，`avg_speed_cm_s` 为上述加权平均（u16 存 flash，经 BLE 再截断为 u8）。
 
-**整帧 21 字节示例（6 字节头 + 15 字节 payload；`payloadLen` 小端为 `0x0F 0x00`）**
+**整帧 19 字节示例（6 字节头 + 13 字节 payload；`payloadLen` 小端为 `0x0D 0x00`）**
 
 ```
 byte0 : 0x01
 byte1 : 0x03           // msgType = EVENT
 byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
-byte4 : 0x0F           // payloadLen L0 = 15
+byte4 : 0x0D           // payloadLen L0 = 13
 byte5 : 0x00           // payloadLen L1 = 0
 byte6 : status         // payload[0]
 byte7 : total          // payload[1]
@@ -518,14 +520,12 @@ byte9 : start_sec_L0   // payload[3..6]
 byte10: start_sec_L1
 byte11: start_sec_L2
 byte12: start_sec_L3
-byte13: end_sec_L0     // payload[7..10]
-byte14: end_sec_L1
-byte15: end_sec_L2
-byte16: end_sec_L3
-byte17: motion_sec_L0  // payload[11..12]
-byte18: motion_sec_L1
-byte19: avg_speed_cm_s // payload[13]
-byte20: result         // payload[14] 狩猎结果: 0=未完成 1=完成 2=捕猎成功
+byte13: duration_L0    // payload[7..8]  duration_sec = end_sec - start_sec (u16 LE)
+byte14: duration_L1
+byte15: motion_sec_L0  // payload[9..10]
+byte16: motion_sec_L1
+byte17: avg_speed_cm_s // payload[11]
+byte18: result         // payload[12] 狩猎结果: 0=未完成 1=完成 2=捕猎成功
 ```
 
 **ACK 请求帧（APP → 设备，CMD）**
