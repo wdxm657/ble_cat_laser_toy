@@ -70,7 +70,17 @@ _attribute_data_retention_ static u32          g_hunt_celebration_tick   = 0;   
 _attribute_data_retention_ static u32          g_hunt_sleep_end_tick     = 0;     // 休眠结束tick
 _attribute_data_retention_ static u8           g_hunt_success            = 0;     // 当前狩猎是否成功
 _attribute_data_retention_ static s16          g_prey_pan_deg10          = 0;     // 猎物点水平角 0°
-_attribute_data_retention_ static s16          g_prey_tilt_deg10         = -200;  // 猎物点俯仰角 20°
+_attribute_data_retention_ static s16          g_prey_tilt_deg10         = -700;  // 猎物点俯仰角 20°
+/** 猎物点地面坐标缓存，仅在 g_prey_pan_deg10 / g_prey_tilt_deg10 变更时重算 */
+_attribute_data_retention_ static s16 g_prey_px_mm    = 0;
+_attribute_data_retention_ static s16 g_prey_py_mm    = 0;
+_attribute_data_retention_ static u8  g_prey_xy_valid = 0;
+
+/** pan/tilt 更新后标记缓存无效，下次 hunt_is_target_near_prey_point 时自动重算 px/py */
+static inline void hunt_prey_point_invalidate_xy(void)
+{
+    g_prey_xy_valid = 0;
+}
 
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte[RADAR_FRAME_LEN];
 _attribute_data_retention_ volatile u8 g_uart_ndma_rx_byte_cnt = 0;
@@ -259,7 +269,7 @@ static void RadarMotionCachePush(u32 now_tick, s16 x_mm, s16 y_mm)
                     }
                     v_cms_mag = (u32)v;
                 }
-                BLE_LOG_D("add dt_ms %d, v_cms %d", dt_ms, v_cms_mag);
+                // BLE_LOG_D("add dt_ms %d, v_cms %d", dt_ms, v_cms_mag);
                 radar_play_on_cache_displacement_ms(dt_ms, v_cms_mag);
             }
         }
@@ -410,10 +420,10 @@ typedef struct
 
 _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
 
-#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)   // 1s
-#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)   // 4s
-#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 30u)  // 30s
-#define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u * 1u)
+#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)  // 1s
+#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)  // 4s
+#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 5u)  // 30s
+#define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u)
 #define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
 #define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
 #define RADAR_UART_WARMUP_US       (1000000u * 7u / 10u)  // 700ms
@@ -523,8 +533,9 @@ static void radar_prey_point_cfg_load_from_flash(void)
     {
         return;
     }
-    g_prey_pan_deg10          = stored.pan_deg10;
-    g_prey_tilt_deg10         = stored.tilt_deg10;
+    g_prey_pan_deg10  = stored.pan_deg10;
+    g_prey_tilt_deg10 = stored.tilt_deg10;
+    hunt_prey_point_invalidate_xy();
     g_hunt_duration_s         = stored.duration_s;
     g_hunt_count              = stored.count;
     g_hunt_sleep_duration_min = stored.sleep_min;
@@ -541,6 +552,7 @@ static void radar_play_on_cache_displacement_ms(u32 dt_ms, u32 speed_cms_mag)
 {
     if (!g_radar_working_mode || g_radar_play_state != RADAR_PLAY_STATE_ACTIVE || dt_ms == 0u)
     {
+        // BLE_LOG_D("skip cache disp: work %d state %d dt_ms %d", g_radar_working_mode, g_radar_play_state, dt_ms);
         return;
     }
     if (g_radar_drop_first_disp_after_work)
@@ -733,6 +745,7 @@ static void radar_epoch_to_datetime(u32  epoch_sec,
 static u8 radar_play_record_push(u32 start_sec, u32 end_sec)
 {
     u8 idx = g_radar_play_record_next;
+    BLE_LOG_D("push record idx %d start %d end %d", idx, start_sec, end_sec);
 
     g_radar_play_start_sec[idx]     = start_sec;
     g_radar_play_end_sec[idx]       = end_sec;
@@ -774,7 +787,7 @@ static void radar_play_record_start(void)
         g_radar_play_state        = RADAR_PLAY_STATE_ACTIVE;
         g_radar_play_active_start = g_radar_time_sec;
         g_radar_play_active_idx   = radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
-        radar_play_records_save_to_flash();
+        // radar_play_records_save_to_flash();
         BLE_LOG_D("radar_play_record_push");
         // gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
     }
@@ -811,16 +824,10 @@ static void radar_play_record_end(void)
     g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
     if (g_radar_play_end_sec[g_radar_play_active_idx] - g_radar_play_start_sec[g_radar_play_active_idx] < RADAR_HOLD_ON_NO_MOTION_S - 1)
     {
-        BLE_LOG_D("end %d - start %d idx--", g_radar_play_end_sec[g_radar_play_active_idx], g_radar_play_start_sec[g_radar_play_active_idx], g_radar_play_active_idx);
+        BLE_LOG_D("end %d - start < 30 %d idx %d", g_radar_play_end_sec[g_radar_play_active_idx], g_radar_play_start_sec[g_radar_play_active_idx], g_radar_play_active_idx);
         g_radar_play_active_idx--;
         g_radar_play_state = RADAR_PLAY_STATE_IDLE;
         return;
-    }
-
-    // 默认狩猎结果为未完成 unless set otherwise
-    if (g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_INCOMPLETE)
-    {
-        g_radar_play_hunt_result[g_radar_play_active_idx] = HUNT_RESULT_INCOMPLETE;
     }
 
     g_radar_play_state = RADAR_PLAY_STATE_IDLE;
@@ -964,6 +971,7 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
 
 u8 app_radar_has_complete_play_records(void)
 {
+    BLE_LOG_D("app_radar_has_complete_play_records");
     u8 idx = g_radar_play_record_next;
     for (u8 i = 0; i < g_radar_play_record_count; i++)
     {
@@ -975,6 +983,7 @@ u8 app_radar_has_complete_play_records(void)
 
         if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
         {
+            BLE_LOG_D("found complete record idx %d", idx);
             return 1;
         }
     }
@@ -1080,6 +1089,7 @@ void app_radar_clear_install_height_and_record_flash(void)
     // flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
     flash_erase_sector(RADAR_INSTALL_HEIGHT_FLASH_ADDR);
     flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
+    flash_erase_sector(RADAR_PREY_POINT_CFG_FLASH_ADDR);
 }
 
 void app_radar_init(void)
@@ -1195,7 +1205,6 @@ u8 app_radar_is_working_mode(void)
 static void RadarSessionOnMotion(u32 now_tick)
 {
     g_radar_last_motion_tick = now_tick;
-    g_radar_hold_on_mode     = 1;
     // 狩猎状态机负责在 HUNT_ACTIVE 入口调用 radar_play_record_start()
 }
 
@@ -1283,6 +1292,7 @@ void app_radar_set_install_height_mm(s32 height_mm)
 
     g_radar_install_height_mm  = height_mm;
     g_radar_install_height_set = 1;
+    hunt_prey_point_invalidate_xy();
 
     radar_install_height_flash_t stored;
     stored.magic      = RADAR_INSTALL_HEIGHT_FLASH_MAGIC;
@@ -2440,6 +2450,7 @@ static void hunt_prey_point_to_xy(s32 height_mm, s16 *out_x_mm, s16 *out_y_mm)
         y_mm = -32768;
     *out_x_mm = (s16)x_mm;
     *out_y_mm = (s16)y_mm;
+    BLE_LOG_D("prey point pan %d tilt %d -> x %d y %d", g_prey_pan_deg10, g_prey_tilt_deg10, *out_x_mm, *out_y_mm);
 }
 
 /** 检查最新的雷达目标位置是否在猎物点半径范围内 */
@@ -2456,11 +2467,16 @@ static u8 hunt_is_target_near_prey_point(void)
     if (height_mm <= 0)
         height_mm = 2500;
 
-    s16 px = 0, py = 0;
-    hunt_prey_point_to_xy(height_mm, &px, &py);
+    if (!g_prey_xy_valid)
+    {
+        hunt_prey_point_to_xy(height_mm, &g_prey_px_mm, &g_prey_py_mm);
+        g_prey_xy_valid = 1;
+    }
 
-    s32 dx = (s32)tx - (s32)px;
-    s32 dy = (s32)ty - (s32)py;
+    s32 dx = (s32)tx - (s32)g_prey_px_mm;
+    s32 dy = (s32)ty - (s32)g_prey_py_mm;
+    if (g_hunt_state == HUNT_STATE_CELEBRATE)
+        BLE_LOG_D("target(%d,%d) prey(%d,%d) dx %d dy %d", tx, ty, g_prey_px_mm, g_prey_py_mm, dx, dy);
     s32 d2 = dx * dx + dy * dy;
 
     return (d2 <= (s32)HUNT_PREY_ZONE_RADIUS_MM * (s32)HUNT_PREY_ZONE_RADIUS_MM) ? 1 : 0;
@@ -2528,6 +2544,7 @@ void app_radar_task_power_schedule(void)
             g_hunt_no_target_tick = 0;
             g_hunt_prey_zone_tick = 0;
             // 启动逗宠记录
+            radar_working_mode_set(1);
             RadarSessionOnMotion(now_tick);
             radar_play_record_start();  // 启动狩猎记录
             gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
@@ -2613,8 +2630,16 @@ void app_radar_task_power_schedule(void)
         if (g_hunt_session_acc_ms / 1000 >= (u32)g_hunt_duration_s)
         {
             BLE_LOG_D("HUNT: ACTIVE -> COMPLETE_MOVING (timer %ds)", g_hunt_duration_s);
+            BLE_LOG_D("HUNT: stop tracking and move to prey point");
             radar_working_mode_set(0);
-            g_hunt_state = HUNT_STATE_COMPLETE_MOVING;
+            StepMotor_StopAll();
+            g_radar_hold_on_mode = 0;  // 停止雷达跟踪, 由云台移动到猎物点
+            g_hunt_state         = HUNT_STATE_COMPLETE_MOVING;
+            // 移动光斑到猎物点
+            StepMotor_GimbalSetSpeedUs(1200);
+            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
+            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
+            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
             return;
         }
 
@@ -2667,12 +2692,6 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 移动到猎物点: 等待云台到达 -------- */
     case HUNT_STATE_COMPLETE_MOVING: {
-        // 移动光斑到猎物点
-        StepMotor_GimbalSetSpeedUs(1200);
-        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
-        StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
-        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
-        g_radar_hold_on_mode = 0;  // 停止雷达跟踪, 由云台移动到猎物点
         // 等待云台到达猎物点
         if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) && !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT))
         {
@@ -3074,6 +3093,7 @@ void app_hunt_set_prey_point_deg10(s16 pan_deg10, s16 tilt_deg10)
         tilt_deg10 = GIMBAL_TILT_LIMIT_DEG10_NEG;
     g_prey_pan_deg10  = pan_deg10;
     g_prey_tilt_deg10 = tilt_deg10;
+    hunt_prey_point_invalidate_xy();
     radar_prey_point_cfg_save_to_flash();
 }
 
@@ -3088,7 +3108,7 @@ void app_hunt_prey_random_move(void)
 {
     // 水平角度（±60°）俯仰角（15°~30°）间随机移动
     s16 pan_deg10  = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
-    s16 tilt_deg10 = (s16)RadarRandRangeI32(-300, -150);  // -30°~-15°
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(150 - 900, 300 - 900);  // 15°-30°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);
@@ -3167,11 +3187,16 @@ void app_hunt_prey_random_reset(void)
     g_prey_random_state  = 0;
     g_prey_pan_deg10     = 0;
     g_prey_tilt_deg10    = -200;
+    hunt_prey_point_invalidate_xy();
 }
 
 u8 app_hunt_is_hunting(void)
 {
-    return (g_hunt_state == HUNT_STATE_ACTIVE) ? 1 : 0;
+    return (g_hunt_state == HUNT_STATE_ACTIVE ||
+            g_hunt_state == HUNT_STATE_CELEBRATE ||
+            g_hunt_state == HUNT_STATE_COMPLETE_MOVING)
+               ? 1
+               : 0;
 }
 
 u8 app_hunt_is_standby(void)
@@ -3196,6 +3221,7 @@ int app_hunt_get_records_with_result(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_o
         count = max_records;
 
     u8 idx = g_radar_play_record_next;
+    BLE_LOG_D("get_records_with_result count=%d next_idx=%d", count, idx);
     for (u8 i = 0; i < count; i++)
     {
         if (idx == 0)
@@ -3210,6 +3236,12 @@ int app_hunt_get_records_with_result(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_o
             motion_sec_out[i] = g_radar_play_motion_sec[idx];
         if (avg_speed_cms_out)
             avg_speed_cms_out[i] = g_radar_play_avg_speed_cms[idx];
+        g_radar_play_start_sec[i]     = 0;
+        g_radar_play_end_sec[i]       = 0;
+        g_radar_play_tz_q15[i]        = 0;
+        g_radar_play_hunt_result[i]   = 0;
+        g_radar_play_motion_sec[i]    = 0;
+        g_radar_play_avg_speed_cms[i] = 0;
     }
     return count;
 }

@@ -1404,6 +1404,7 @@ void app_ctrl_on_ble_connected(void)
 void app_ctrl_notify_play_record_changed(void)
 {
 #if (UI_RADAR_ENABLE)
+    BLE_LOG_D("app_ctrl_notify_play_record_changed");
     app_ctrl_try_upload_play_records();
 #endif
 }
