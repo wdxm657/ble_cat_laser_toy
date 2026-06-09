@@ -915,6 +915,7 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     rsp[4] = (U16_HI((s16)height_mm));
     rsp[5] = app_adc_dbg_is_charging() ? 1 : 0;
     app_ctrl_calc_exclusive_mode_flags(&rsp[7], &rsp[8], &rsp[9], &rsp[6]);
+    BLE_LOG_D("status get: power=%d, height=%d mm, charging=%d, setting=%d, hunting=%d, standby=%d, sleeping=%d", rsp[1], height_mm, rsp[5], rsp[6], rsp[7], rsp[8], rsp[9]);
 #endif
 
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_STATUS_GET, seq, rsp, sizeof(rsp));

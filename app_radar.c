@@ -2454,7 +2454,8 @@ static void hunt_prey_point_to_xy(s32 height_mm, s16 *out_x_mm, s16 *out_y_mm)
 }
 
 /** 检查最新的雷达目标位置是否在猎物点半径范围内 */
-static u8 hunt_is_target_near_prey_point(void)
+static u32 last_log_tick = 0;
+static u8  hunt_is_target_near_prey_point(void)
 {
     if (g_radar_pred.motion_cache_count == 0)
         return 0;
@@ -2475,8 +2476,12 @@ static u8 hunt_is_target_near_prey_point(void)
 
     s32 dx = (s32)tx - (s32)g_prey_px_mm;
     s32 dy = (s32)ty - (s32)g_prey_py_mm;
-    if (g_hunt_state == HUNT_STATE_CELEBRATE)
+    // 0.5s打印一次
+    if (last_log_tick == 0 || clock_time_exceed(last_log_tick, 500000))
+    {
+        last_log_tick = clock_time();
         BLE_LOG_D("target(%d,%d) prey(%d,%d) dx %d dy %d", tx, ty, g_prey_px_mm, g_prey_py_mm, dx, dy);
+    }
     s32 d2 = dx * dx + dy * dy;
 
     return (d2 <= (s32)HUNT_PREY_ZONE_RADIUS_MM * (s32)HUNT_PREY_ZONE_RADIUS_MM) ? 1 : 0;
@@ -3201,7 +3206,10 @@ u8 app_hunt_is_hunting(void)
 
 u8 app_hunt_is_standby(void)
 {
-    return (g_hunt_state == HUNT_STATE_STANDBY) ? 1 : 0;
+    return (g_hunt_state == HUNT_STATE_STANDBY ||
+            g_hunt_state == HUNT_STATE_IDLE)
+               ? 1
+               : 0;
 }
 
 u8 app_hunt_is_sleeping(void)
