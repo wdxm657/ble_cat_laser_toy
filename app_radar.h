@@ -85,7 +85,7 @@ void app_hunt_prey_random_move(void);
 void app_hunt_prey_random_set_active(u8 active);
 u8   app_hunt_prey_random_is_active(void);
 void app_hunt_prey_random_task(void);
-void app_hunt_prey_random_reset(void);
+void app_hunt_prey_save(u8 apply);
 void app_radar_clear_install_height_and_record_flash(void);
 
 /** 当前状态：是否处于狩猎活跃状态（狩猎中） */

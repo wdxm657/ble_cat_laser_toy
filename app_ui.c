@@ -115,15 +115,6 @@ void app_ui_led_task(void)
         app_ui_led_set_red(g_led_blink_on);
         return;
     }
-
-    // - 红色灯常亮
-    //     - 代表连续逗宠满10分钟自动进入临时60秒休息状态
-    if (RadarSessionIsResting())
-    {
-        app_ui_led_all_off();
-        app_ui_led_set_red(1);
-        return;
-    }
     if (app_get_power_state())
     {
         // - 绿色灯常亮

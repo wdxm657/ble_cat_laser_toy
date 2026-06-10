@@ -1220,6 +1220,7 @@ static int app_ctrl_handle_hunt_settings_enter(u8 seq, u8 *payload, u16 len)
     // 光斑位于当前猎物点
     s16 pan = 0, tilt = 0;
     app_hunt_get_prey_point_deg10(&pan, &tilt);
+    BLE_LOG_D("hunt settings enter: prey point pan=%d deg10, tilt=%d deg10", pan, tilt);
     StepMotor_GimbalSetSpeedUs(1200);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)pan);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)tilt);
@@ -1246,15 +1247,7 @@ static int app_ctrl_handle_hunt_settings_exit(u8 seq, u8 *payload, u16 len)
         return -1;
     }
     u8 apply = payload[0];
-    if (apply)
-    {
-        BLE_LOG_D("hunt settings applied");
-    }
-    else
-    {
-        BLE_LOG_D("hunt settings discarded");
-        app_hunt_prey_random_reset();
-    }
+    app_hunt_prey_save(apply);
     // 清除设置模式
     g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
     u8 rsp[1]             = {CTRL_STATUS_OK};
