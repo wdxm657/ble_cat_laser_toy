@@ -338,15 +338,15 @@ _attribute_data_retention_ static u8                 g_radar_install_height_set 
 static const radar_boundary_point_t g_radar_boundary_quad_default[4] = {
     {-6000, 6000},
     {6000, 6000},
-    {6000, 500},
-    {-6000, 500},
+    {6000, 0},
+    {-6000, 0},
 };
 
 _attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4] = {
     {-6000, 6000},
     {6000, 6000},
-    {6000, 500},
-    {-6000, 500},
+    {6000, 0},
+    {-6000, 0},
 };
 
 #define RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC 0x52445343u  // "RDSC"
@@ -379,9 +379,9 @@ typedef struct
 
 _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
 
-#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)  // 1s
-#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)  // 4s
-#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 5u)  // 30s
+#define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)   // 1s
+#define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)   // 4s
+#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 10u)  // 15s
 #define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u)
 #define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
 #define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
@@ -772,12 +772,20 @@ static void radar_play_record_end(void)
         g_radar_play_motion_sec[g_radar_play_active_idx]    = mot_sec;
         g_radar_play_avg_speed_cms[g_radar_play_active_idx] = av;
     }
-    g_radar_sess_motion_ms                        = 0;
-    g_radar_sess_speed_dt_sum                     = 0u;
-    g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
+    g_radar_sess_motion_ms    = 0;
+    g_radar_sess_speed_dt_sum = 0u;
+    if (g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_COMPLETE ||
+        g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_SUCCESS)
+    {
+        g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_play_start_sec[g_radar_play_active_idx] + g_hunt_duration_s;
+    }
+    else
+    {
+        g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
+    }
     if (g_radar_play_end_sec[g_radar_play_active_idx] - g_radar_play_start_sec[g_radar_play_active_idx] < RADAR_HOLD_ON_NO_MOTION_S - 1)
     {
-        BLE_LOG_D("end %d - start < 30 %d idx %d", g_radar_play_end_sec[g_radar_play_active_idx], g_radar_play_start_sec[g_radar_play_active_idx], g_radar_play_active_idx);
+        BLE_LOG_D("end %d - start < %d %d idx %d", g_radar_play_end_sec[g_radar_play_active_idx], RADAR_HOLD_ON_NO_MOTION_S, g_radar_play_start_sec[g_radar_play_active_idx], g_radar_play_active_idx);
         g_radar_play_active_idx--;
         g_radar_play_state = RADAR_PLAY_STATE_IDLE;
         return;
@@ -889,7 +897,7 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
         u32 start = g_radar_play_start_sec[idx];
         u32 end   = g_radar_play_end_sec[idx];
 
-        /* 持续时间不足 30 s 或时间戳回绕/异常：标记为无效并跳过，下次 clear 会清除 */
+        /* 持续时间不足 RADAR_HOLD_ON_NO_MOTION_S 或时间戳回绕/异常：标记为无效并跳过，下次 clear 会清除 */
         if (end <= start || (end - start) < (RADAR_HOLD_ON_NO_MOTION_S - 1))
         {
             g_radar_play_end_sec[idx]       = 0;
@@ -1860,7 +1868,7 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 }
 #endif /* RADAR_TRACK_LEAD_ENABLE */
 
-static u8   last_motion_valid = 0;
+static u32  tick_xy_mm = 0;
 static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_cm_s)
 {
     s16   proc_x        = x_mm;
@@ -1875,16 +1883,17 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
 
     if (abs(g_radar_pred.prev_x_mm - x_mm) > STATIONARY_DXY_THRESHOLD_MM || abs(g_radar_pred.prev_y_mm - y_mm) > STATIONARY_DXY_THRESHOLD_MM)
     {
+        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         motion_valid  = 1;
         is_stationary = 0;
         RadarSessionOnMotion(now_tick);
     }
-    if (last_motion_valid != motion_valid)
+    // 0.5s打印一次
+    if (tick_xy_mm == 0 || clock_time_exceed(tick_xy_mm, 1000000))
     {
-        last_motion_valid = motion_valid;
-        BLE_LOG_D("p_x = %d, x = %d, p_y = %d,  y = %d", g_radar_pred.prev_x_mm, x_mm, g_radar_pred.prev_y_mm, y_mm);
+        tick_xy_mm = clock_time();
+        BLE_LOG_D("x = %d,  y = %d", x_mm, y_mm);
     }
-
     g_radar_pred.prev_x_mm = x_mm;
     g_radar_pred.prev_y_mm = y_mm;
     RadarMotionCachePush(now_tick, x_mm, y_mm);
@@ -1955,7 +1964,6 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             }
             else
             {
-                gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
                 RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
             }
         }
@@ -2253,7 +2261,7 @@ void app_radar_task_power_schedule(void)
             radar_working_mode_set(1);
             RadarSessionOnMotion(now_tick);
             radar_play_record_start();  // 启动狩猎记录
-            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+            // gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         }
         return;
     }
@@ -2273,10 +2281,12 @@ void app_radar_task_power_schedule(void)
             if (elapsed_us >= 1000000u)
             {
                 g_hunt_session_acc_ms = g_radar_sess_motion_ms;
-                g_hunt_acc_tick_last  = now_tick;
-                BLE_LOG_D("HUNT: active %ds/%ds",
+                g_hunt_total_active_ms += 1000;  // 每秒增加1000ms
+                g_hunt_acc_tick_last = now_tick;
+                BLE_LOG_D("HUNT: active %ds/%ds total %ds",
                           g_hunt_session_acc_ms / 1000,
-                          g_hunt_duration_s);
+                          g_hunt_duration_s,
+                          g_hunt_total_active_ms / 1000);
                 BLE_LOG_D("last_motion %d", (g_radar_last_motion_tick / 1000000u) >> 4);
                 // 调试的目标丢失累计时间打印
                 if (g_hunt_no_target_tick != 0)
@@ -2305,15 +2315,14 @@ void app_radar_task_power_schedule(void)
             }
             else if (clock_time_exceed(g_hunt_no_target_tick, HUNT_NO_TARGET_TIMEOUT_US))
             {
-                BLE_LOG_D("HUNT: ACTIVE -> STANDBY (15s no target)");
                 radar_play_record_end();  // 记录为未完成
-                g_hunt_total_active_ms += g_radar_sess_motion_ms;
                 StepMotor_StopAll();
                 gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
                 g_radar_hold_on_mode  = 0;
                 g_hunt_state          = HUNT_STATE_STANDBY;
                 g_hunt_no_target_tick = 0;
                 g_hunt_prey_zone_tick = 0;
+                BLE_LOG_D("HUNT: ACTIVE -> STANDBY (15s no target) total_ms %d", g_hunt_total_active_ms / 1000);
                 return;
             }
         }
@@ -2332,9 +2341,7 @@ void app_radar_task_power_schedule(void)
             }
             else if (clock_time_exceed(g_hunt_prey_zone_tick, HUNT_PREY_ZONE_TIMEOUT_US))
             {
-                BLE_LOG_D("HUNT: ACTIVE -> PREY_ZONE_SLEEP (target in prey zone 15s)");
                 radar_play_record_end();  // 记录为未完成
-                g_hunt_total_active_ms += g_radar_sess_motion_ms;
                 radar_working_mode_set(0);
                 StepMotor_StopAll();
                 gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
@@ -2343,6 +2350,7 @@ void app_radar_task_power_schedule(void)
                 g_hunt_state          = HUNT_STATE_PREY_ZONE_SLEEP;
                 g_hunt_no_target_tick = 0;
                 g_hunt_prey_zone_tick = 0;
+                BLE_LOG_D("HUNT: ACTIVE -> PREY_ZONE_SLEEP (target in prey zone 15s) total_ms %d", g_hunt_total_active_ms / 1000);
                 return;
             }
         }
@@ -2351,8 +2359,9 @@ void app_radar_task_power_schedule(void)
             g_hunt_prey_zone_tick = 0;
         }
 
-        // 条件3: 狩猎计时到达预设值 → 完成移动
-        if (g_hunt_session_acc_ms / 1000 >= (u32)g_hunt_duration_s)
+        // 条件3: 狩猎计时到达预设值(固定时长，不按猫运动的时长来判断) → 完成移动
+        if (clock_time_exceed(g_hunt_session_tick, (u32)g_hunt_duration_s * 1000000u))
+        // if (g_hunt_session_acc_ms / 1000 >= (u32)g_hunt_duration_s)
         {
             BLE_LOG_D("HUNT: ACTIVE -> COMPLETE_MOVING (timer %ds)", g_hunt_duration_s);
             BLE_LOG_D("HUNT: stop tracking and move to prey point");
@@ -2366,6 +2375,17 @@ void app_radar_task_power_schedule(void)
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
             gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
             return;
+        }
+
+        // 条件4：总逗宠时长若达到预设值则直接进入休眠
+        if (g_hunt_total_active_ms / 1000 >= (u32)g_hunt_duration_s * (u32)g_hunt_count)
+        {
+            BLE_LOG_D("HUNT: ACTIVE -> SLEEP (total active %ds)", g_hunt_total_active_ms / 1000);
+            radar_play_record_end();
+            app_radar_power_switch(0);
+            g_radar_hold_on_mode  = 0;
+            g_hunt_state          = HUNT_STATE_SLEEP;
+            g_hunt_sleep_end_tick = now_tick;
         }
 
         return;
@@ -2464,7 +2484,6 @@ void app_radar_task_power_schedule(void)
             }
 
             radar_play_record_end();
-            g_hunt_total_active_ms += g_radar_sess_motion_ms;
 
             g_hunt_completed++;
             BLE_LOG_D("HUNT: CELEBRATE done. completed=%d/%d, total_active=%ds/%ds",
@@ -2475,10 +2494,9 @@ void app_radar_task_power_schedule(void)
             gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
 
             // 判断是否进入休眠
-            if (g_hunt_completed >= g_hunt_count ||
-                (g_hunt_total_active_ms / 1000) >= (u32)g_hunt_duration_s * (u32)g_hunt_count)
+            if (g_hunt_completed >= g_hunt_count)
             {
-                BLE_LOG_D("HUNT: CELEBRATE -> SLEEP (limit reached)");
+                BLE_LOG_D("HUNT: CELEBRATE -> SLEEP (complete time limit reached)");
                 app_radar_power_switch(0);
                 g_radar_hold_on_mode  = 0;
                 g_hunt_state          = HUNT_STATE_SLEEP;
@@ -2834,7 +2852,7 @@ void app_hunt_prey_random_move(void)
 {
     // 水平角度（±60°）俯仰角（15°~30°）间随机移动
     s16 pan_deg10  = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
-    s16 tilt_deg10 = (s16)RadarRandRangeI32(150 - 900, 300 - 900);  // 15°-30°
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(150 - 900, 450 - 900);  // 15°-45°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);

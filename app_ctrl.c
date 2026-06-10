@@ -1252,6 +1252,7 @@ static int app_ctrl_handle_hunt_settings_exit(u8 seq, u8 *payload, u16 len)
     g_radar_boundary_mode = CTRL_RADAR_BOUNDARY_MODE_IDLE;
     u8 rsp[1]             = {CTRL_STATUS_OK};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_HUNT_SETTINGS_EXIT, seq, rsp, sizeof(rsp));
+    app_radar_set_enabled(1);  // 退出设置模式后自动启用雷达
     return 0;
 #else
     (void)payload;

@@ -1178,7 +1178,7 @@ void main_loop(void)
         }
         else
         {
-            RadarSessionStop(1);
+            app_radar_set_enabled(0);
             gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         }
     }
