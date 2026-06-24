@@ -11,8 +11,8 @@
 #define APP_NTC_CHARGE_ON_TEMP_C         40
 #define APP_NTC_POWER_OFF_TEMP_C         70
 #define APP_ADC_REPORT_INTERVAL_US       250000u
-#define APP_BAT_DISCHARGE_STEP_S         1u * 10000u
-#define APP_BAT_CHARGE_STEP_S            1u * 10000u
+#define APP_BAT_DISCHARGE_STEP_S         1u * 1000000u
+#define APP_BAT_CHARGE_STEP_S            1u * 1000000u
 #define APP_BAT_PERCENT_STABLE_US        5000000u
 #define APP_BAT_FLASH_SAVE_INTERVAL_US   30000000u
 #define APP_BAT_PERCENT_DEFAULT_NO_FLASH 100u
@@ -658,14 +658,7 @@ void app_adc_dbg_poll(void)
 
         u8 is_charging = app_adc_dbg_is_charging();
         u8 bat_percent_raw;
-        if (is_charging)
-        {
-            bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
-        }
-        else
-        {
-            bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
-        }
+        bat_percent_raw = app_adc_dbg_bat_percent_from_mv((u16)mv_bat_avg);
 
         // ADC 初始化 5s 前使用 flash 上次电量，避免 raw 不稳定
         if (clock_time_exceed(s_adc_init_tick, APP_BAT_PERCENT_STABLE_US))
@@ -680,10 +673,12 @@ void app_adc_dbg_poll(void)
                 app_adc_dbg_bat_percent_save_to_flash();
             }
 
-            if (app_adc_dbg_is_charging() && bat_percent_raw < 5)
+            if (app_adc_dbg_is_charging() && s_bat_percent < 5)
             {  // 充电中，软件开机状态，则软件关机
-                if (app_get_power_state())
-                    start_reboot();
+                if (app_get_power_state()){
+                    BLE_LOG_D("s_bat_percent  < 5 close");
+                    app_set_power_state(0);
+                }
             }
 
             // if (s_bat_percent_inited)

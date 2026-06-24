@@ -839,6 +839,8 @@ void app_radar_on_time_tick(void)
         g_radar_time_tick_acc_us -= 1000000u;
         g_radar_time_sec++;
     }
+    // g_radar_time_sec += g_radar_time_tick_acc_us / 1000000u;
+    // g_radar_time_tick_acc_us %= 1000000u;
 }
 
 int app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
