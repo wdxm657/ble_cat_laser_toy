@@ -486,6 +486,10 @@ u8 app_adc_dbg_get_bat_percent(void)
 {
     // 只给前端 0 20 40 60 80 100
     u8 bat = s_bat_percent / 20 * 20;
+    if (bat < 100)
+    {
+        bat+=20;
+    }
     return bat;
 }
 

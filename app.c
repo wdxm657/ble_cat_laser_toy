@@ -867,7 +867,8 @@ _attribute_no_inline_ void user_init_normal(void)
 #if (BLE_OTA_SERVER_ENABLE)
     /* OTA module initialization must be called after "blc_ota_setNewFirmwareStorageAddress"(if used), and before any other OTA API.*/
     blc_ota_initOtaServer_module();
-    blc_ota_setOtaProcessTimeout(60);  // set OTA whole process timeout
+    BLE_LOG_D("[APP][OTA] multiBootAddr=0x%05x", blc_ota_getCurrentUsedMultipleBootAddress());
+    blc_ota_setOtaProcessTimeout(180);  // set OTA whole process timeout (150s for ~125KB FW)
     blc_ota_registerOtaStartCmdCb(app_enter_ota_mode);
     blc_ota_registerOtaFirmwareVersionReqCb(app_get_firmware_version);
     blc_ota_registerOtaResultIndicationCb(app_ota_result);

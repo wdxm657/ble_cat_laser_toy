@@ -21,6 +21,7 @@
  *          limitations under the License.
  *
  *******************************************************************************************************/
+#define DEBUG_MODE 1
 #include "tl_common.h"
 #include "stack/ble/ble.h"
 #include "stack/ble/host/attr/att.h"
@@ -391,6 +392,122 @@ int customCounterWrite(void * p)
 }
 
 
+// ===== OTA debug wrapper =====
+#if (BLE_OTA_SERVER_ENABLE)
+/**
+ * @brief      Wrapper around otaWrite to log received OTA data for debugging.
+ *             Prints: [OTA_DBG] adr_index=0xXXXX len=N crc16=0xXXXX result=R
+ *             For data packets (adr_index < 0xFF00), also prints the 16 data bytes.
+ */
+static int _ota_dbg_count = 0;
+
+/* Read fw_size from flash at given base address + 0x18 */
+static u32 _ota_read_fw_size(u32 base_addr)
+{
+    u32 sz;
+    flash_read_page(base_addr + 0x18, 4, (u8*)&sz);
+    return sz;
+}
+
+/* Compute CRC32 over n bytes from flash using same half-byte table as OTA library */
+static u32 _ota_compute_crc(u32 base_addr, u32 n_bytes)
+{
+    unsigned long tbl[16] = {
+        0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
+        0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+        0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
+        0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c
+    };
+    u32 crc = 0xFFFFFFFF;
+    u8 buf[16];
+    u32 pos = 0;
+    while (pos < n_bytes) {
+        u32 rd = (n_bytes - pos > 16) ? 16 : (n_bytes - pos);
+        flash_read_page(base_addr + pos, rd, buf);
+        for (u32 i = 0; i < rd; i++) {
+            u8 b = buf[i];
+            u8 n = b & 0x0F;
+            crc = (crc >> 4) ^ tbl[(crc & 0x0F) ^ n];
+            n = (b >> 4) & 0x0F;
+            crc = (crc >> 4) ^ tbl[(crc & 0x0F) ^ n];
+        }
+        pos += rd;
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+
+int myOtaWrite(void *p)
+{
+    rf_packet_att_write_t *pw = (rf_packet_att_write_t *)p;
+    u16 attValLen = pw->l2capLen > 3 ? (pw->l2capLen - 3) : 0;
+    u8 *data = &(pw->value);
+    int do_log = 0;
+
+    if (attValLen >= 2) {
+        u16 first2 = data[0] | (data[1] << 8);
+        if (first2 >= 0xFF00) {
+            // OTA command — always log
+            do_log = 1;
+            BLE_LOG_D("[OTA_DBG] CMD 0x%04x len=%d", first2, attValLen);
+            if (attValLen >= 6 && first2 == 0xFF02) {
+                u16 max_idx = data[2] | (data[3] << 8);
+                u16 max_xor = data[4] | (data[5] << 8);
+                BLE_LOG_D("[OTA_DBG]   END: idx_max=0x%04x xor=0x%04x", max_idx, max_xor);
+                
+                // On OTA_END, read back flash and compute CRC for comparison
+                u32 fw_addr = ota_program_bootAddr;  // OTA target base address
+                BLE_LOG_D("[OTA_DBG]   OTA boot addr=0x%05x", fw_addr);
+                u32 fw_sz = _ota_read_fw_size(fw_addr);
+                BLE_LOG_D("[OTA_DBG]   fw_size(flash)=%d", fw_sz);
+                if (fw_sz > 4) {
+                    u32 code_sz = fw_sz - 4;
+                    // Dump 5 offsets (known to differ between OLD and NEW firmware)
+                    u32 _addrs[5] = {0x00018, 0x00170, 0x06F78, 0x0ADC4, 0x1F0D0};
+                    u32 _dw[5];
+                    for (int _ai = 0; _ai < 5; _ai++) {
+                        flash_read_page(_addrs[_ai], 4, (u8*)&_dw[_ai]);
+                    }
+                    BLE_LOG_D("[OTA_DBG]   run@0x00000: %08x %08x %08x %08x %08x",
+                        _dw[0], _dw[1], _dw[2], _dw[3], _dw[4]);
+                    for (int _ai = 0; _ai < 5; _ai++) {
+                        flash_read_page(0x20000 + _addrs[_ai], 4, (u8*)&_dw[_ai]);
+                    }
+                    BLE_LOG_D("[OTA_DBG]   ota: %08x %08x %08x %08x %08x",
+                        _dw[0], _dw[1], _dw[2], _dw[3], _dw[4]);
+                    // Dump the 8 padding bytes after firmware end in OTA flash
+                    u32 _fw_end = fw_sz - 4;  // code size
+                    u32 _pad_start = 0x20000 + _fw_end;
+                    flash_read_page(_pad_start, 8, (u8*)_dw);
+                    BLE_LOG_D("[OTA_DBG]   pad@0x%05x: %02x%02x%02x%02x %02x%02x%02x%02x",
+                        _pad_start,
+                        ((u8*)_dw)[0],((u8*)_dw)[1],((u8*)_dw)[2],((u8*)_dw)[3],
+                        ((u8*)_dw)[4],((u8*)_dw)[5],((u8*)_dw)[6],((u8*)_dw)[7]);
+                    u32 computed = _ota_compute_crc(fw_addr, code_sz);
+                    BLE_LOG_D("[OTA_DBG]   CRC(device)=0x%08x", computed);
+                } else {
+                    BLE_LOG_D("[OTA_DBG]   fw_size too small!");
+                }
+            }
+        } else {
+            // OTA data — log only first and every 500th to avoid flooding BLE
+            _ota_dbg_count++;
+            if (_ota_dbg_count == 1 || _ota_dbg_count % 500 == 0) {
+                do_log = 1;
+                u16 adr_idx = first2;
+                u16 crc_val = (attValLen >= 20) ? (data[18] | (data[19] << 8)) : 0;
+                BLE_LOG_D("[OTA_DBG] DATA #%d adr_idx=0x%04x crc16=0x%04x", _ota_dbg_count, adr_idx, crc_val);
+            }
+        }
+    }
+
+    int ret = otaWrite(p);
+    if (do_log) {
+        BLE_LOG_D("[OTA_DBG] result=%d", ret);
+    }
+    return ret;
+}
+#endif
+
 // TM : to modify
 static const attribute_t my_Attributes[] = {
 
@@ -486,7 +603,7 @@ static const attribute_t my_Attributes[] = {
 	// 002e - 0031
 	{4,ATT_PERMISSIONS_READ, 2,16,(u8*)(&my_primaryServiceUUID), 	(u8*)(&my_OtaServiceUUID), 0},
 	{0,ATT_PERMISSIONS_READ, 2, sizeof(my_OtaCharVal),(u8*)(&my_characterUUID), (u8*)(my_OtaCharVal), 0},				//prop
-	{0,ATT_PERMISSIONS_RDWR,16,sizeof(my_OtaData),(u8*)(&my_OtaUUID),	(&my_OtaData), &otaWrite, NULL},			//value
+	{0,ATT_PERMISSIONS_RDWR,16,sizeof(my_OtaData),(u8*)(&my_OtaUUID),	(&my_OtaData), &myOtaWrite, NULL},			//value (debug wrapper)
 	{0,ATT_PERMISSIONS_READ, 2,sizeof (my_OtaName),(u8*)(&userdesc_UUID), (u8*)(my_OtaName), 0},
 	#endif
 

@@ -29,7 +29,9 @@ import argparse
 import asyncio
 import datetime
 import math
+import os
 import queue
+import struct
 import sys
 import threading
 import time
@@ -186,6 +188,129 @@ CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = cp.CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY
 CTRL_CMD_RADAR_TRACK_SPEED = cp.CTRL_CMD_RADAR_TRACK_SPEED
 CTRL_CMD_DEVICE_REBOOT = cp.CTRL_CMD_DEVICE_REBOOT
 
+# ===== OTA (Telink BLE OTA) =====
+# OTA Service UUID: TELINK_OTA_UUID_SERVICE
+OTA_SERVICE_RAW_BYTES = bytes([
+    0x12, 0x19, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08,
+    0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00,
+])
+# OTA Data characteristic UUID: TELINK_SPP_DATA_OTA
+OTA_DATA_RAW_BYTES = bytes([
+    0x12, 0x2B, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08,
+    0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00,
+])
+
+# OTA opcodes
+CMD_OTA_VERSION = 0xFF00
+CMD_OTA_START = 0xFF01
+CMD_OTA_END = 0xFF02
+
+# OTA data packet: Adr_Index(2) + Data(16) + CRC16(2) = 20 bytes
+OTA_PDU_DATA_LEN = 16
+OTA_PDU_TOTAL_LEN = 20
+
+# OTA timeout default (seconds)
+OTA_TIMEOUT_DEFAULT_S = 30
+
+# Firmware size location in .bin file (offset 0x18, 4 bytes LE)
+FW_SIZE_BIN_OFFSET = 0x18
+
+
+def crc16_ota(data: bytes) -> int:
+    """CRC-16 per Telink OTA appendix: poly 0xA001, init 0xFFFF."""
+    crc = 0xFFFF
+    for b in data:
+        ds = b
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xA001 if (crc ^ ds) & 1 else 0)
+            ds >>= 1
+    return crc & 0xFFFF
+
+
+def crc32_ota(data: bytes) -> int:
+    """CRC-32 matching Telink OTA crc32_half_cal (half-byte table, poly 0xEDB88320).
+    
+    Mirrors the device-side flash_fw_check.c implementation:
+    1. Each byte is split into low nibble first, high nibble second
+    2. CRC = (CRC >> 4) ^ table[(CRC & 0x0F) ^ nibble]
+    3. Initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF
+    """
+    table = [
+        0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
+        0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+        0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
+        0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c
+    ]
+    crc = 0xFFFFFFFF
+    for b in data:
+        # low nibble first
+        n = b & 0x0F
+        crc = (crc >> 4) ^ table[(crc & 0x0F) ^ n]
+        # high nibble second
+        n = (b >> 4) & 0x0F
+        crc = (crc >> 4) ^ table[(crc & 0x0F) ^ n]
+    return crc ^ 0xFFFFFFFF
+
+
+def _ota_uuid_int_candidates(raw: bytes) -> Set[int]:
+    return {
+        uuid.UUID(bytes=raw).int,
+        uuid.UUID(bytes=raw[::-1]).int,
+    }
+
+
+def _find_ota_characteristic(client) -> Optional[object]:
+    """Return Bleak GATT characteristic for OTA data, or None."""
+    targets = _ota_uuid_int_candidates(OTA_DATA_RAW_BYTES)
+    for svc in client.services:
+        for char in svc.characteristics:
+            ci = _characteristic_uuid_int(char)
+            if ci is not None and ci in targets:
+                return char
+    return None
+
+
+def build_ota_cmd(opcode: int, payload: bytes = b"") -> bytes:
+    """Build an OTA command PDU: opcode(2 bytes LE) + payload."""
+    return struct.pack("<H", opcode & 0xFFFF) + payload
+
+
+def build_ota_data_packet(adr_index: int, data_chunk: bytes, is_last: bool = False, fw_crc32: int = 0) -> bytes:
+    """Build one OTA data PDU (20 bytes).
+
+    Args:
+        adr_index: block index = byte_offset / 16
+        data_chunk: up to 16 bytes of firmware data (padded with 0xFF if short)
+        is_last: if True, embed fw_crc32 in data[0:4]
+        fw_crc32: CRC-32 of the entire firmware (only used when is_last=True)
+    Returns:
+        20 bytes: Adr_Index(2) + Data(16) + CRC16(2)
+    """
+    # Pad to 16 bytes with 0xFF
+    if len(data_chunk) < OTA_PDU_DATA_LEN:
+        data_chunk = data_chunk + b"\xFF" * (OTA_PDU_DATA_LEN - len(data_chunk))
+
+    if is_last:
+        # Last packet: data[0:4] = CRC32 of entire firmware (LE)
+        data = struct.pack("<I", fw_crc32 & 0xFFFFFFFF) + data_chunk[4:]
+    else:
+        data = data_chunk
+
+    pdu = struct.pack("<H", adr_index & 0xFFFF) + data  # 2 + 16 = 18 bytes
+    crc = crc16_ota(pdu)
+    return pdu + struct.pack("<H", crc)
+
+
+def read_firmware_size(bin_path: str) -> int:
+    """Read firmware size from .bin file offset 0x18 (4 bytes LE)."""
+    with open(bin_path, "rb") as f:
+        f.seek(FW_SIZE_BIN_OFFSET)
+        raw = f.read(4)
+        if len(raw) < 4:
+            raise ValueError(f"Firmware file too small: {bin_path}")
+        return struct.unpack("<I", raw)[0]
+
+
 # x: [-1100, 1100], y: [100, 4100]
 X_MIN, X_MAX = -2500, 2500
 Y_MIN, Y_MAX = 100, 7000
@@ -278,8 +403,58 @@ class RadarVisualizer:
         self._text_rx_next_chunk: int = 0
         self._text_rx_buf = bytearray()
 
+        # OTA state
+        self._ota_fw_path: Optional[str] = None
+        self._ota_running: bool = False
+        self._ota_progress: float = 0.0  # 0.0 ~ 1.0
+        self._ota_status: str = ""
+        self._ota_char: Optional[object] = None
+        self._ota_cmd_queue: queue.Queue = queue.Queue()
+        self._ota_trigger_queue: queue.Queue = queue.Queue()  # put fw_path to trigger OTA
+
         if transport == "serial":
             self._ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.1)
+
+    def ota_state(self) -> tuple:
+        """Return (running, progress, status)."""
+        with self._lock:
+            return self._ota_running, self._ota_progress, self._ota_status
+
+    def start_ota(self, fw_path: str) -> bool:
+        """Start OTA firmware upgrade in background. Returns True if started."""
+        if self._transport != "ble":
+            return False
+        if not os.path.isfile(fw_path):
+            return False
+        with self._lock:
+            if self._ota_running:
+                return False
+            self._ota_fw_path = fw_path
+            self._ota_running = True
+            self._ota_progress = 0.0
+            self._ota_status = "OTA 初始化..."
+        # Signal the BLE async loop via trigger queue
+        self._ota_trigger_queue.put(fw_path)
+        return True
+
+    def _set_ota_progress(self, progress: float, status: str) -> None:
+        with self._lock:
+            self._ota_progress = max(0.0, min(1.0, progress))
+            self._ota_status = status
+            if progress >= 1.0:
+                self._ota_running = False
+
+    def _ota_abort(self, reason: str) -> None:
+        with self._lock:
+            self._ota_running = False
+            self._ota_progress = 0.0
+            self._ota_status = f"OTA 失败: {reason}"
+
+    def send_ota_version_request(self) -> None:
+        """Queue CMD_OTA_VERSION (0xFF00) to be sent via OTA characteristic."""
+        if self._transport != "ble":
+            return
+        self._ota_cmd_queue.put(CMD_OTA_VERSION)
 
     def send_radar_track_interval_us(self, interval_us: int) -> bool:
         """下发 CTRL_CMD_RADAR_TRACK_SPEED (0x58)，payload u16 LE interval_us。仅 BLE。"""
@@ -484,6 +659,7 @@ class RadarVisualizer:
                                 ex,
                                 file=sys.stderr,
                             )
+                    # Process any queued OTA trigger (from keepalive loop)
                     keepalive = 0
                     while not self._stop.is_set():
                         a2, e2 = self.ble_target()
@@ -514,6 +690,28 @@ class RadarVisualizer:
                                         )
                         except queue.Empty:
                             pass
+                        # OTA command queue (e.g. CMD_OTA_VERSION)
+                        try:
+                            ota_opcode = self._ota_cmd_queue.get_nowait()
+                            ota_ch = _find_ota_characteristic(client)
+                            if ota_ch is not None:
+                                pkt = build_ota_cmd(ota_opcode)
+                                await client.write_gatt_char(
+                                    ota_ch, pkt, response=False
+                                )
+                                with self._lock:
+                                    self.ctrl_lines.append(
+                                        f"[OTA][TX] cmd=0x{ota_opcode:04X}"
+                                    )
+                        except queue.Empty:
+                            pass
+                        # OTA firmware upgrade trigger (from start_ota queue)
+                        try:
+                            ota_fw_now = self._ota_trigger_queue.get_nowait()
+                            print(f"[OTA] trigger received: {ota_fw_now}", file=sys.stderr)
+                            await self._ota_async_send(client, ota_fw_now)
+                        except queue.Empty:
+                            pass
                         keepalive += 1
                         # Light GATT read ~every 2s to nudge some Windows stacks / central scheduling.
                         if keepalive >= 40:
@@ -539,6 +737,223 @@ class RadarVisualizer:
                     self._ble_disconnect_need_stop_auto_power = True
                 traceback.print_exc()
                 await asyncio.sleep(1.5)
+
+    async def _ota_async_send(self, client, fw_path: str) -> None:
+        """Execute full OTA flow: find OTA char, send START, data, END.
+
+        Must be called from within an active BleakClient context.
+        """
+        def _ota_log(msg: str) -> None:
+            with self._lock:
+                self.ctrl_lines.append(f"[OTA] {msg}")
+                self.log_lines.append(f"[OTA] {msg}")
+
+        _ota_log("开始 OTA 流程")
+
+        # 1. Find OTA characteristic
+        ota_char = _find_ota_characteristic(client)
+        if ota_char is None:
+            _ota_log("OTA characteristic 未找到!")
+            self._ota_abort("OTA characteristic 未找到")
+            return
+
+        _ota_log(f"OTA characteristic 已找到: {ota_char.uuid}, handle={ota_char.handle}")
+
+        # Read firmware file
+        fw_size = 0
+        with open(fw_path, "rb") as f:
+            fw_data = f.read()
+        if len(fw_data) < 4:
+            _ota_log("固件文件无效（太小）")
+            self._ota_abort("固件文件无效（太小）")
+            return
+
+        # 2. Read firmware size from bin offset 0x18
+        try:
+            fw_size = read_firmware_size(fw_path)
+        except Exception as ex:
+            _ota_log(f"读取固件大小失败: {ex}")
+            self._ota_abort(f"读取固件大小失败: {ex}")
+            return
+
+        if fw_size > len(fw_data):
+            fw_size = len(fw_data)
+
+        # Firmware_size at bin offset 0x18 includes the 4-byte CRC32 trailer.
+        # Actual code data = fw_size - 4 bytes (the CRC32 is embedded by the linker).
+        code_size = fw_size - 4
+        if code_size < 1:
+            _ota_log("固件数据为空")
+            self._ota_abort("固件数据为空")
+            return
+        code_data = fw_data[:code_size]
+
+        # Number of data packets = ceil(code_size / 16). CRC verification is a
+        # SEPARATE packet at index = total_data_packets.
+        total_data_packets = (code_size + OTA_PDU_DATA_LEN - 1) // OTA_PDU_DATA_LEN
+
+        # CRC32 is computed over the actual code data WITHOUT padding.
+        # The OTA library accumulates CRC as it receives each 16-byte data packet,
+        # but it accumulates over the REAL firmware bytes only (fw_size - 4 bytes).
+        fw_crc32 = crc32_ota(code_data)
+        if total_data_packets < 1:
+            _ota_log("固件数据为空")
+            self._ota_abort("固件数据为空")
+            return
+
+        # Dump 5 offsets (known to differ between OLD and NEW firmware)
+        _dump_offsets = [0x00018, 0x00170, 0x06F78, 0x0ADC4, 0x1F0D0]
+        _ota_log(f"  PC bin dump @5 offsets:")
+        for _off in _dump_offsets:
+            if _off + 4 <= len(fw_data):
+                _val = struct.unpack('<I', fw_data[_off:_off+4])[0]
+                _ota_log(f"    [0x{_off:05X}]=0x{_val:08X}")
+        # Also read old firmware if available
+        _old_path = fw_path.replace('_ABC', '')
+        try:
+            if os.path.isfile(_old_path) and _old_path != fw_path:
+                with open(_old_path, 'rb') as _f:
+                    _old = _f.read()
+                _ota_log(f"  OLD bin (device) dump:")
+                for _off in _dump_offsets:
+                    if _off + 4 <= len(_old):
+                        _val = struct.unpack('<I', _old[_off:_off+4])[0]
+                        _ota_log(f"    [0x{_off:05X}]=0x{_val:08X}")
+        except Exception:
+            pass
+        _ota_log(f"固件大小={fw_size} 字节, 代码数据={code_size} 字节, 数据包数={total_data_packets}, CRC32=0x{fw_crc32:08X}")
+
+        self._set_ota_progress(0.0, f"OTA 开始: {total_data_packets} 数据包, CRC32=0x{fw_crc32:08X}")
+
+        # 4. Send OTA_START command (opcode 0xFF01, no payload)
+        start_cmd = build_ota_cmd(CMD_OTA_START)
+        _ota_log("发送 OTA_START (0xFF01)")
+        try:
+            await client.write_gatt_char(ota_char, start_cmd, response=False)
+        except Exception as ex:
+            _ota_log(f"OTA_START 发送失败: {ex}")
+            self._ota_abort(f"OTA_START 发送失败: {ex}")
+            return
+        _ota_log("OTA_START 已发送")
+
+        # Wait for device to enter OTA mode and finish flash erase setup.
+        # The device may stall during erase, so give it enough time to avoid supervision timeout.
+        _ota_log("等待设备 OTA 准备...")
+        await asyncio.sleep(2.0)
+
+        # Check connection is still alive after the wait
+        if not client.is_connected:
+            _ota_log("设备在 OTA 准备阶段断连!")
+            self._ota_abort("设备在 OTA 准备阶段断连")
+            return
+        _ota_log("连接正常，开始发送数据")
+
+        # 5. Send all OTA data packets (firmware data only)
+        # CRITICAL: Windows BLE Write Command with response=False may silently drop
+        # packets when the local TX buffer is full. Send slowly (1 packet per ~10ms)
+        # to ensure each packet actually gets transmitted over the air.
+        _ota_log(f"开始发送 {total_data_packets} 个数据包 (每包间隔 ~10ms)")
+        sent = 0
+        last_report = 0
+        for i in range(total_data_packets):
+            if self._stop.is_set():
+                self._ota_abort("用户中断")
+                return
+
+            offset = i * OTA_PDU_DATA_LEN
+            chunk = code_data[offset : offset + OTA_PDU_DATA_LEN]
+            # Normal data packet (no CRC32 in payload)
+            pkt = build_ota_data_packet(i, chunk, is_last=False)
+            try:
+                await client.write_gatt_char(ota_char, pkt, response=False)
+            except Exception as ex:
+                _ota_log(f"数据包 {i} 发送失败: {ex}")
+                self._ota_abort(f"数据包 {i} 发送失败: {ex}")
+                return
+
+            sent += 1
+
+            # Report progress at 10% intervals
+            progress = sent / (total_data_packets + 1)  # +1 for CRC packet
+            progress_pct = int(progress * 100)
+            if progress_pct >= last_report + 10 or i == 0:
+                last_report = progress_pct
+                self._set_ota_progress(
+                    progress, f"OTA 发送中... {sent}/{total_data_packets + 1} ({progress * 100:.1f}%)"
+                )
+                _ota_log(f"进度: {sent}/{total_data_packets + 1} ({progress * 100:.1f}%)")
+
+            await asyncio.sleep(0.01)
+
+        _ota_log(f"数据包发送完毕: {total_data_packets} 包, 等待 TX buffer 排空...")
+        # Wait 3 seconds for the BLE TX buffer to fully drain before sending final packets.
+        # Windows BLE with Write Command may have queued data in the controller's TX buffer.
+        await asyncio.sleep(3.0)
+
+        if not client.is_connected:
+            _ota_log("连接已断开")
+            self._ota_abort("连接已断开")
+            return
+        _ota_log("TX buffer 已排空")
+
+        # 6. Send CRC verification packet (adr_index = total_data_packets)
+        # This is a SEPARATE packet past the last data index, containing CRC32 + 0xFF padding
+        _ota_log("发送 CRC32 校验包...")
+        crc_pkt = build_ota_data_packet(
+            total_data_packets,
+            b"",  # empty chunk → all 0xFF padded
+            is_last=True,
+            fw_crc32=fw_crc32,
+        )
+        try:
+            await client.write_gatt_char(ota_char, crc_pkt, response=False)
+        except Exception as ex:
+            _ota_log(f"CRC32 包发送失败: {ex}")
+            self._ota_abort(f"CRC32 包发送失败: {ex}")
+            return
+        sent += 1
+        self._set_ota_progress(sent / (total_data_packets + 1), f"CRC32 校验包已发送, 等待 OTA_END...")
+        _ota_log(f"CRC32 校验包已发送 (adr_index=0x{total_data_packets:04X})")
+
+        # adr_index_max = total_data_packets (the CRC packet's adr_index)
+        max_adr_index = total_data_packets
+        await asyncio.sleep(1.0)
+        self._set_ota_progress(0.95, "OTA 数据发送完毕，发送 OTA_END...")
+
+        # 7. Check connection before OTA_END
+        if not client.is_connected:
+            _ota_log("连接已断开，无法发送 OTA_END")
+            self._ota_abort("连接已断开，OTA_END 未发送")
+            return
+
+        # 8. Send OTA_END command, retry once if needed
+        # OTA_END payload: adr_index_max(2 LE) + ~adr_index_max(2 LE)
+        adr_max_xor = (~max_adr_index) & 0xFFFF
+        end_payload = struct.pack("<HH", max_adr_index & 0xFFFF, adr_max_xor)
+        end_cmd = build_ota_cmd(CMD_OTA_END, end_payload)
+        _ota_log(f"发送 OTA_END (0xFF02): adr_index_max=0x{max_adr_index:04X}, xor=0x{adr_max_xor:04X}")
+        for retry in range(2):
+            try:
+                await client.write_gatt_char(ota_char, end_cmd, response=False)
+                _ota_log(f"OTA_END 已发送 (第{retry + 1}次)")
+                break
+            except Exception as ex:
+                if retry == 0:
+                    _ota_log(f"OTA_END 发送失败，重试: {ex}")
+                    await asyncio.sleep(0.5)
+                else:
+                    _ota_log(f"OTA_END 发送失败: {ex}")
+                    self._ota_abort(f"OTA_END 发送失败: {ex}")
+                    return
+
+        # 9. Final wait for device to process OTA_END and reboot
+        await asyncio.sleep(1.0)
+
+        self._set_ota_progress(
+            1.0,
+            f"OTA 完成! 共 {total_data_packets} 数据包 + CRC + END, 设备将重启.",
+        )
+        _ota_log("OTA 流程完成，设备应重启")
 
     def _apply_ble_frame(self, data: bytes) -> None:
         # 打印16进制数据
@@ -1118,6 +1533,49 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         b_reboot.setToolTip("发送后设备会断开并重新启动（响应可能来不及到达）")
         g.addWidget(b_reboot, row-1, 2, 1, 2)
 
+        # ===== OTA 固件升级 =====
+        g.addWidget(QtWidgets.QLabel("OTA 固件升级"), _nrow(), 0, 1, 4)
+        b_ota_version = QtWidgets.QPushButton("查询版本(0xFF00)")
+        b_ota_version.setToolTip("发送 CMD_OTA_VERSION 请求，设备需注册 ota_versionCb_t 回调才能响应")
+        b_ota_version.clicked.connect(self._on_ota_version_req)
+        g.addWidget(b_ota_version, row, 0, 1, 2)
+        _nrow()
+
+        b_ota_select = QtWidgets.QPushButton("选择固件(.bin)")
+        b_ota_select.clicked.connect(self._on_ota_select_file)
+        g.addWidget(b_ota_select, row-1, 2, 1, 2)
+
+        self._ota_fw_path_label = QtWidgets.QLabel("未选择固件文件")
+        self._ota_fw_path_label.setStyleSheet("color: #f9e2af; font-size: 11px;")
+        g.addWidget(self._ota_fw_path_label, _nrow(), 0, 1, 4)
+
+        self._ota_start_btn = QtWidgets.QPushButton("开始 OTA 升级")
+        self._ota_start_btn.setStyleSheet(
+            "QPushButton { background: #a6e3a1; color: #11111b; font-weight: bold; }"
+            "QPushButton:hover { background: #89dceb; }"
+            "QPushButton:disabled { background: #45475a; color: #6c7086; }"
+        )
+        self._ota_start_btn.setEnabled(False)
+        self._ota_start_btn.setToolTip("请先选择固件文件 (.bin)")
+        self._ota_start_btn.clicked.connect(self._on_ota_start)
+        g.addWidget(self._ota_start_btn, _nrow(), 0, 1, 4)
+
+        self._ota_progress_bar = QtWidgets.QProgressBar()
+        self._ota_progress_bar.setRange(0, 100)
+        self._ota_progress_bar.setValue(0)
+        self._ota_progress_bar.setTextVisible(True)
+        self._ota_progress_bar.setStyleSheet(
+            "QProgressBar { background: #313244; border: 1px solid #45475a; border-radius: 4px; text-align: center; color: #cdd6f4; }"
+            "QProgressBar::chunk { background: #89b4fa; border-radius: 4px; }"
+        )
+        g.addWidget(self._ota_progress_bar, _nrow(), 0, 1, 4)
+
+        self._ota_status_label = QtWidgets.QLabel("")
+        self._ota_status_label.setStyleSheet("color: #a6e3a1; font-size: 11px;")
+        self._ota_status_label.setWordWrap(True)
+        g.addWidget(self._ota_status_label, row, 0, 1, 4)
+        _nrow()
+
         if self.vis._transport != "ble":
             self.time_use_local_tz.setEnabled(False)
             self.time_tz.setEnabled(False)
@@ -1155,6 +1613,47 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
             self.log("ACK 下发失败（非 BLE 或未连接）")
         else:
             self.log("已发送逗宠记录 ACK (0x33)")
+
+    # ===== OTA 操作 =====
+    _ota_selected_fw: str = ""
+
+    def _on_ota_version_req(self) -> None:
+        """发送 CMD_OTA_VERSION (0xFF00) 请求从设备获取固件版本。"""
+        if self.vis._transport != "ble":
+            self.log("OTA 命令仅支持 BLE 模式")
+            return
+        self.vis.send_ota_version_request()
+        self.log("已发送 CMD_OTA_VERSION (0xFF00)（仅发送命令，不阻塞 OTA 升级按钮）")
+
+    def _on_ota_select_file(self) -> None:
+        default_path = r"C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\cmake_builds\tc_ble_simple_b80_sdk\TC32-GCC_Toolchain\b80_ble_cat_laser_toy.bin"
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "选择固件文件 (.bin)", default_path, "BIN 文件 (*.bin)"
+        )
+        if not path:
+            return
+        self._ota_selected_fw = path
+        self._ota_fw_path_label.setText(os.path.basename(path))
+        self._ota_fw_path_label.setToolTip(path)
+        self._ota_start_btn.setEnabled(True)
+        self._ota_start_btn.setToolTip(f"OTA: {os.path.basename(path)}")
+        self.log(f"已选择固件: {path}")
+
+    def _on_ota_start(self) -> None:
+        if not self._ota_selected_fw:
+            return
+        if not os.path.isfile(self._ota_selected_fw):
+            self.log(f"固件文件不存在: {self._ota_selected_fw}")
+            return
+        if self.vis._transport != "ble":
+            self.log("OTA 仅支持 BLE 模式")
+            return
+        ok = self.vis.start_ota(self._ota_selected_fw)
+        if ok:
+            self._ota_start_btn.setEnabled(False)
+            self.log(f"OTA 已启动: {self._ota_selected_fw}")
+        else:
+            self.log("OTA 启动失败（可能正在运行中）")
 
     def _bind_press_release(self, btn: QtWidgets.QPushButton, direction: int) -> None:
         btn.pressed.connect(
@@ -1205,6 +1704,21 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         if need_stop:
             self._stop_auto_power_if_running()
             self.log("断开连接，自动开关机已停止")
+
+        # Update OTA status
+        ota_running, ota_progress, ota_status = self.vis.ota_state()
+        if ota_running:
+            self._ota_progress_bar.setValue(int(ota_progress * 100))
+            self._ota_status_label.setText(ota_status)
+            self._ota_start_btn.setEnabled(False)
+        else:
+            # Only update when there's a status to show
+            if ota_status:
+                self._ota_progress_bar.setValue(int(ota_progress * 100))
+                self._ota_status_label.setText(ota_status)
+            # Re-enable OTA button if OTA completed (progress >= 1.0)
+            if ota_progress >= 1.0 and ota_status and "失败" not in ota_status:
+                self._ota_start_btn.setEnabled(bool(self._ota_selected_fw))
 
 
 class RadarNightWindow(QtWidgets.QMainWindow):

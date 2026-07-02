@@ -5,7 +5,7 @@ docs/PROJECT_JOURNAL.md
 
 hardware/*/History
 hardware/*/__Previews
-hardware/*/zip
+hardware/**/*zip
 hardware/*/*.htm*
 __Previews
 test/

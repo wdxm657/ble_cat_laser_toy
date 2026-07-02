@@ -32,6 +32,55 @@
 #include "app_ctrl.h"
 #include "app_adc_dbg.h"
 
+/*----------------------------------------------------------------------------*/
+/*------------- OTA  Function                                 ----------------*/
+/*----------------------------------------------------------------------------*/
+_attribute_data_retention_ int ota_is_working = 0;
+_attribute_data_retention_ int ota_is_suc = 0;
+_attribute_data_retention_ int ota_is_fil = 0;
+#if (BLE_OTA_SERVER_ENABLE)
+
+void app_get_firmware_version(void)
+{
+    BLE_LOG_D("[APP][OTA] Get firmware version");
+}
+
+/**
+ * @brief      this function is used to register the function for OTA start.
+ * @param[in]  none
+ * @return     none
+ */
+void app_enter_ota_mode(void)
+{
+    ota_is_working = 1;
+    ota_is_suc = 0;
+    ota_is_fil = 0;
+    BLE_LOG_D("[APP][OTA] Enter OTA mode");
+}
+
+/**
+ * @brief       no matter whether the OTA result is successful or fail.
+ *              code will run here to tell user the OTA result.
+ * @param[in]   result    OTA result:success or fail(different reason)
+ * @return      none
+ */
+void app_ota_result(int result)
+{
+    if (result == OTA_SUCCESS)
+    {  // OTA success
+        BLE_LOG_D("[APP][OTA] SUCCESSF");
+        ota_is_suc = 1;
+    }
+    else
+    {  // OTA fail
+        ota_is_fil = 1;
+        BLE_LOG_D("[APP][OTA] FAILED");
+    }
+}
+
+#endif
+
+
 #define LED_BLINK_INTERVAL_US 500000
 
 static u32 g_led_blink_tick = 0;
@@ -106,6 +155,22 @@ void app_ui_led_task(void)
 //     - 代表物理关机状态
 #if (UI_LED_ENABLE)
     app_ui_led_blink_update();
+    if (ota_is_working)
+    {
+        if (ota_is_suc)
+        {
+            app_ui_led_all_off();
+            app_ui_led_set_green(g_led_blink_on); 
+        }else if(ota_is_fil){
+            app_ui_led_all_off();
+            app_ui_led_set_red(g_led_blink_on); 
+        }
+        app_ui_led_all_off();
+        app_ui_led_set_red(g_led_blink_on); 
+        app_ui_led_set_green(g_led_blink_on); 
+        app_ui_led_set_blue(g_led_blink_on); 
+        return;
+    }
 
     // - 红色灯闪烁
     //     - 代表处在设置模式
@@ -315,64 +380,3 @@ void task_sleep_enter(u8 e, u8 *p, int n)
     }
 #endif
 }
-
-/*----------------------------------------------------------------------------*/
-/*------------- OTA  Function                                 ----------------*/
-/*----------------------------------------------------------------------------*/
-#if (BLE_OTA_SERVER_ENABLE)
-
-_attribute_data_retention_ int ota_is_working = 0;
-
-void app_get_firmware_version(void)
-{
-    LOG_D("[APP][OTA] Get firmware version");
-}
-
-/**
- * @brief      this function is used to register the function for OTA start.
- * @param[in]  none
- * @return     none
- */
-void app_enter_ota_mode(void)
-{
-#if (UI_LED_ENABLE)
-    gpio_write(GPIO_LED_BLUE, 1);
-    gpio_write(GPIO_LED_GREEN, 1);
-#endif
-    ota_is_working = 1;
-    LOG_D("[APP][OTA] Enter OTA mode");
-}
-
-/**
- * @brief       no matter whether the OTA result is successful or fail.
- *              code will run here to tell user the OTA result.
- * @param[in]   result    OTA result:success or fail(different reason)
- * @return      none
- */
-void app_ota_result(int result)
-{
-#if (0)  // this is only for debug, should disable in mass production code
-    if (result == OTA_SUCCESS)
-    {  // OTA success
-        gpio_write(GPIO_LED_BLUE, 0);
-        sleep_us(1000000);  // led off for 1 second
-        gpio_write(GPIO_LED_BLUE, 1);
-        sleep_us(1000000);  // led on for 1 second
-    }
-    else
-    {  // OTA fail
-
-#if 0  // this is only for debug, can not use this in application code
-			irq_disable();
-
-			while(1)
-			{
-				gpio_toggle(GPIO_LED_BLUE);
-				sleep_us(1000000);  //led on for 1 second
-			}
-#endif
-    }
-#endif
-}
-
-#endif

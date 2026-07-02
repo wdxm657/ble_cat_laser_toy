@@ -61,6 +61,8 @@ _attribute_ram_code_sec_noinline_
 
 #if (BLE_OTA_SERVER_ENABLE && (FLASH_SIZE_OPTION == FLASH_SIZE_OPTION_128K))
     blc_ota_setFirmwareSizeAndBootAddress(48, MULTI_BOOT_ADDR_0x10000);
+#elif (BLE_OTA_SERVER_ENABLE && (FLASH_SIZE_OPTION == FLASH_SIZE_OPTION_512K))
+    blc_ota_setFirmwareSizeAndBootAddress(128, MULTI_BOOT_ADDR_0x20000);
 #endif
 
     cpu_wakeup_init(INTERNAL_CAP_XTAL24M);
