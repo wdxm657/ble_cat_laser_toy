@@ -42,7 +42,7 @@ _attribute_data_retention_ int ota_is_fil = 0;
 
 void app_get_firmware_version(void)
 {
-    BLE_LOG_D("[APP][OTA] Get firmware version");
+    BLE_LOG_D("[APP][OTA] 123");
 }
 
 /**
@@ -74,7 +74,7 @@ void app_ota_result(int result)
     else
     {  // OTA fail
         ota_is_fil = 1;
-        BLE_LOG_D("[APP][OTA] FAILED");
+        BLE_LOG_D("[APP][OTA] FAILED %d", result);
     }
 }
 

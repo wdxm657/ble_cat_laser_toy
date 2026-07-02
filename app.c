@@ -1073,7 +1073,7 @@ void                           app_flash_protection_operation(u8 flash_op_evt, u
          * "op addr_begin" to "op addr_end" is in locking block area.
          * In this sample code, we protect whole flash area for old and new firmware, so here we do not need judge "op addr_begin" and "op addr_end",
          * must unlock flash */
-        LOG_D("[FLASH][PROT] OTA clear old FW begin, unlock flash");
+        BLE_LOG_D("[FLASH][PROT] OTA clear old FW begin, unlock flash");
         flash_unlock();
     }
     else if (flash_op_evt == FLASH_OP_EVT_STACK_OTA_CLEAR_OLD_FW_END)
@@ -1081,7 +1081,7 @@ void                           app_flash_protection_operation(u8 flash_op_evt, u
         /* ignore "op addr_begin" and "op addr_end" for END event
          * OTA clear old firmware end event is triggered by stack, in "blc ota_initOtaServer_module", erasing old firmware data finished.
          * In this sample code, we need lock flash again, because we have unlocked it at the begin event of clear old firmware */
-        LOG_D("[FLASH][PROT] OTA clear old FW end, restore flash locking");
+        BLE_LOG_D("[FLASH][PROT] OTA clear old FW end, restore flash locking");
         flash_lock(flash_lockBlock_cmd);
     }
     else if (flash_op_evt == FLASH_OP_EVT_STACK_OTA_WRITE_NEW_FW_BEGIN)
@@ -1091,7 +1091,7 @@ void                           app_flash_protection_operation(u8 flash_op_evt, u
          * "op addr_begin" to "op addr_end" is in locking block area.
          * In this sample code, we protect whole flash area for old and new firmware, so here we do not need judge "op addr_begin" and "op addr_end",
          * must unlock flash */
-        LOG_D("[FLASH][PROT] OTA write new FW begin, unlock flash");
+        BLE_LOG_D("[FLASH][PROT] OTA write new FW begin, unlock flash");
         flash_unlock();
     }
     else if (flash_op_evt == FLASH_OP_EVT_STACK_OTA_WRITE_NEW_FW_END)
@@ -1099,7 +1099,7 @@ void                           app_flash_protection_operation(u8 flash_op_evt, u
         /* ignore "op addr_begin" and "op addr_end" for END event
          * OTA write new firmware end event is triggered by stack, after OTA end or an OTA error happens, writing new firmware data finished.
          * In this sample code, we need lock flash again, because we have unlocked it at the begin event of write new firmware */
-        LOG_D("[FLASH][PROT] OTA write new FW end, restore flash locking");
+        BLE_LOG_D("[FLASH][PROT] OTA write new FW end, restore flash locking");
         flash_lock(flash_lockBlock_cmd);
     }
 #endif

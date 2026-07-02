@@ -780,22 +780,23 @@ class RadarVisualizer:
             fw_size = len(fw_data)
 
         # Firmware_size at bin offset 0x18 includes the 4-byte CRC32 trailer.
-        # Actual code data = fw_size - 4 bytes (the CRC32 is embedded by the linker).
+        # tl_check_fw2.exe has now correctly appended CRC32 in the .bin file.
+        # Standard OTA protocol per doc:
+        #   - total_data_packets = ceil(fw_size / 16)
+        #   - All data packets from fw_data (includes CRC32 at end)
+        #   - Last packet embeds CRC32 at data[0:4] (is_last=True)
+        #   - No separate CRC packet
+        #   - max_adr_index = total_data_packets - 1
         code_size = fw_size - 4
         if code_size < 1:
             _ota_log("固件数据为空")
             self._ota_abort("固件数据为空")
             return
-        code_data = fw_data[:code_size]
 
-        # Number of data packets = ceil(code_size / 16). CRC verification is a
-        # SEPARATE packet at index = total_data_packets.
-        total_data_packets = (code_size + OTA_PDU_DATA_LEN - 1) // OTA_PDU_DATA_LEN
+        total_data_packets = (fw_size + OTA_PDU_DATA_LEN - 1) // OTA_PDU_DATA_LEN
 
-        # CRC32 is computed over the actual code data WITHOUT padding.
-        # The OTA library accumulates CRC as it receives each 16-byte data packet,
-        # but it accumulates over the REAL firmware bytes only (fw_size - 4 bytes).
-        fw_crc32 = crc32_ota(code_data)
+        # CRC32 from binary — computed by tl_check_fw2.exe, matching library.
+        fw_crc32 = struct.unpack('<I', fw_data[fw_size - 4:fw_size])[0]
         if total_data_packets < 1:
             _ota_log("固件数据为空")
             self._ota_abort("固件数据为空")
@@ -848,11 +849,10 @@ class RadarVisualizer:
             return
         _ota_log("连接正常，开始发送数据")
 
-        # 5. Send all OTA data packets (firmware data only)
-        # CRITICAL: Windows BLE Write Command with response=False may silently drop
-        # packets when the local TX buffer is full. Send slowly (1 packet per ~10ms)
-        # to ensure each packet actually gets transmitted over the air.
-        _ota_log(f"开始发送 {total_data_packets} 个数据包 (每包间隔 ~10ms)")
+        # 5. Send all OTA data packets.
+        # Use Write Command (response=False) and a short delay between packets.
+        # The delay prevents Windows BLE TX buffer overflow while keeping high throughput.
+        _ota_log(f"开始发送 {total_data_packets} 个数据包 (每包间隔 ~2ms)")
         sent = 0
         last_report = 0
         for i in range(total_data_packets):
@@ -861,9 +861,10 @@ class RadarVisualizer:
                 return
 
             offset = i * OTA_PDU_DATA_LEN
-            chunk = code_data[offset : offset + OTA_PDU_DATA_LEN]
-            # Normal data packet (no CRC32 in payload)
-            pkt = build_ota_data_packet(i, chunk, is_last=False)
+            chunk = fw_data[offset : offset + OTA_PDU_DATA_LEN]
+            # Last packet: embed CRC32 at data[0:4] per OTA doc.
+            is_last = (i == total_data_packets - 1)
+            pkt = build_ota_data_packet(i, chunk, is_last=is_last, fw_crc32=fw_crc32)
             try:
                 await client.write_gatt_char(ota_char, pkt, response=False)
             except Exception as ex:
@@ -873,22 +874,19 @@ class RadarVisualizer:
 
             sent += 1
 
-            # Report progress at 10% intervals
-            progress = sent / (total_data_packets + 1)  # +1 for CRC packet
+            # Report progress at 1% intervals for smoother bar
+            progress = sent / total_data_packets
             progress_pct = int(progress * 100)
-            if progress_pct >= last_report + 10 or i == 0:
+            if progress_pct >= last_report + 1 or i == 0:
                 last_report = progress_pct
                 self._set_ota_progress(
-                    progress, f"OTA 发送中... {sent}/{total_data_packets + 1} ({progress * 100:.1f}%)"
+                    progress, f"OTA 发送中... {sent}/{total_data_packets} ({progress * 100:.1f}%)"
                 )
-                _ota_log(f"进度: {sent}/{total_data_packets + 1} ({progress * 100:.1f}%)")
 
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.002)
 
         _ota_log(f"数据包发送完毕: {total_data_packets} 包, 等待 TX buffer 排空...")
-        # Wait 3 seconds for the BLE TX buffer to fully drain before sending final packets.
-        # Windows BLE with Write Command may have queued data in the controller's TX buffer.
-        await asyncio.sleep(3.0)
+        await asyncio.sleep(1.0)
 
         if not client.is_connected:
             _ota_log("连接已断开")
@@ -896,28 +894,9 @@ class RadarVisualizer:
             return
         _ota_log("TX buffer 已排空")
 
-        # 6. Send CRC verification packet (adr_index = total_data_packets)
-        # This is a SEPARATE packet past the last data index, containing CRC32 + 0xFF padding
-        _ota_log("发送 CRC32 校验包...")
-        crc_pkt = build_ota_data_packet(
-            total_data_packets,
-            b"",  # empty chunk → all 0xFF padded
-            is_last=True,
-            fw_crc32=fw_crc32,
-        )
-        try:
-            await client.write_gatt_char(ota_char, crc_pkt, response=False)
-        except Exception as ex:
-            _ota_log(f"CRC32 包发送失败: {ex}")
-            self._ota_abort(f"CRC32 包发送失败: {ex}")
-            return
-        sent += 1
-        self._set_ota_progress(sent / (total_data_packets + 1), f"CRC32 校验包已发送, 等待 OTA_END...")
-        _ota_log(f"CRC32 校验包已发送 (adr_index=0x{total_data_packets:04X})")
-
-        # adr_index_max = total_data_packets (the CRC packet's adr_index)
-        max_adr_index = total_data_packets
-        await asyncio.sleep(1.0)
+        # adr_index_max = last data packet index (per OTA doc: "最大的adr_index值")
+        max_adr_index = total_data_packets - 1
+        await asyncio.sleep(0.5)
         self._set_ota_progress(0.95, "OTA 数据发送完毕，发送 OTA_END...")
 
         # 7. Check connection before OTA_END
@@ -947,11 +926,11 @@ class RadarVisualizer:
                     return
 
         # 9. Final wait for device to process OTA_END and reboot
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.5)
 
         self._set_ota_progress(
             1.0,
-            f"OTA 完成! 共 {total_data_packets} 数据包 + CRC + END, 设备将重启.",
+            f"OTA 完成! 共 {total_data_packets} 数据包 + END, 设备将重启.",
         )
         _ota_log("OTA 流程完成，设备应重启")
 
