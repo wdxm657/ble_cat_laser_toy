@@ -187,6 +187,8 @@ CTRL_CMD_TEXT_CHUNK = cp.CTRL_CMD_TEXT_CHUNK
 CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = cp.CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY
 CTRL_CMD_RADAR_TRACK_SPEED = cp.CTRL_CMD_RADAR_TRACK_SPEED
 CTRL_CMD_RADAR_PAN_OFFSET = 0x51
+CTRL_CMD_FW_VERSION_GET = 0x5B
+CTRL_CMD_OTA_STATUS_EVENT = 0x5C
 CTRL_CMD_DEVICE_REBOOT = cp.CTRL_CMD_DEVICE_REBOOT
 
 # ===== OTA (Telink BLE OTA) =====
@@ -388,6 +390,11 @@ class RadarVisualizer:
         self._ble_disconnect_count: int = 0
         self._ble_last_disconnect_time: Optional[str] = None
         self._ble_disconnect_need_stop_auto_power: bool = False
+
+        # 固件版本 & OTA 状态
+        self.fw_version: Optional[str] = None
+        self.ota_status: int = 0          # 0=空闲 1=更新中 2=成功 3=失败
+        self.ota_status_epoch: int = 0
 
         # BLE text chunk reassembly (EVENT 0x40). Firmware streams in-order chunks.
         self._text_rx_transfer_id: Optional[int] = None
@@ -648,7 +655,22 @@ class RadarVisualizer:
                             else:
                                 await _write_get_boundary(rx_ch)
                                 print("[BLE] sent GET_BOUNDARY (0x57)", file=sys.stderr)
-                                await asyncio.sleep(1.0)
+                                await asyncio.sleep(0.3)
+
+                                # 请求固件版本
+                                self._ble_tx_seq = (self._ble_tx_seq + 1) & 0xFF
+                                req_ver = bytes([
+                                    CTRL_PROTO_VERSION, CTRL_MSG_TYPE_CMD,
+                                    CTRL_CMD_FW_VERSION_GET, self._ble_tx_seq,
+                                    0, 0
+                                ])
+                                try:
+                                    await client.write_gatt_char(rx_ch, req_ver, response=True)
+                                except Exception:
+                                    await client.write_gatt_char(rx_ch, req_ver, response=False)
+                                print("[BLE] sent FW_VERSION_GET (0x5B)", file=sys.stderr)
+                                await asyncio.sleep(0.3)
+
                                 with self._lock:
                                     need_retry = self.sector_epoch == 0
                                 if need_retry:
@@ -1059,6 +1081,34 @@ class RadarVisualizer:
                 a_end = _s16le(payload[11], payload[12])
                 self._apply_sector_region(cx, cy, ri, ro, a_start, a_end)
                 return
+
+        # OTA 状态事件 (cmd=0x5C)
+        if (
+            fr.msg_type == CTRL_MSG_TYPE_EVENT
+            and cmd_id == CTRL_CMD_OTA_STATUS_EVENT
+        ):
+            if len(payload) >= 1:
+                status = int(payload[0])
+                with self._lock:
+                    self.ota_status = status
+                    self.ota_status_epoch += 1
+                    self.ctrl_lines.append(self._decode_ctrl_line(fr))
+            return
+
+        # 固件版本响应 (cmd=0x5B)
+        if (
+            fr.msg_type == CTRL_MSG_TYPE_RSP
+            and cmd_id == CTRL_CMD_FW_VERSION_GET
+        ):
+            if len(payload) >= 3:
+                pat = int(payload[0])
+                mid = int(payload[1])
+                maj = int(payload[2])
+                ver_str = f"{maj}.{mid}.{pat}"
+                with self._lock:
+                    self.fw_version = ver_str
+                    self.ctrl_lines.append(self._decode_ctrl_line(fr))
+            return
 
         # 逗宠记录 EVENT (cmd=0x33): 记录数据
         if (
@@ -1708,6 +1758,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.vis = vis
         self._last_sector_epoch = -1
+        self._last_ota_epoch = -1
 
         self.setWindowTitle(title)
         self.resize(1180, 820)
@@ -1814,6 +1865,17 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.pan_btn.setEnabled(False)
             self.pan_btn.setToolTip("仅 BLE 模式可下发")
         right_l.addWidget(pan_box)
+
+        # --- 固件版本 & OTA 状态 ---
+        fw_box = QtWidgets.QGroupBox("固件 / OTA")
+        fw_l = QtWidgets.QVBoxLayout(fw_box)
+        self.fw_label = QtWidgets.QLabel("FW: —")
+        self.fw_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+        fw_l.addWidget(self.fw_label)
+        self.ota_label = QtWidgets.QLabel("OTA: —")
+        self.ota_label.setStyleSheet("color: #f9e2af;")
+        fw_l.addWidget(self.ota_label)
+        right_l.addWidget(fw_box)
 
         conn_box = QtWidgets.QGroupBox("BLE 连接")
         conn_l = QtWidgets.QVBoxLayout(conn_box)
@@ -2037,6 +2099,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             sr = self.vis.sector_region  # (cx, cy, ri, ro, a_start, a_end)
             mdir_ok = self.vis.motion_dir_valid
             mdeg10 = self.vis.motion_dir_deg10
+            ota_ep = self.vis.ota_status_epoch
             disconnect_count = self.vis._ble_disconnect_count
             last_disconnect_time = self.vis._ble_last_disconnect_time
 
@@ -2088,6 +2151,20 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.raw_point.set_data([], [])
             self.raw_text.set_text("RAW: —")
             self.motion_arrow.set_visible(False)
+
+        # 更新固件版本 & OTA 状态
+        with self.vis._lock:
+            fw = self.vis.fw_version
+            ota_st = self.vis.ota_status
+            ota_ep = self.vis.ota_status_epoch
+        if fw:
+            self.fw_label.setText(f"FW: v{fw}")
+        if ota_ep != self._last_ota_epoch:
+            self._last_ota_epoch = ota_ep
+            ota_text = {0: "空闲", 1: "更新中…", 2: "更新成功 ✅", 3: "更新失败 ❌"}
+            self.ota_label.setText(f"OTA: {ota_text.get(ota_st, '?')}")
+            if ota_st in (2, 3):
+                self.radar_text.appendPlainText(f"OTA 状态变更: {ota_text[ota_st]}")
 
         if seq:
             xs = [p[0] for p in seq]

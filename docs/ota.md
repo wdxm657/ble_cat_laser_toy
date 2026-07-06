@@ -178,3 +178,83 @@ for(i=0; i<8; i++)
 
 return crc;
 }
+
+
+## 附录2：上位机(APP) OTA 流程总结
+
+### 1. BLE 服务发现
+
+OTA 特性 UUID（Telink 标准）：
+```
+#define TELINK_SPP_DATA_OTA  {0x12,0x2B,0x0d,0x0c,0x0b,0x0a,0x09,0x08, \
+                              0x07,0x06,0x05,0x04,0x03,0x02,0x01,0x00}
+```
+上层 APP 通过该 UUID 找到 OTA Characteristic，使用 **Write Command**（无应答写）发送固件数据。
+
+### 2. 前置条件
+
+- 固件 `.bin` 文件已通过 `tl_check_fw2.exe` 后处理工具（会追加 CRC32 尾部）
+- 从 `.bin` 的偏移 `0x18` 处读取 `fw_size`（小端 4 字节，含尾部 4 字节 CRC32）
+- `code_size = fw_size - 4`（即实际的固件代码长度）
+- `total_packets = ceil(fw_size / 16)`（OTA 数据包总数）
+- 固件 CRC32 = 从 `.bin` 尾部 `fw_size-4` 处直接读取 4 字节，
+  由编译后工具 `tl_check_fw2.exe` 计算并追加到 .bin 文件末尾，
+  **上位机不要自己计算**，直接从文件读取
+
+### 3. 完整流程
+
+```
+步骤1: 发送 CMD_OTA_START (0xFF01)
+       PDU: [0x01, 0xFF]
+       通知 Slave 进入 OTA 模式
+       → 等待约 2s 让 Slave 完成 Flash 擦除
+
+步骤2: 发送所有 OTA 数据包 (共 total_packets 包)
+       每包 PDU 共 20 字节:
+         [Adr_Index(2)] [Data(16)] [CRC16(2)]
+
+       Adr_Index = 包序号（从 0 开始），对应固件偏移 = Adr_Index × 16
+       Data      = 从 .bin 文件读取的 16 字节固件数据
+       CRC16     = 前 18 字节（Adr_Index + Data）的 CRC-16 校验
+
+       最后一包特殊处理：
+       Data[0:4] = 固件 CRC32（来自 .bin 尾部）
+       Data[4:16] = 0xFF（补齐字节）
+       
+       关键参数：
+       · 使用 Write Command（response=False），不等待 ACK
+       · 每包间隔约 2ms
+       · 总时长 ≈ total_packets × 2ms
+
+步骤3: 等待 TX 缓冲区排空（约 1s）
+
+步骤4: 发送 CMD_OTA_END (0xFF02)
+       PDU: [0x02, 0xFF]
+            [max_adr_index(2)]   ← 小端，total_packets - 1
+            [~max_adr_index(2)]  ← 取反校验
+       示例: max_adr_index=0x1F1F → xor=0xE0E0
+       → 等待约 0.5s 后设备重启
+```
+
+### 4. 数据包构造示例
+
+| 包类型 | Adr_Index | Data(16) | CRC16 |
+|--------|-----------|----------|-------|
+| 第 1 包 | 0x0000 | bin[0x00:0x10] | CRC16(adr_index + data) |
+| 第 2 包 | 0x0001 | bin[0x10:0x20] | CRC16(adr_index + data) |
+| ... | ... | ... | ... |
+| 最后一包 | `total_packets-1` | [CRC32(4)] + [0xFF × 12] | CRC16(adr_index + data) |
+
+### 5. CRC16 算法（每包校验）
+
+```python
+def crc16_ota(data: bytes) -> int:
+    """匹配附录1的 C 实现：poly 0xA001, init 0xFFFF"""
+    crc = 0xFFFF
+    for b in data:
+        ds = b
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xA001 if (crc ^ ds) & 1 else 0)
+            ds >>= 1
+    return crc & 0xFFFF
+```

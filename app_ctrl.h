@@ -53,6 +53,10 @@ enum{
 
 	CTRL_CMD_TEXT_CHUNK = 0x40,   // long text transfer in chunks
 
+    /** APP -> device: get firmware version, 返回响应 payload[0..3]=APP_FIRMWARE_VERSION(u32 LE) */
+    CTRL_CMD_FW_VERSION_GET           = 0x5B,
+    /** 设备主动 EVENT: OTA 状态上报, payload[0]=status(0=空闲 1=更新中 2=成功 3=失败) */
+    CTRL_CMD_OTA_STATUS_EVENT         = 0x5C,
     /** APP -> device: request a soft reboot (MCU reset). */
     CTRL_CMD_DEVICE_REBOOT            = 0x5A,
 
@@ -192,6 +196,7 @@ void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw
 void app_ctrl_radar_dbg_send_pred_sta(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm);
 void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm);
 void app_ctrl_radar_dbg_send_boundary_quad_all(void);
+void app_ctrl_send_ota_status(u8 status);
 void app_ctrl_status_notify_task(void);
 #endif
 

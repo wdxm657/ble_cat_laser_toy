@@ -759,20 +759,69 @@ byte6 : status         // 0x00=OK，其它为错误码
 
 设备行为：回复 RSP 后在 `app_ctrl_task()` 中延时约 120ms 触发 `start_reboot()`。
 
-#### 4.14 电池电量使用电池服务特帧读取
+#### 4.14 获取固件版本（FW_VERSION_GET，CMD = 0x5B）
+
+**方向**：APP → 设备
+
+请求帧（Ctrl RX）：
+```
+byte0 : 0x01           // version
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x5B           // cmdId = FW_VERSION_GET
+byte3 : seq
+byte4 : 0x00           // payloadLen = 0
+byte5 : 0x00
+```
+
+响应帧（Ctrl TX Notify）：
+```
+byte0 : 0x01           // version
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x5B           // cmdId = FW_VERSION_GET
+byte3 : seq            // 与请求一致
+byte4 : 0x03           // payloadLen = 3
+byte5 : 0x00
+byte6 : patch          // APP_FIRMWARE_VERSION bits[7:0]
+byte7 : minor          // APP_FIRMWARE_VERSION bits[15:8]
+byte8 : major          // APP_FIRMWARE_VERSION bits[23:16]
+```
+版本格式：`major.minor.patch` 各 8bit，当前版本 `1.0.0`。
+
+---
+
+#### 4.15 OTA 状态事件（OTA_STATUS_EVENT，CMD = 0x5C）
+
+**方向**：设备 → APP（主动 EVENT）
+
+设备在 OTA 状态变更时主动推送，无需 APP 请求。
+
+事件帧（Ctrl TX Notify）：
+```
+byte0 : 0x01           // version
+byte1 : 0x03           // msgType = EVENT
+byte2 : 0x5C           // cmdId = OTA_STATUS_EVENT
+byte3 : 0x00           // seq = 0（事件无序列）
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : status         // 1=更新中 2=更新成功 3=更新失败
+```
+
+---
+
+#### 4.16 电池电量使用电池服务特帧读取
 
 Battery Service
 UUID:0000180F-0000-1000-8000-00805F9B34FB
 Battery Level
 UUID:00002A19-0000-1000-8000-00805F9B34FB
 
-#### 4.15 狩猎游戏设置（CMD = 0x60 ~ 0x64）
+#### 4.17 狩猎游戏设置（CMD = 0x60 ~ 0x64）
 
 用途：APP 配置狩猎游戏的各项参数，包括猎物点、狩猎时长、狩猎次数、休眠时长等。
 
 ---
 
-##### 4.15.1 进入狩猎设置模式（HUNT_SETTINGS_ENTER，CMD = 0x60）
+##### 4.17.1 进入狩猎设置模式（HUNT_SETTINGS_ENTER，CMD = 0x60）
 
 进入后光斑移动到当前猎物点，设备进入设置模式（`setting_mode=1`），停止自动狩猎。
 
@@ -801,7 +850,7 @@ byte6 : status
 
 ---
 
-##### 4.15.2 退出狩猎设置模式（HUNT_SETTINGS_EXIT，CMD = 0x61）
+##### 4.17.2 退出狩猎设置模式（HUNT_SETTINGS_EXIT，CMD = 0x61）
 
 退出时可以选择应用或丢弃设置。
 
@@ -831,7 +880,7 @@ byte6 : status
 
 ---
 
-##### 4.15.3 猎物点随机移动（HUNT_PREY_RANDOM，CMD = 0x62）
+##### 4.17.3 猎物点随机移动（HUNT_PREY_RANDOM，CMD = 0x62）
 
 在设置模式下，控制光斑在水平±60°、俯仰15°~30°范围内连续随机移动。
 - `start=1`：光斑开始移动到随机点，到达后停留 **0.5 秒**，然后自动移动到下一个随机点，不断循环。
@@ -864,7 +913,7 @@ byte7 : start          // 回显 0x00/0x01
 
 ---
 
-##### 4.15.4 统一设置狩猎参数（HUNT_SETTINGS_SET，CMD = 0x63）
+##### 4.17.4 统一设置狩猎参数（HUNT_SETTINGS_SET，CMD = 0x63）
 
 一次设置单次狩猎时长、次数和休眠时长。payload 共 4 字节：u16 LE 时长 + u8 次数 + u8 休眠分钟。
 
@@ -908,7 +957,7 @@ byte10: sleep_min      // 实际生效休眠分钟 u8
 
 ---
 
-##### 4.15.5 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x64）
+##### 4.17.5 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x64）
 
 获取当前配置的单次狩猎时长、狩猎次数和休眠时长。无需 payload。
 

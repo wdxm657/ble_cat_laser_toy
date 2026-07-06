@@ -36,13 +36,11 @@
 /*------------- OTA  Function                                 ----------------*/
 /*----------------------------------------------------------------------------*/
 _attribute_data_retention_ int ota_is_working = 0;
-_attribute_data_retention_ int ota_is_suc = 0;
-_attribute_data_retention_ int ota_is_fil = 0;
 #if (BLE_OTA_SERVER_ENABLE)
 
 void app_get_firmware_version(void)
 {
-    BLE_LOG_D("[APP][OTA] 126");
+    BLE_LOG_D("[APP][OTA] GET VERSION TEST");
 }
 
 /**
@@ -53,9 +51,8 @@ void app_get_firmware_version(void)
 void app_enter_ota_mode(void)
 {
     ota_is_working = 1;
-    ota_is_suc = 0;
-    ota_is_fil = 0;
     BLE_LOG_D("[APP][OTA] Enter OTA mode");
+    app_ctrl_send_ota_status(1);  // 更新中
 }
 
 /**
@@ -69,12 +66,12 @@ void app_ota_result(int result)
     if (result == OTA_SUCCESS)
     {  // OTA success
         BLE_LOG_D("[APP][OTA] SUCCESSF");
-        ota_is_suc = 1;
+        app_ctrl_send_ota_status(2);  // 更新成功
     }
     else
     {  // OTA fail
-        ota_is_fil = 1;
         BLE_LOG_D("[APP][OTA] FAILED %d", result);
+        app_ctrl_send_ota_status(3);  // 更新失败
     }
 }
 
@@ -157,14 +154,6 @@ void app_ui_led_task(void)
     app_ui_led_blink_update();
     if (ota_is_working)
     {
-        if (ota_is_suc)
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_green(g_led_blink_on); 
-        }else if(ota_is_fil){
-            app_ui_led_all_off();
-            app_ui_led_set_red(g_led_blink_on); 
-        }
         app_ui_led_all_off();
         app_ui_led_set_red(g_led_blink_on); 
         app_ui_led_set_green(g_led_blink_on); 

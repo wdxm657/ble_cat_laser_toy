@@ -1229,6 +1229,31 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 #endif
 }
 
+
+/** 固件版本号（大端：MAJOR.MINOR.PATCH） */
+#define APP_FIRMWARE_VERSION_MAJOR  1
+#define APP_FIRMWARE_VERSION_MINOR  0
+#define APP_FIRMWARE_VERSION_PATCH  0
+#define APP_FIRMWARE_VERSION        ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
+
+// ----------------------- handler: firmware version get -----------------------
+static int app_ctrl_handle_fw_version_get(u8 seq, u8 *payload, u16 len)
+{
+    (void)payload;
+    (void)len;
+    u32 ver = APP_FIRMWARE_VERSION;
+    u8 pl[3] = {(u8)(ver & 0xFF), (u8)((ver >> 8) & 0xFF), (u8)((ver >> 16) & 0xFF)};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FW_VERSION_GET, seq, pl, sizeof(pl));
+    return 0;
+}
+
+/** OTA 状态事件推送（设备主动发送） */
+void app_ctrl_send_ota_status(u8 status)
+{
+    u8 pl[1] = {status};
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_OTA_STATUS_EVENT, 0, pl, sizeof(pl));
+}
+
 // ----------------------- handler: radar debug get boundary -----------------------
 static int app_ctrl_handle_radar_debug_get_boundary(u8 seq, u8 *payload, u16 len)
 {
@@ -1615,6 +1640,10 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_DEVICE_REBOOT:
         BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");
         app_ctrl_handle_device_reboot(seq, payload, payLen);
+        break;
+    case CTRL_CMD_FW_VERSION_GET:
+        BLE_LOG_D("CTRL_CMD_FW_VERSION_GET");
+        app_ctrl_handle_fw_version_get(seq, payload, payLen);
         break;
     default: {
         u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
