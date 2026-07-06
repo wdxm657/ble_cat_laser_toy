@@ -124,12 +124,6 @@ typedef struct
 /** 逗宠统计：轨迹点相对 newest 位移时累加 Δt 与 v×Δt（实现见后） */
 static void radar_play_on_cache_displacement_ms(u32 dt_ms, u32 speed_cms_mag);
 
-typedef struct
-{
-    s32 x_mm;
-    s32 y_mm;
-} radar_boundary_point_t;
-
 typedef enum
 {
     RADAR_GIMBAL_FSM_IDLE = 0,
@@ -148,7 +142,7 @@ typedef enum
  * 雷达直接跟踪：与 app_ctrl 边界移动（APP_CTRL_BOUNDARY_MOVE_SPEED_US）同量级步间隔，
  * 每帧只更新一个目标点，由 StepMotor_GimbalTask 连续逼近 —— 避免多点折线 + 分段等待造成的顿挫。
  */
-#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 8000u
+#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 4000u
 
 /*
  * 阶段二：沿估计运动方向在水平面内向前偏移 (mm)，使云台略超前目标。
@@ -164,7 +158,7 @@ typedef enum
 #define RADAR_TRACK_LEAD_MM_MIN        200
 #define RADAR_TRACK_LEAD_MM_MAX        2000
 /** 目标判定静止时，沿最后运动方向保留的较小超前 (mm)，需 motion_valid（含粘滞方向） */
-#define RADAR_TRACK_LEAD_MM_STATIC     600
+#define RADAR_TRACK_LEAD_MM_STATIC     500
 /** 跟踪点与猫位置的最小间距约束，避免边界修正后贴近目标 */
 #define RADAR_TRACK_ESCAPE_MIN_DIST_MM 600
 
@@ -334,21 +328,51 @@ _attribute_data_retention_ static unsigned long long g_radar_sess_speed_dt_sum  
 _attribute_data_retention_ static u8                 g_radar_boundary_configured = 0;
 _attribute_data_retention_ static u8                 g_radar_install_height_set  = 0;
 
-/* 边界多边形：默认是矩形，但支持修改为任意凸四边形（点顺序需为逆时针或顺时针一致） */
-static const radar_boundary_point_t g_radar_boundary_quad_default[4] = {
-    {-6000, 6000},
-    {6000, 6000},
-    {6000, 0},
-    {-6000, 0},
+/**
+ * 环形扇区默认参数。
+ * 雷达检测范围：水平 ±60°，径向 0.5m~6m。
+ * 地面投影坐标系：y 轴正前，x 轴右向。
+ */
+#define RADAR_SECTOR_CENTER_X_MM_DEFAULT  0
+#define RADAR_SECTOR_CENTER_Y_MM_DEFAULT  0
+#define RADAR_SECTOR_INNER_R_MM_DEFAULT   500   // 0.5m
+#define RADAR_SECTOR_OUTER_R_MM_DEFAULT   6000  // 6m
+#define RADAR_SECTOR_ANGLE_START_DEG10_DEFAULT (-600)  // -60°
+#define RADAR_SECTOR_ANGLE_END_DEG10_DEFAULT   (600)   // +60°
+
+_attribute_data_retention_ static radar_sector_region_t g_radar_sector = {
+    .center_x_mm       = RADAR_SECTOR_CENTER_X_MM_DEFAULT,
+    .center_y_mm       = RADAR_SECTOR_CENTER_Y_MM_DEFAULT,
+    .inner_radius_mm   = RADAR_SECTOR_INNER_R_MM_DEFAULT,
+    .outer_radius_mm   = RADAR_SECTOR_OUTER_R_MM_DEFAULT,
+    .angle_start_deg10 = RADAR_SECTOR_ANGLE_START_DEG10_DEFAULT,
+    .angle_end_deg10   = RADAR_SECTOR_ANGLE_END_DEG10_DEFAULT,
 };
 
-_attribute_data_retention_ static radar_boundary_point_t g_radar_boundary_quad[4] = {
-    {-6000, 6000},
-    {6000, 6000},
-    {6000, 0},
-    {-6000, 0},
-};
+/* ========== 扇区缓存：避免每帧重复计算平方/弧度/三角函数 ========== */
+_attribute_data_retention_ static u32   g_radar_ri2;        // inner_radius_mm²
+_attribute_data_retention_ static u32   g_radar_ro2;        // outer_radius_mm²
+_attribute_data_retention_ static float g_radar_start_rad;  // angle_start_deg10 → rad
+_attribute_data_retention_ static float g_radar_end_rad;    // angle_end_deg10   → rad
+_attribute_data_retention_ static float g_radar_sin_start;  // sin(start_rad)
+_attribute_data_retention_ static float g_radar_cos_start;  // cos(start_rad)
+_attribute_data_retention_ static float g_radar_sin_end;    // sin(end_rad)
+_attribute_data_retention_ static float g_radar_cos_end;    // cos(end_rad)
 
+/** 扇区参数变更后调用，更新所有缓存。 */
+static void radar_sector_update_derived(void)
+{
+    g_radar_ri2       = (u32)g_radar_sector.inner_radius_mm * (u32)g_radar_sector.inner_radius_mm;
+    g_radar_ro2       = (u32)g_radar_sector.outer_radius_mm * (u32)g_radar_sector.outer_radius_mm;
+    g_radar_start_rad = (float)g_radar_sector.angle_start_deg10 * DEG_TO_RAD_10;
+    g_radar_end_rad   = (float)g_radar_sector.angle_end_deg10 * DEG_TO_RAD_10;
+    g_radar_sin_start = lookup_sin(g_radar_start_rad);
+    g_radar_cos_start = lookup_cos(g_radar_start_rad);
+    g_radar_sin_end   = lookup_sin(g_radar_end_rad);
+    g_radar_cos_end   = lookup_cos(g_radar_end_rad);
+}
+
+#define RADAR_SECTOR_FLASH_MAGIC             0x52445353u  // "RDSS" (Radar Sector Storage)
 #define RADAR_SHOULIE_POINT_AND_CONFIG_MAGIC 0x52445343u  // "RDSC"
 #define RADAR_INSTALL_HEIGHT_FLASH_MAGIC     0x52444948u  // "RDIH"
 #define RADAR_PLAY_RECORD_FLASH_MAGIC        0x5244504Du  // "RDPM" 含运动统计，与旧 RDPL 布局不兼容
@@ -361,6 +385,19 @@ typedef struct
     u8  reserved[3];
     u32 crc;
 } radar_install_height_flash_t;
+
+/** 环形扇区 flash 存储格式 */
+typedef struct
+{
+    u32 magic;              // RADAR_SECTOR_FLASH_MAGIC
+    s16 center_x_mm;
+    s16 center_y_mm;
+    u16 inner_radius_mm;
+    u16 outer_radius_mm;
+    s16 angle_start_deg10;
+    s16 angle_end_deg10;
+    u32 crc;
+} radar_sector_flash_t;
 
 typedef struct
 {
@@ -1036,20 +1073,92 @@ static int radar_install_height_load_from_flash(void)
     return 1;
 }
 
+/**
+ * 根据安装高度计算雷达最远识别距离：y = 3.5x - 0.3
+ * x=高度(m), y=最远距离(m)。
+ * 仅修正 outer_radius_mm，其他扇区参数保持不变。
+ */
+static void radar_sector_update_outer_from_height(void)
+{
+    if (!g_radar_install_height_set)
+    {
+        return;
+    }
+
+    float height_m = (float)g_radar_install_height_mm / 1000.0f;
+    float outer_m  = 3.5f * height_m - 0.3f;
+
+    s32 outer_mm = (s32)(outer_m * 1000.0f + 0.5f);
+    if (outer_mm < (s32)g_radar_sector.inner_radius_mm + 100)
+    {
+        outer_mm = (s32)g_radar_sector.inner_radius_mm + 100;
+    }
+    if (outer_mm > 6000)
+    {
+        outer_mm = 6000;
+    }
+
+    g_radar_sector.outer_radius_mm = (u16)outer_mm;
+    BLE_LOG_D("SECTOR: outer auto-calc from height %dmm -> %dmm (formula: 3.5*h-0.3)",
+              g_radar_install_height_mm, outer_mm);
+    radar_sector_update_derived();
+}
+
+static int radar_sector_load_from_flash(void)
+{
+    radar_sector_flash_t stored;
+    flash_read_page(RADAR_BOUNDARY_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+
+    if (stored.magic != RADAR_SECTOR_FLASH_MAGIC)
+    {
+        return 0;
+    }
+
+    u32 crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+    if (crc != stored.crc)
+    {
+        return 0;
+    }
+
+    g_radar_sector.center_x_mm       = stored.center_x_mm;
+    g_radar_sector.center_y_mm       = stored.center_y_mm;
+    g_radar_sector.inner_radius_mm   = stored.inner_radius_mm;
+    g_radar_sector.outer_radius_mm   = stored.outer_radius_mm;
+    g_radar_sector.angle_start_deg10 = RADAR_SECTOR_ANGLE_START_DEG10_DEFAULT;
+    g_radar_sector.angle_end_deg10   = RADAR_SECTOR_ANGLE_END_DEG10_DEFAULT;
+
+    radar_sector_update_derived();
+    BLE_LOG_D("SECTOR: loaded from flash: outer=%dmm", g_radar_sector.outer_radius_mm);
+    return 1;
+}
+
+static void radar_sector_save_to_flash(void)
+{
+    radar_sector_flash_t stored;
+    stored.magic             = RADAR_SECTOR_FLASH_MAGIC;
+    stored.center_x_mm       = g_radar_sector.center_x_mm;
+    stored.center_y_mm       = g_radar_sector.center_y_mm;
+    stored.inner_radius_mm   = g_radar_sector.inner_radius_mm;
+    stored.outer_radius_mm   = g_radar_sector.outer_radius_mm;
+    stored.angle_start_deg10 = RADAR_SECTOR_ANGLE_START_DEG10_DEFAULT;
+    stored.angle_end_deg10   = RADAR_SECTOR_ANGLE_END_DEG10_DEFAULT;
+    stored.crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+
+    flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
+    flash_write_page(RADAR_BOUNDARY_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    BLE_LOG_D("SECTOR: saved to flash: outer=%dmm", g_radar_sector.outer_radius_mm);
+}
+
 void app_radar_clear_install_height_and_record_flash(void)
 {
     g_radar_install_height_mm  = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
     g_radar_install_height_set = 0;
 
-    for (int i = 0; i < 4; i++)
-    {
-        g_radar_boundary_quad[i].x_mm = g_radar_boundary_quad_default[i].x_mm;
-        g_radar_boundary_quad[i].y_mm = g_radar_boundary_quad_default[i].y_mm;
-    }
+    app_radar_reset_sector_default();
 
     radar_play_records_reset_ram();
 
-    // flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
+    flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
     flash_erase_sector(RADAR_INSTALL_HEIGHT_FLASH_ADDR);
     flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
     flash_erase_sector(RADAR_PREY_POINT_CFG_FLASH_ADDR);
@@ -1057,11 +1166,10 @@ void app_radar_clear_install_height_and_record_flash(void)
 
 void app_radar_init(void)
 {
-    s32 x_mm[4];
-    s32 y_mm[4];
+    // 默认先用扇区默认值
+    app_radar_reset_sector_default();
 
-    app_radar_reset_boundary_default();
-
+    // 加载安装高度
     if (radar_install_height_load_from_flash())
     {
         LOG_D("radar_install_height_load_from_flash success: %d", g_radar_install_height_mm);
@@ -1070,6 +1178,22 @@ void app_radar_init(void)
     {
         LOG_D("radar_install_height_load_from_flash failed");
         g_radar_install_height_set = 0;
+    }
+
+    // 从 flash 加载扇区参数；若不存在，则根据高度自动计算 outer
+    if (radar_sector_load_from_flash())
+    {
+        LOG_D("radar_sector_load_from_flash success: outer=%d", g_radar_sector.outer_radius_mm);
+    }
+    else if (g_radar_install_height_set)
+    {
+        LOG_D("radar_sector_load_from_flash failed, auto-calc from height");
+        radar_sector_update_outer_from_height();
+        radar_sector_save_to_flash();
+    }
+    else
+    {
+        LOG_D("radar_sector_load_from_flash failed, using defaults");
     }
 
     radar_play_records_load_from_flash();
@@ -1124,18 +1248,22 @@ static void RadarSessionOnMotion(u32 now_tick)
 
 void app_radar_set_install_height_mm(s32 height_mm)
 {
-    if (height_mm < 500)
+    if (height_mm < 800)
     {
-        height_mm = 500;
+        height_mm = 800;
     }
-    else if (height_mm > 10000)
+    else if (height_mm > 2500)
     {
-        height_mm = 10000;
+        height_mm = 2500;
     }
 
     g_radar_install_height_mm  = height_mm;
     g_radar_install_height_set = 1;
     hunt_prey_point_invalidate_xy();
+
+    // 根据高度自动计算扇区 outer，并保存到 flash
+    radar_sector_update_outer_from_height();
+    radar_sector_save_to_flash();
 
     radar_install_height_flash_t stored;
     stored.magic      = RADAR_INSTALL_HEIGHT_FLASH_MAGIC;
@@ -1145,6 +1273,9 @@ void app_radar_set_install_height_mm(s32 height_mm)
 
     flash_erase_sector(RADAR_INSTALL_HEIGHT_FLASH_ADDR);
     flash_write_page(RADAR_INSTALL_HEIGHT_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+
+    // 高度更新成功后主动推送最新扇区到上位机
+    app_ctrl_radar_dbg_send_boundary_quad_all();
 }
 
 void app_radar_get_install_height_mm(s32 *height_mm)
@@ -1157,23 +1288,37 @@ void app_radar_get_install_height_mm(s32 *height_mm)
     *height_mm = g_radar_install_height_mm;
 }
 
-void app_radar_get_boundary_quad_by_index(u8 index, s32 *x_mm, s32 *y_mm)
+const radar_sector_region_t *app_radar_get_sector_region(void)
 {
-    if (!x_mm || !y_mm || index >= 4)
-    {
-        return;
-    }
-
-    *x_mm = g_radar_boundary_quad[index].x_mm;
-    *y_mm = g_radar_boundary_quad[index].y_mm;
+    return &g_radar_sector;
 }
 
-void app_radar_reset_boundary_default(void)
+void app_radar_reset_sector_default(void)
 {
-    for (int i = 0; i < 4; i++)
-    {
-        g_radar_boundary_quad[i] = g_radar_boundary_quad_default[i];
-    }
+    g_radar_sector.center_x_mm       = RADAR_SECTOR_CENTER_X_MM_DEFAULT;
+    g_radar_sector.center_y_mm       = RADAR_SECTOR_CENTER_Y_MM_DEFAULT;
+    g_radar_sector.inner_radius_mm   = RADAR_SECTOR_INNER_R_MM_DEFAULT;
+    g_radar_sector.outer_radius_mm   = RADAR_SECTOR_OUTER_R_MM_DEFAULT;
+    g_radar_sector.angle_start_deg10 = RADAR_SECTOR_ANGLE_START_DEG10_DEFAULT;
+    g_radar_sector.angle_end_deg10   = RADAR_SECTOR_ANGLE_END_DEG10_DEFAULT;
+    radar_sector_update_derived();
+}
+
+
+/** 云台偏移角度 (deg10)，远程可配置 */
+_attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -25;
+_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -75;
+
+/** 设置云台水平和垂直偏移角度 (deg10)，范围 ±3000（±300°）。 */
+void app_radar_set_pan_tilt_offset_deg10(s16 pan_offset, s16 tilt_offset)
+{
+    if (pan_offset < -3000)  pan_offset = -3000;
+    if (pan_offset > 3000)   pan_offset = 3000;
+    if (tilt_offset < -3000) tilt_offset = -3000;
+    if (tilt_offset > 3000)  tilt_offset = 3000;
+    g_radar_pan_offset_deg10  = pan_offset;
+    g_radar_tilt_offset_deg10 = tilt_offset;
+    BLE_LOG_D("PAN_TILT_OFFSET: pan=%d tilt=%d deg10", pan_offset, tilt_offset);
 }
 
 static s16 DecodeRadarSigned15(u8 low, u8 high)
@@ -1201,47 +1346,6 @@ static s32 RadarRandRangeI32(s32 min_v, s32 max_v)
     return min_v + (s32)(RadarFastRand() % span);
 }
 
-/* 判断点是否在当前凸四边形内部（边顺序需保持一致：顺时针或逆时针） */
-static u8 RadarPointInsideQuad(s32 x_mm, s32 y_mm)
-{
-    int sign = 0;
-
-    for (int i = 0; i < 4; i++)
-    {
-        const radar_boundary_point_t *a = &g_radar_boundary_quad[i];
-        const radar_boundary_point_t *b = &g_radar_boundary_quad[(i + 1) % 4];
-
-        s32 edge_x = b->x_mm - a->x_mm;
-        s32 edge_y = b->y_mm - a->y_mm;
-        s32 px     = x_mm - a->x_mm;
-        s32 py     = y_mm - a->y_mm;
-
-        s64 cross = (s64)edge_x * (s64)py - (s64)edge_y * (s64)px;
-
-        if (cross == 0)
-        {
-            continue;
-        }
-
-        int curSign = (cross > 0) ? 1 : -1;
-        if (sign == 0)
-        {
-            sign = curSign;
-        }
-        else if (curSign != sign)
-        {
-            return 0;
-        }
-    }
-
-    return 1;
-}
-
-static float RadarAtan2Safe(float y, float x)
-{
-    return lookup_atan2(y, x);
-}
-
 static float RadarWrapAngle(float a)
 {
     while (a > 3.1415926f)
@@ -1249,6 +1353,66 @@ static float RadarWrapAngle(float a)
     while (a < -3.1415926f)
         a += 6.2831852f;
     return a;
+}
+
+/** 判断 angle 是否在 [start, end] 范围内（弧度，处理环绕） */
+static u8 RadarAngleInRange(float angle, float start, float end)
+{
+    angle = RadarWrapAngle(angle);
+    start = RadarWrapAngle(start);
+    end   = RadarWrapAngle(end);
+    if (start <= end)
+    {
+        return (angle >= start - 0.0001f && angle <= end + 0.0001f);
+    }
+    else
+    {
+        // 范围跨 ±π 环绕
+        return (angle >= start - 0.0001f || angle <= end + 0.0001f);
+    }
+}
+
+/**
+ * 判断点是否在环形扇区内部。
+ * 检查半径 ∈ [inner, outer] 且角度 ∈ [start, end]。
+ */
+static u8 RadarPointInsideSector(s32 x_mm, s32 y_mm)
+{
+    s32 dx = x_mm - (s32)g_radar_sector.center_x_mm;
+    s32 dy = y_mm - (s32)g_radar_sector.center_y_mm;
+
+    // 半径平方检查（使用缓存），给 2mm 容差避免三角函数查表误差把边界点误判
+    u32 dist2 = (u32)(dx * dx) + (u32)(dy * dy);
+    if (dist2 < g_radar_ri2 - 4 || dist2 > g_radar_ro2 + 4)
+    {
+        return 0;
+    }
+
+    // 角度检查（使用缓存）
+    float angle_rad = RadarWrapAngle(lookup_atan2((float)dx, (float)dy));
+    return RadarAngleInRange(angle_rad, g_radar_start_rad, g_radar_end_rad);
+}
+
+static float RadarAtan2Safe(float y, float x)
+{
+    return lookup_atan2(y, x);
+}
+
+
+/** 将角度夹到 [start, end] 范围内 */
+static float RadarClampAngle(float angle, float start, float end)
+{
+    angle = RadarWrapAngle(angle);
+    start = RadarWrapAngle(start);
+    end   = RadarWrapAngle(end);
+    if (RadarAngleInRange(angle, start, end))
+        return angle;
+    // 选择最近的边界
+    float d_start = RadarWrapAngle(angle - start);
+    float d_end   = RadarWrapAngle(angle - end);
+    if (d_start < 0) d_start = -d_start;
+    if (d_end < 0) d_end = -d_end;
+    return (d_start <= d_end) ? start : end;
 }
 
 typedef struct
@@ -1366,163 +1530,49 @@ static u8 RadarSegmentIntersect(radar_vec2f_t p,
     return 0;
 }
 
-/* 原始雷达点无方向信息：若在四边形外，则投影到最近边（用于“拉回到合法区域”） */
-static void RadarProjectToQuad(s32 x_mm, s32 y_mm, s16 *out_x_mm, s16 *out_y_mm, float *out_dist_mm)
+/**
+ * 射线与圆的交点（二次方程）。
+ * 射线：P(t) = start + t*(end-start), t ∈ [0,1]。
+ * 圆：圆心 center, 半径 radius。
+ * 返回最小正 t ∈ (0,1] 的交点参数；无交点返回 -1。
+ */
+static float RadarRayCircleIntersect(radar_vec2f_t start, radar_vec2f_t end,
+                                     radar_vec2f_t center, float radius)
 {
-    if (RadarPointInsideQuad(x_mm, y_mm))
-    {
-        *out_x_mm    = (s16)x_mm;
-        *out_y_mm    = (s16)y_mm;
-        *out_dist_mm = 0.0f;
-        return;
-    }
+    radar_vec2f_t d = RadarVecSub(end, start);
+    radar_vec2f_t f = RadarVecSub(start, center);
 
-    float bestDist2 = -1.0f;
-    float bestX     = (float)x_mm;
-    float bestY     = (float)y_mm;
+    float a = RadarDot(d, d);
+    if (a < 0.000001f) return -1.0f;  // degenerate ray
 
-    for (int i = 0; i < 4; i++)
-    {
-        float ax = (float)g_radar_boundary_quad[i].x_mm;
-        float ay = (float)g_radar_boundary_quad[i].y_mm;
-        float bx = (float)g_radar_boundary_quad[(i + 1) % 4].x_mm;
-        float by = (float)g_radar_boundary_quad[(i + 1) % 4].y_mm;
+    float b = 2.0f * RadarDot(f, d);
+    float c = RadarDot(f, f) - radius * radius;
 
-        float vx = bx - ax;
-        float vy = by - ay;
-        float wx = (float)x_mm - ax;
-        float wy = (float)y_mm - ay;
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f) return -1.0f;  // no intersection
 
-        float denom = vx * vx + vy * vy;
-        if (denom <= 0.0f)
-        {
-            continue;
-        }
+    float sqrt_disc = app_radar_mysqrt_3(disc);
+    float t1 = (-b - sqrt_disc) / (2.0f * a);
+    float t2 = (-b + sqrt_disc) / (2.0f * a);
 
-        float t = (vx * wx + vy * wy) / denom;
-        if (t < 0.0f)
-        {
-            t = 0.0f;
-        }
-        else if (t > 1.0f)
-        {
-            t = 1.0f;
-        }
-
-        float projX = ax + t * vx;
-        float projY = ay + t * vy;
-        float dx    = projX - (float)x_mm;
-        float dy    = projY - (float)y_mm;
-        float dist2 = dx * dx + dy * dy;
-
-        if (bestDist2 < 0.0f || dist2 < bestDist2)
-        {
-            bestDist2 = dist2;
-            bestX     = projX;
-            bestY     = projY;
-        }
-    }
-
-    *out_x_mm    = (s16)bestX;
-    *out_y_mm    = (s16)bestY;
-    *out_dist_mm = (bestDist2 < 0.0f) ? 0.0f : app_radar_mysqrt_3(bestDist2);
+    // return smallest t in (0, 1]
+    float best = -1.0f;
+    if (t1 > 0.001f && t1 <= 1.001f) best = t1;
+    if (t2 > 0.001f && t2 <= 1.001f && (best < 0.0f || t2 < best)) best = t2;
+    return best;
 }
 
-/* 点在凸四边形外：取距离最近的边上的垂足 F，作 P' = 2F - P（沿垂线再伸出 |PF|）；若 P' 仍在外则回退为投影入域 */
-static void RadarMirrorOutsideAcrossNearestEdge(s16 *inout_x, s16 *inout_y)
+/**
+ * 判断点是否在圆弧的扇区角度范围内（用于射线-圆弧求交后的角度过滤）。
+ * 弧段定义为：圆心 center, 半径 radius, 角度范围 [start_rad, end_rad]。
+ */
+static u8 RadarPointOnArcSector(radar_vec2f_t pt, radar_vec2f_t center,
+                                float start_rad, float end_rad)
 {
-    s32 x = (s32)*inout_x;
-    s32 y = (s32)*inout_y;
-
-    if (RadarPointInsideQuad(x, y))
-    {
-        return;
-    }
-
-    float bestDist2 = -1.0f;
-    float bestFx    = (float)x;
-    float bestFy    = (float)y;
-
-    for (int i = 0; i < 4; i++)
-    {
-        float ax = (float)g_radar_boundary_quad[i].x_mm;
-        float ay = (float)g_radar_boundary_quad[i].y_mm;
-        float bx = (float)g_radar_boundary_quad[(i + 1) % 4].x_mm;
-        float by = (float)g_radar_boundary_quad[(i + 1) % 4].y_mm;
-
-        float vx = bx - ax;
-        float vy = by - ay;
-        float wx = (float)x - ax;
-        float wy = (float)y - ay;
-
-        float denom = vx * vx + vy * vy;
-        if (denom <= 0.0f)
-        {
-            continue;
-        }
-
-        float t = (vx * wx + vy * wy) / denom;
-        if (t < 0.0f)
-        {
-            t = 0.0f;
-        }
-        else if (t > 1.0f)
-        {
-            t = 1.0f;
-        }
-
-        float projX = ax + t * vx;
-        float projY = ay + t * vy;
-        float dx    = projX - (float)x;
-        float dy    = projY - (float)y;
-        float dist2 = dx * dx + dy * dy;
-
-        if (bestDist2 < 0.0f || dist2 < bestDist2)
-        {
-            bestDist2 = dist2;
-            bestFx    = projX;
-            bestFy    = projY;
-        }
-    }
-
-    if (bestDist2 < 0.0f)
-    {
-        float pd;
-        RadarProjectToQuad(x, y, inout_x, inout_y, &pd);
-        return;
-    }
-
-    {
-        float mx = 2.0f * bestFx - (float)x;
-        float my = 2.0f * bestFy - (float)y;
-
-        if (!RadarPointInsideQuad((s32)mx, (s32)my))
-        {
-            float pd;
-            RadarProjectToQuad((s32)mx, (s32)my, inout_x, inout_y, &pd);
-        }
-        else
-        {
-            if (mx > 32767.0f)
-            {
-                mx = 32767.0f;
-            }
-            if (mx < -32768.0f)
-            {
-                mx = -32768.0f;
-            }
-            if (my > 32767.0f)
-            {
-                my = 32767.0f;
-            }
-            if (my < -32768.0f)
-            {
-                my = -32768.0f;
-            }
-            *inout_x = (s16)mx;
-            *inout_y = (s16)my;
-        }
-    }
+    float dx = pt.x - center.x;
+    float dy = pt.y - center.y;
+    float a = RadarWrapAngle(lookup_atan2(dx, dy));
+    return RadarAngleInRange(a, start_rad, end_rad);
 }
 
 /* 原始雷达点外部处理策略 */
@@ -1530,175 +1580,120 @@ static void RadarMirrorOutsideAcrossNearestEdge(s16 *inout_x, s16 *inout_y)
 #define RADAR_RAW_OUTSIDE_DROP_LIMIT   3
 static _attribute_data_retention_ u8 g_radar_raw_outside_drop_cnt = 0;
 
-/* 从 start 沿向量 v 走一步；若撞到边界则按撞到的那条边反射，并返回反射后的点与方向 */
-static void RadarAdvanceReflectQuad(s32           start_x_mm,
-                                    s32           start_y_mm,
-                                    radar_vec2f_t v_step,
-                                    s16          *out_x_mm,
-                                    s16          *out_y_mm,
-                                    float        *inout_dir_rad)
+/**
+ * 预测点 end 在扇区外时：
+ * 1. 连接 end→(0, split_y)，根据落区判断与哪条边界相交
+ * 2. 找交点 H 做镜面反射 result = 2*H - end
+ * 3. 若反射后仍在范围外，在 end→(0, split_y) 线上取随机点
+ */
+static void RadarAdvanceReflectSector(s32           start_x_mm,
+                                      s32           start_y_mm,
+                                      radar_vec2f_t v_step,
+                                      s16          *out_x_mm,
+                                      s16          *out_y_mm,
+                                      float        *inout_dir_rad)
 {
-    radar_vec2f_t start = RadarVec2((float)start_x_mm, (float)start_y_mm);
-    radar_vec2f_t end   = RadarVecAdd(start, v_step);
+    float ri    = (float)g_radar_sector.inner_radius_mm;
+    float ro    = (float)g_radar_sector.outer_radius_mm;
+    float split_y = ro * g_radar_cos_start;       // ro*0.5
 
-    // Fast path: end is inside
-    if (RadarPointInsideQuad((s32)end.x, (s32)end.y))
+    // 分界线中点 (0, split_y)
+    radar_vec2f_t cp = RadarVec2(0.0f, split_y);
+
+    radar_vec2f_t end = RadarVecAdd(RadarVec2((float)start_x_mm, (float)start_y_mm), v_step);
+
+    if (RadarPointInsideSector((s32)end.x, (s32)end.y))
     {
         *out_x_mm = (s16)end.x;
         *out_y_mm = (s16)end.y;
         return;
     }
 
-    // Bounce loop: allow multiple reflections in one step (rare, but makes it robust)
-    radar_vec2f_t cur_start = start;
-    radar_vec2f_t cur_end   = end;
-    radar_vec2f_t v_remain  = v_step;
-
-    for (int bounce = 0; bounce < 4; bounce++)
+    // --- 判断与哪条边界相交 ---
+    int bound = -1;  // 0=内弧 1=外弧 2=左径 3=右径
+    if (end.y > split_y)
     {
-        float best_t    = 2.0f;
-        int   best_edge = -1;
-        float best_u    = 0.0f;
+        bound = 1;  // 上半区 → 必定交外弧
+    }
+    else
+    {
+        float xl = ri * g_radar_sin_start;   // 内弧与左径线交点 x ≈ -433
+        float xr = ri * g_radar_sin_end;     // 内弧与右径线交点 x ≈  433
+        if (end.x < xl)
+            bound = 2;  // 左径线
+        else if (end.x > xr)
+            bound = 3;  // 右径线
+        else
+            bound = 0;  // 内弧
+    }
 
-        // Find first intersection along segment
-        for (int i = 0; i < 4; i++)
+    // --- 镜面反射 ---
+    radar_vec2f_t result = end;
+    radar_vec2f_t dir = RadarVecSub(cp, end);
+    float dir_len = RadarLen(dir);
+    radar_vec2f_t dir_u = (dir_len > 0.001f) ? RadarVecMul(dir, 1.0f / dir_len) : RadarVec2(0.0f, 1.0f);
+    radar_vec2f_t H = end;  // 边界交点，备 fallback 用
+
+    if (bound == 0 || bound == 1)
+    {
+        float r = (bound == 0) ? ri : ro;
+        float a = RadarDot(dir_u, dir_u);
+        radar_vec2f_t f = end;
+        float b = 2.0f * RadarDot(f, dir_u);
+        float c = RadarDot(f, f) - r * r;
+        float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f)
         {
-            radar_vec2f_t a = RadarVec2((float)g_radar_boundary_quad[i].x_mm, (float)g_radar_boundary_quad[i].y_mm);
-            radar_vec2f_t b = RadarVec2((float)g_radar_boundary_quad[(i + 1) % 4].x_mm, (float)g_radar_boundary_quad[(i + 1) % 4].y_mm);
-
-            float t_seg = 0.0f;
-            float u_seg = 0.0f;
-            if (RadarSegmentIntersect(cur_start, cur_end, a, b, &t_seg, &u_seg))
+            float t = (-b - app_radar_mysqrt_3(disc)) / (2.0f * a);
+            if (t < 0.001f) t = (-b + app_radar_mysqrt_3(disc)) / (2.0f * a);
+            if (t > 0.001f)
             {
-                // avoid choosing the segment start due to numeric issues
-                if (t_seg > 0.00001f && t_seg < best_t)
+                H = RadarVecAdd(end, RadarVecMul(dir_u, t));
+                result = RadarVecSub(RadarVecMul(H, 2.0f), end);
+            }
+        }
+    }
+    else
+    {
+        radar_vec2f_t u = (bound == 2) ? RadarVec2(g_radar_sin_start, g_radar_cos_start)
+                                       : RadarVec2(g_radar_sin_end,   g_radar_cos_end);
+        if (u.x > 0.001f || u.x < -0.001f)
+        {
+            float t_num = end.y * u.x - end.x * u.y;
+            float t_den = dir_u.x * u.y - dir_u.y * u.x;
+            if (t_den > 0.001f || t_den < -0.001f)
+            {
+                float t = t_num / t_den;
+                if (t > 0.001f)
                 {
-                    best_t    = t_seg;
-                    best_u    = u_seg;
-                    best_edge = i;
+                    H = RadarVecAdd(end, RadarVecMul(dir_u, t));
+                    result = RadarVecSub(RadarVecMul(H, 2.0f), end);
                 }
             }
         }
-
-        if (best_edge < 0 || best_t > 1.0f)
-        {
-            // Fallback: no exact intersection (numeric/degenerated case).
-            // Choose nearest boundary edge and compute reflected prediction from it.
-            int           nearest_edge = 0;
-            float         best_dist2   = -1.0f;
-            radar_vec2f_t nearest_proj = cur_end;
-
-            for (int i = 0; i < 4; i++)
-            {
-                radar_vec2f_t a  = RadarVec2((float)g_radar_boundary_quad[i].x_mm, (float)g_radar_boundary_quad[i].y_mm);
-                radar_vec2f_t b  = RadarVec2((float)g_radar_boundary_quad[(i + 1) % 4].x_mm, (float)g_radar_boundary_quad[(i + 1) % 4].y_mm);
-                radar_vec2f_t q  = RadarClosestPointOnSegment(cur_end, a, b);
-                radar_vec2f_t d  = RadarVecSub(q, cur_end);
-                float         d2 = RadarDot(d, d);
-
-                if (best_dist2 < 0.0f || d2 < best_dist2)
-                {
-                    best_dist2   = d2;
-                    nearest_edge = i;
-                    nearest_proj = q;
-                }
-            }
-
-            radar_vec2f_t edge_a    = RadarVec2((float)g_radar_boundary_quad[nearest_edge].x_mm, (float)g_radar_boundary_quad[nearest_edge].y_mm);
-            radar_vec2f_t edge_b    = RadarVec2((float)g_radar_boundary_quad[(nearest_edge + 1) % 4].x_mm, (float)g_radar_boundary_quad[(nearest_edge + 1) % 4].y_mm);
-            radar_vec2f_t edge_unit = RadarNormalize(RadarVecSub(edge_b, edge_a));
-            radar_vec2f_t seg_vec   = RadarVecSub(cur_end, cur_start);
-            float         seg_len   = RadarLen(seg_vec);
-            radar_vec2f_t v_unit    = RadarNormalize(seg_vec);
-            radar_vec2f_t v_ref_u   = RadarNormalize(RadarReflect(v_unit, edge_unit));
-            radar_vec2f_t out_pt;
-
-            if (v_ref_u.x == 0.0f && v_ref_u.y == 0.0f)
-            {
-                v_ref_u = edge_unit;
-            }
-
-            *inout_dir_rad = RadarWrapAngle(RadarAtan2Safe(v_ref_u.x, v_ref_u.y));
-            out_pt         = RadarVecAdd(nearest_proj, RadarVecMul(v_ref_u, seg_len));
-
-            s16 px = (s16)out_pt.x;
-            s16 py = (s16)out_pt.y;
-            if (!RadarPointInsideQuad((s32)px, (s32)py))
-            {
-                float proj_dist = 0.0f;
-                RadarProjectToQuad((s32)px, (s32)py, &px, &py, &proj_dist);
-            }
-            *out_x_mm = px;
-            *out_y_mm = py;
-            return;
-        }
-
-        // Intersection point
-        radar_vec2f_t seg_vec = RadarVecSub(cur_end, cur_start);
-        radar_vec2f_t hit     = RadarVecAdd(cur_start, RadarVecMul(seg_vec, best_t));
-
-        // Remaining distance after hit
-        float total_len  = RadarLen(seg_vec);
-        float remain_len = (1.0f - best_t) * total_len;
-
-        // Reflect direction based on hit edge
-        radar_vec2f_t edge_a    = RadarVec2((float)g_radar_boundary_quad[best_edge].x_mm, (float)g_radar_boundary_quad[best_edge].y_mm);
-        radar_vec2f_t edge_b    = RadarVec2((float)g_radar_boundary_quad[(best_edge + 1) % 4].x_mm, (float)g_radar_boundary_quad[(best_edge + 1) % 4].y_mm);
-        radar_vec2f_t edge_unit = RadarNormalize(RadarVecSub(edge_b, edge_a));
-
-        radar_vec2f_t v_unit  = RadarNormalize(seg_vec);
-        radar_vec2f_t v_ref_u = RadarNormalize(RadarReflect(v_unit, edge_unit));
-
-        // Update direction angle for subsequent predictions
-        *inout_dir_rad = RadarWrapAngle(RadarAtan2Safe(v_ref_u.x, v_ref_u.y));
-
-        // New end after reflection
-        cur_start = hit;
-        cur_end   = RadarVecAdd(hit, RadarVecMul(v_ref_u, remain_len));
-        v_remain  = RadarVecSub(cur_end, cur_start);
-
-        if (RadarPointInsideQuad((s32)cur_end.x, (s32)cur_end.y))
-        {
-            *out_x_mm = (s16)cur_end.x;
-            *out_y_mm = (s16)cur_end.y;
-            return;
-        }
     }
 
-    // If still outside after multiple bounces, just output current end (should be very rare)
-    *out_x_mm = (s16)cur_end.x;
-    *out_y_mm = (s16)cur_end.y;
-}
-
-static void RadarSeqBuildStationary2Points(s16 ax_mm, s16 ay_mm, s16 bx_mm, s16 by_mm)
-{
-    RadarSeqBuildAppendPoint(ax_mm, ay_mm);
-    RadarSeqBuildAppendPoint(bx_mm, by_mm);
-    app_ctrl_radar_dbg_send_pred_sta(ax_mm, ay_mm, bx_mm, by_mm);
-}
-
-static void RadarSeqBuildStationaryEscapePoints(s16 start_x_mm, s16 start_y_mm, float start_dir_rad, u8 point_count)
-{
-    s16   sx      = start_x_mm;
-    s16   sy      = start_y_mm;
-    float seq_dir = start_dir_rad;
-
-    for (u8 i = 0; i < point_count; i++)
+    // --- 若反射后仍在范围外 → 在 H→cp 线上随机取一点 ---
+    if (!RadarPointInsideSector((s32)result.x, (s32)result.y))
     {
-        s32 dist = RadarRandRangeI32(100, 300);
-        s32 nx32 = (s32)sx + (s32)((float)dist * lookup_sin(seq_dir));
-        s32 ny32 = (s32)sy + (s32)((float)dist * lookup_cos(seq_dir));
-
-        radar_vec2f_t v_step = RadarVec2((float)(nx32 - sx), (float)(ny32 - sy));
-        RadarAdvanceReflectQuad((s32)sx, (s32)sy, v_step, &sx, &sy, &seq_dir);
-        if (!RadarPointInsideQuad((s32)sx, (s32)sy))
+        radar_vec2f_t seg = RadarVecSub(cp, H);
+        float seg_len = RadarLen(seg);
+        if (seg_len > 0.5f)
         {
-            float proj_dist = 0.0f;
-            RadarProjectToQuad((s32)sx, (s32)sy, &sx, &sy, &proj_dist);
+            float t = (float)RadarRandRangeI32(100, 900) / 1000.0f;  // 0.1~0.9
+            result = RadarVecAdd(H, RadarVecMul(seg, t));
         }
-        RadarSeqBuildAppendPoint(sx, sy);
-        app_ctrl_radar_dbg_send_predseq((u8)(i + 1), sx, sy);
     }
+
+    if (result.x > 32767.0f) result.x = 32767.0f;
+    else if (result.x < -32768.0f) result.x = -32768.0f;
+    if (result.y > 32767.0f) result.y = 32767.0f;
+    else if (result.y < -32768.0f) result.y = -32768.0f;
+
+    *out_x_mm = (s16)result.x;
+    *out_y_mm = (s16)result.y;
+
+    (void)inout_dir_rad;
 }
 
 void app_radar_gimbal_track_task(void)
@@ -1733,12 +1728,9 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
 
     app_radar_point_to_pan_tilt(x_mm, y_mm, g_radar_install_height_mm, &pan_deg10, &tilt_deg10);
     StepMotor_GimbalSetSpeedUs(g_radar_track_gimbal_interval_us);
-    // 如果方向为pi/3-2pi/3，则需要将水平角和垂直角固定+5°
-    if (motion_rad > M_PI_3 && motion_rad < M_2_PI_3)
-    {
-        pan_deg10 += 50;
-        tilt_deg10 += 25;
-    }
+    // 远程可配置偏移角度 (deg10)
+    pan_deg10  += g_radar_pan_offset_deg10;
+    tilt_deg10 += g_radar_tilt_offset_deg10;
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
 }
@@ -1760,109 +1752,27 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     s32 lead_mm;
     s32 rand1_mm = 0;
     s32 rand2_mm = 0;
+    float off_x = 0.0;
+    float off_y = 0.0;
 
     *out_x = proc_x;
     *out_y = proc_y;
 
-    // if (!motion_valid)
-    // {
-    //     return;
-    // }
+    lead_mm  = (s32)RADAR_TRACK_LEAD_MM_STATIC;
+    rand1_mm = RadarRandRangeI32(-200, 200);
+    rand2_mm = RadarRandRangeI32(-200, 200);
+    {
+        off_x = (float)(lead_mm + rand1_mm) * lookup_sin(motion_rad);
+        off_y = (float)(lead_mm + rand2_mm) * lookup_cos(motion_rad);
 
-    if (is_stationary)
-    {
-        /* 静止：沿用本帧给出的方向（含「粘滞」的最后运动方向），仅较小超前 + 200mm*/
-        lead_mm  = (s32)RADAR_TRACK_LEAD_MM_STATIC;
-        rand1_mm = RadarRandRangeI32(-200, 200);
-        rand2_mm = RadarRandRangeI32(-200, 200);
-    }
-    else
-    {
-        v_abs   = RadarSpeedAbs(v_cm_s);
-        lead_mm = (s32)RadarRandRangeI32(RADAR_TRACK_LEAD_MM_MIN, RADAR_TRACK_LEAD_MM_MIN + 200) + ((s32)v_abs * (s32)RADAR_TRACK_LEAD_MM_PER_NUM) / (s32)RADAR_TRACK_LEAD_MM_PER_DEN;
-        if (lead_mm < (s32)RADAR_TRACK_LEAD_MM_MIN)
-        {
-            lead_mm = (s32)RADAR_TRACK_LEAD_MM_MIN;
-        }
-        else if (lead_mm > (s32)RADAR_TRACK_LEAD_MM_MAX)
-        {
-            lead_mm = (s32)RADAR_TRACK_LEAD_MM_MAX;
-        }
-    }
-
-    {
-        s32           tx              = (s32)proc_x + (s32)((float)lead_mm * lookup_sin(motion_rad)) + rand1_mm;
-        s32           ty              = (s32)proc_y + (s32)((float)lead_mm * lookup_cos(motion_rad)) + rand2_mm;
         s16           candidate_x     = 0;
         s16           candidate_y     = 0;
         float         escape_dir_rad  = motion_rad;
-        s32           escape_min_dist = (s32)RADAR_TRACK_ESCAPE_MIN_DIST_MM;
-        float         dist_to_proc_mm = 0.0f;
-        s32           step_dx         = 0;
-        s32           step_dy         = 0;
-        radar_vec2f_t step_unit       = RadarVec2(0.0f, 0.0f);
-
-        if (tx > 32767)
-        {
-            tx = 32767;
-        }
-        else if (tx < -32768)
-        {
-            tx = -32768;
-        }
-        if (ty > 32767)
-        {
-            ty = 32767;
-        }
-        else if (ty < -32768)
-        {
-            ty = -32768;
-        }
-        candidate_x = (s16)tx;
-        candidate_y = (s16)ty;
 
         /* 越界时按“沿运动向量前进并反射”处理，避免最近垂足投影导致贴边/贴猫。 */
-        if (!RadarPointInsideQuad((s32)candidate_x, (s32)candidate_y))
-        {
-            radar_vec2f_t v_step = RadarVec2((float)((s32)candidate_x - (s32)proc_x), (float)((s32)candidate_y - (s32)proc_y));
-            RadarAdvanceReflectQuad((s32)proc_x, (s32)proc_y, v_step, &candidate_x, &candidate_y, &escape_dir_rad);
-            if (!RadarPointInsideQuad((s32)candidate_x, (s32)candidate_y))
-            {
-                float proj_dist = 0.0f;
-                RadarProjectToQuad((s32)candidate_x, (s32)candidate_y, &candidate_x, &candidate_y, &proj_dist);
-            }
-        }
-
-        step_dx         = (s32)candidate_x - (s32)proc_x;
-        step_dy         = (s32)candidate_y - (s32)proc_y;
-        dist_to_proc_mm = app_radar_mysqrt_3((float)(step_dx * step_dx + step_dy * step_dy));
-
-        /* 边界修正后若离目标过近，强制推开到最小“逃跑”距离。 */
-        if (dist_to_proc_mm < (float)escape_min_dist)
-        {
-            if (dist_to_proc_mm > 1.0f)
-            {
-                step_unit = RadarNormalize(RadarVec2((float)step_dx, (float)step_dy));
-            }
-            else
-            {
-                step_unit = RadarNormalize(RadarVec2(lookup_sin(escape_dir_rad), lookup_cos(escape_dir_rad)));
-                if (step_unit.x == 0.0f && step_unit.y == 0.0f)
-                {
-                    step_unit = RadarVec2(0.0f, 1.0f);
-                }
-            }
-
-            {
-                radar_vec2f_t v_escape = RadarVecMul(step_unit, (float)escape_min_dist);
-                RadarAdvanceReflectQuad((s32)proc_x, (s32)proc_y, v_escape, &candidate_x, &candidate_y, &escape_dir_rad);
-                if (!RadarPointInsideQuad((s32)candidate_x, (s32)candidate_y))
-                {
-                    float proj_dist = 0.0f;
-                    RadarProjectToQuad((s32)candidate_x, (s32)candidate_y, &candidate_x, &candidate_y, &proj_dist);
-                }
-            }
-        }
+        radar_vec2f_t v_step = RadarVec2(off_x, off_y);
+        RadarAdvanceReflectSector((s32)proc_x, (s32)proc_y, v_step, &candidate_x, &candidate_y, &escape_dir_rad);
+        // BLE_LOG_D("PREDDBG: reflect out=(%d,%d)", candidate_x, candidate_y);
 
         *out_x = candidate_x;
         *out_y = candidate_y;
@@ -1871,13 +1781,15 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 #endif /* RADAR_TRACK_LEAD_ENABLE */
 
 static u32  tick_xy_mm = 0;
+static float motion_rad = 0.0f;
+#define debug_point 0
 static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_cm_s)
 {
     s16   proc_x        = x_mm;
     s16   proc_y        = y_mm;
     s16   dx_mm         = 0;
     s16   dy_mm         = 0;
-    float motion_rad    = 0.0f;
+    float last_motion_rad = 0.0f;
     u8    motion_valid  = 0;
     u8    is_stationary = 1;
     u8    oldest        = 0;
@@ -1907,61 +1819,67 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         newest     = RadarMotionCacheIndexNewest();
         s16 dx_w   = (s16)(g_radar_motion_cache[newest].x_mm - g_radar_motion_cache[oldest].x_mm);
         s16 dy_w   = (s16)(g_radar_motion_cache[newest].y_mm - g_radar_motion_cache[oldest].y_mm);
-        motion_rad = lookup_atan2((float)dx_w, (float)dy_w);
+        last_motion_rad = lookup_atan2((float)dx_w, (float)dy_w);
+        if (motion_valid)
+        {
+            motion_rad = last_motion_rad;
+        }
     }
     else
     {
         return;
     }
-    {
-#if DEBUG_MODE
-        // BLE_LOG_D("%d", motion_valid);
-        // s16 motion_dir_deg10 = 0;
-        // if (motion_valid)
-        // {
-        //     float d = motion_rad * (float)RAD_TO_DEG * 10.0f;
-        //     if (d > 32767.0f)
-        //     {
-        //         d = 32767.0f;
-        //     }
-        //     else if (d < -32768.0f)
-        //     {
-        //         d = -32768.0f;
-        //     }
-        //     motion_dir_deg10 = (s16)d;
-        // }
-        // app_ctrl_radar_dbg_send_prev_raw(
-        //     g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm, g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm, motion_valid, motion_dir_deg10);
-#endif
-    }
-
-    if (!RadarPointInsideQuad((s32)proc_x, (s32)proc_y))
-    {
-        RadarMirrorOutsideAcrossNearestEdge(&proc_x, &proc_y);
-    }
+    #if debug_point
+        // 将原始坐标点和运动方向发送到上位机（用于 UI 显示）
+        s16 motion_dir_deg10 = 0;
+        if (motion_valid)
+        {
+            float d = motion_rad * (float)RAD_TO_DEG * 10.0f;
+            if (d > 32767.0f)
+            {
+                d = 32767.0f;
+            }
+            else if (d < -32768.0f)
+            {
+                d = -32768.0f;
+            }
+            motion_dir_deg10 = (s16)d;
+        }
+        app_ctrl_radar_dbg_send_prev_raw(
+            g_radar_motion_cache[oldest].x_mm, g_radar_motion_cache[oldest].y_mm,
+            g_radar_motion_cache[newest].x_mm, g_radar_motion_cache[newest].y_mm,
+            motion_valid, motion_dir_deg10);
+    #endif
 
     /*
-     * 跟踪：先保证目标在场地四边形内 (proc)，再在阶段二沿运动方向加超前量。
+     * 跟踪：直接根据目标运动方向计算预测点，沿运动方向加超前量+边界保护(反射)。
      */
     {
         s16 track_x = proc_x;
         s16 track_y = proc_y;
 #if RADAR_TRACK_LEAD_ENABLE
         RadarTrackComputeLeadMm(proc_x, proc_y, motion_valid, is_stationary, motion_rad, v_cm_s, &track_x, &track_y);
+        // BLE_LOG_D("PREDDBG: lead out=(%d,%d) inside=%d", track_x, track_y,RadarPointInsideSector((s32)track_x, (s32)track_y));
 #else
-        (void)motion_valid;
-        (void)motion_rad;
-        (void)is_stationary;
-        (void)v_cm_s;
+        // RADAR_TRACK_LEAD_ENABLE=0 时 track=proc
 #endif
 
-        // app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
+        // 将计算后的预测点发送到上位机（idx=1 表示新序列起始）
+        // 放在 hold_on_mode 检查之前，确保无论云台是否跟踪都发送
+        #if debug_point
+            app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
+        #endif 
 #if (UI_STEP_MOTOR_ENABLE)
         if (g_radar_hold_on_mode)
         {
             if (track_x == proc_x && track_y == proc_y)
             {
-                BLE_LOG_D("hold on, no motion, skip gimbal move");
+                // 不预测，直接跟踪目标点
+                if (!RADAR_TRACK_LEAD_ENABLE)
+                {
+                    RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                }
+                // BLE_LOG_D("hold on, no motion, skip gimbal move");
                 return;
             }
             else

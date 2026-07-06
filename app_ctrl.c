@@ -529,40 +529,54 @@ void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw
     app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
-static void app_ctrl_radar_dbg_send_boundary_pt(u8 corner_idx, s32 x_mm, s32 y_mm)
+/** 将环形扇区参数以单个 EVENT 上报（sub=0x05，共 13 字节）。 */
+static void app_ctrl_radar_dbg_send_sector_region(void)
 {
-    /* 避免在 BLE/ATT 回调上下文里做大栈格式化输出导致异常复位：
-     * 改为用二进制 EVENT 上报（sub=BOUNDARY_PT），由上位机/APP解析。 */
-    s16 x16 = (x_mm > 32767) ? 32767 : (x_mm < -32768 ? -32768 : (s16)x_mm);
-    s16 y16 = (y_mm > 32767) ? 32767 : (y_mm < -32768 ? -32768 : (s16)y_mm);
+    const radar_sector_region_t *s = app_radar_get_sector_region();
+    if (!s) return;
 
-    /* payload[0]=sub, [1]=corner, [2..3]=x_mm(s16 LE), [4..5]=y_mm(s16 LE) */
-    u8 pl[6];
-    pl[0] = CTRL_RADAR_DBG_SUB_BOUNDARY_PT;
-    pl[1] = corner_idx;
-    pl[2] = (u8)(x16 & 0xFF);
-    pl[3] = (u8)((x16 >> 8) & 0xFF);
-    pl[4] = (u8)(y16 & 0xFF);
-    pl[5] = (u8)((y16 >> 8) & 0xFF);
+    /* payload[0]=sub(SECTOR), [1..2]=cx(s16 LE), [3..4]=cy(s16 LE),
+     * [5..6]=ri(u16 LE), [7..8]=ro(u16 LE),
+     * [9..10]=start_deg10(s16 LE), [11..12]=end_deg10(s16 LE) */
+    u8 pl[13];
+    pl[0]  = CTRL_RADAR_DBG_SUB_SECTOR;
+    pl[1]  = (u8)(s->center_x_mm & 0xFF);
+    pl[2]  = (u8)((s->center_x_mm >> 8) & 0xFF);
+    pl[3]  = (u8)(s->center_y_mm & 0xFF);
+    pl[4]  = (u8)((s->center_y_mm >> 8) & 0xFF);
+    pl[5]  = (u8)(s->inner_radius_mm & 0xFF);
+    pl[6]  = (u8)((s->inner_radius_mm >> 8) & 0xFF);
+    pl[7]  = (u8)(s->outer_radius_mm & 0xFF);
+    pl[8]  = (u8)((s->outer_radius_mm >> 8) & 0xFF);
+    pl[9]  = (u8)(s->angle_start_deg10 & 0xFF);
+    pl[10] = (u8)((s->angle_start_deg10 >> 8) & 0xFF);
+    pl[11] = (u8)(s->angle_end_deg10 & 0xFF);
+    pl[12] = (u8)((s->angle_end_deg10 >> 8) & 0xFF);
 
     app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
+/** 原四边形 4 角点上报告警——当前已改为环形扇区，用 app_ctrl_radar_dbg_send_sector_region 代替 */
 void app_ctrl_radar_dbg_send_boundary_quad_all(void)
 {
-    u8 i;
-    for (i = 0; i < 4; i++)
-    {
-        s32 x_mm = 0;
-        s32 y_mm = 0;
-        app_radar_get_boundary_quad_by_index(i, &x_mm, &y_mm);
-        app_ctrl_radar_dbg_send_boundary_pt(i, x_mm, y_mm);
-        /* Space NOTIFYs so the stack copies g_ctrlTxBuf each time (same buffer for all sends). */
-        if (i < 3)
-        {
-            sleep_us(8000);
-        }
-    }
+    app_ctrl_radar_dbg_send_sector_region();
+}
+
+/**
+ * 发送预测序列点（sub=0x03）。
+ * idx: 序列索引，1 表示新序列起始；x_mm, y_mm: 地面坐标 (mm)。
+ * payload: [0]=sub(0x03), [1]=idx, [2..3]=x_mm(s16 LE), [4..5]=y_mm(s16 LE) -> 6 B
+ */
+void app_ctrl_radar_dbg_send_predseq(u8 idx, s16 x_mm, s16 y_mm)
+{
+    u8 pl[6];
+    pl[0] = CTRL_RADAR_DBG_SUB_PREDSEQ;
+    pl[1] = idx;
+    pl[2] = (u8)(x_mm & 0xFF);
+    pl[3] = (u8)((x_mm >> 8) & 0xFF);
+    pl[4] = (u8)(y_mm & 0xFF);
+    pl[5] = (u8)((y_mm >> 8) & 0xFF);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY, g_ctrlSeq++, pl, sizeof(pl));
 }
 
 void app_ctrl_radar_boundary_enter(void)
@@ -1047,6 +1061,31 @@ static int app_ctrl_handle_radar_config_set_height(u8 seq, u8 *payload, u16 len)
     (void)len;
     u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_CONFIG_SET_HEIGHT, seq, rsp, sizeof(rsp));
+    return -1;
+#endif
+}
+
+// ----------------------- handler: radar pan offset -----------------------
+static int app_ctrl_handle_radar_pan_offset(u8 seq, u8 *payload, u16 len)
+{
+#if (UI_RADAR_ENABLE)
+    if (len < 4)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_PAN_OFFSET, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    s16 pan_offset  = (s16)(payload[0] | (payload[1] << 8));
+    s16 tilt_offset = (s16)(payload[2] | (payload[3] << 8));
+    app_radar_set_pan_tilt_offset_deg10(pan_offset, tilt_offset);
+    u8 rsp[2] = {CTRL_STATUS_OK, 0};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_PAN_OFFSET, seq, rsp, sizeof(rsp));
+    return 0;
+#else
+    (void)payload;
+    (void)len;
+    u8 rsp[1] = {CTRL_STATUS_UNSUPPORTED_CMD};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_PAN_OFFSET, seq, rsp, sizeof(rsp));
     return -1;
 #endif
 }
@@ -1543,6 +1582,10 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
         BLE_LOG_D("CTRL_CMD_RADAR_CONFIG_SET_HEIGHT");
         app_ctrl_handle_radar_config_set_height(seq, payload, payLen);
+        break;
+    case CTRL_CMD_RADAR_PAN_OFFSET:
+        BLE_LOG_D("CTRL_CMD_RADAR_PAN_OFFSET");
+        app_ctrl_handle_radar_pan_offset(seq, payload, payLen);
         break;
     case CTRL_CMD_HUNT_SETTINGS_ENTER:
         BLE_LOG_D("CTRL_CMD_HUNT_SETTINGS_ENTER");

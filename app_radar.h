@@ -36,8 +36,27 @@ void app_radar_clear_complete_play_records(void);
 void app_radar_set_install_height_mm(s32 height_mm);
 void app_radar_get_install_height_mm(s32 *height_mm);
 u8   app_radar_is_install_height_set(void);
-void app_radar_get_boundary_quad_by_index(u8 index, s32 *x_mm, s32 *y_mm);
-void app_radar_reset_boundary_default(void);
+
+/**
+ * 环形扇区区域参数。
+ * 地面坐标系：雷达立于原点 (center_x, center_y)，
+ * 有效范围为 radius ∈ [inner, outer] 且 angle ∈ [start, end]。
+ * 角度单位：tenths of degrees, 0° = +y 方向, 递增为逆时针。
+ */
+typedef struct
+{
+    s16 center_x_mm;        // 扇形圆心 X（雷达地面投影，通常 0）
+    s16 center_y_mm;        // 扇形圆心 Y（雷达地面投影，通常 0）
+    u16 inner_radius_mm;    // 内弧半径 (mm)，对应雷达最小检测距离 0.5m
+    u16 outer_radius_mm;    // 外弧半径 (mm)，对应雷达最大检测距离 6m
+    s16 angle_start_deg10;  // 起始角（十分之一度），默认 -600 = -60°
+    s16 angle_end_deg10;    // 终止角（十分之一度），默认 +600 = +60°
+} radar_sector_region_t;
+
+/** 获取环形扇区参数。返回指针至内部静态变量，调用方只读。 */
+const radar_sector_region_t *app_radar_get_sector_region(void);
+void app_radar_reset_sector_default(void);
+void app_radar_set_pan_tilt_offset_deg10(s16 pan_offset, s16 tilt_offset);
 
 u8 RadarSessionIsResting(void);
 u8 app_radar_is_working_mode(void);
@@ -106,7 +125,7 @@ static inline void app_radar_debug_rx_poll(void)
 {
 }
 
-static inline void app_radar_reset_boundary_default(void)
+static inline void app_radar_reset_sector_default(void)
 {
 }
 

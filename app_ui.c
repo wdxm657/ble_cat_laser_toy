@@ -42,7 +42,7 @@ _attribute_data_retention_ int ota_is_fil = 0;
 
 void app_get_firmware_version(void)
 {
-    BLE_LOG_D("[APP][OTA] 123");
+    BLE_LOG_D("[APP][OTA] 126");
 }
 
 /**

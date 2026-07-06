@@ -415,7 +415,7 @@ void StepMotor_GimbalTask(void)
 
 void StepMotor_GimbalResetStart(void)
 {
-    StepMotor_GimbalSetSpeedUs(1200);
+    StepMotor_GimbalSetSpeedUs(800);
     g_reset_busy  = 1;
     g_reset_state = MOTOR_RESET_TILT_DOWN;
     LOG_D("[MOTOR] reset start");
@@ -452,7 +452,7 @@ void StepMotor_GimbalResetTask(void)
 
     case MOTOR_RESET_TILT_UP:
         LOG_D("[MOTOR] reset tilt up to -105");
-        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-100), 1);
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-90), 1);
         g_reset_state = MOTOR_RESET_WAIT_TILT_UP;
         break;
 

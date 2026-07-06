@@ -2,13 +2,13 @@
 Radar prediction debug visualizer.
 
 - Serial: text lines after 8-char log prefix, e.g. PREV,...,RAW,... / PRED,STA,... / PREDSEQ,...
-- BLE: binary EVENT on Ctrl TX (cmd 0x57): prediction debug + BOUNDARY_PT (0x04).
-  BOUNDARY_PT is **not** streamed: device sends 4 NOTIFY only after CMD **0x57** on Ctrl RX.
+- BLE: binary EVENT on Ctrl TX (cmd 0x57): prediction debug + SECTOR (0x05).
+  SECTOR is **not** streamed: device sends 1 NOTIFY (sub=0x05, 13 B) only after CMD **0x57** on Ctrl RX.
   **CMD 0x58** (RADAR_TRACK_SPEED): APP writes Ctrl RX with payload u16 LE ``interval_us`` (µs)
   to set radar track gimbal step interval (same as ``StepMotor_GimbalSetSpeedUs``).
   The night-mode UI can send 0x58 from the right panel.
-  Script defaults to requesting the quad on connect; use --no-ble-request-boundary to skip.
-  The UI updates the black quad only after **all four** corners are received.
+  Script defaults to requesting the sector on connect; use --no-ble-request-boundary to skip.
+  The UI draws the annular sector boundary after receiving the single SECTOR notify.
   pip install bleak
   (Bleak 0.x uses get_services(); 1.0+ discovers on connect and exposes client.services.)
 
@@ -186,6 +186,7 @@ CTRL_MSG_TYPE_RSP = cp.CTRL_MSG_TYPE_RSP
 CTRL_CMD_TEXT_CHUNK = cp.CTRL_CMD_TEXT_CHUNK
 CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY = cp.CTRL_CMD_RADAR_DEBUG_GET_BOUNDARY
 CTRL_CMD_RADAR_TRACK_SPEED = cp.CTRL_CMD_RADAR_TRACK_SPEED
+CTRL_CMD_RADAR_PAN_OFFSET = 0x51
 CTRL_CMD_DEVICE_REBOOT = cp.CTRL_CMD_DEVICE_REBOOT
 
 # ===== OTA (Telink BLE OTA) =====
@@ -318,12 +319,8 @@ Y_MIN, Y_MAX = 100, 7000
 # From RAW point, arrow length in mm (matches firmware sin/cos(motion_rad) step convention)
 MOTION_ARROW_MM = 480.0
 
-BOUNDARY_QUAD = [
-    (-1000, 800),
-    (1000, 800),
-    (1000, 4000),
-    (-1000, 4000),
-]
+# 环形扇区默认参数 (cx, cy, inner_r_mm, outer_r_mm, angle_start_deg10, angle_end_deg10)
+SECTOR_DEFAULT = (0, 0, 500, 6000, -600, 600)
 
 # 与固件 StepMotor_ClampIntervalUs 下限一致；上位机发送前也会夹紧
 TRACK_INTERVAL_US_MIN = 750
@@ -380,14 +377,9 @@ class RadarVisualizer:
         self.motion_dir_valid = 0
         self.motion_dir_deg10 = 0
 
-        self.boundary_quad: List[Tuple[int, int]] = [tuple(p) for p in BOUNDARY_QUAD]
-        self.boundary_epoch = 0
-        self._boundary_corner_rcv: List[Optional[Tuple[int, int]]] = [
-            None,
-            None,
-            None,
-            None,
-        ]
+        # 环形扇区参数 (cx, cy, inner_r, outer_r, angle_start_deg10, angle_end_deg10)
+        self.sector_region: Tuple[int, int, int, int, int, int] = SECTOR_DEFAULT
+        self.sector_epoch = 0
 
         self.log_lines = deque(maxlen=2000)
         self.ctrl_lines = deque(maxlen=2000)
@@ -455,6 +447,18 @@ class RadarVisualizer:
         if self._transport != "ble":
             return
         self._ota_cmd_queue.put(CMD_OTA_VERSION)
+
+    def send_radar_pan_tilt_offset_deg10(self, pan: int, tilt: int) -> bool:
+        """下发 CTRL_CMD_RADAR_PAN_OFFSET (0x51)，payload pan(s16 LE) + tilt(s16 LE)。仅 BLE。"""
+        if self._transport != "ble":
+            return False
+        p = max(-3000, min(3000, int(pan)))
+        t = max(-3000, min(3000, int(tilt)))
+        self._ble_tx_seq = (self._ble_tx_seq + 1) & 0xFF
+        pl = bytes([p & 0xFF, (p >> 8) & 0xFF, t & 0xFF, (t >> 8) & 0xFF])
+        frame = build_ctrl_cmd_frame(CTRL_CMD_RADAR_PAN_OFFSET, self._ble_tx_seq, pl)
+        self._ble_tx_queue.put(frame)
+        return True
 
     def send_radar_track_interval_us(self, interval_us: int) -> bool:
         """下发 CTRL_CMD_RADAR_TRACK_SPEED (0x58)，payload u16 LE interval_us。仅 BLE。"""
@@ -646,7 +650,7 @@ class RadarVisualizer:
                                 print("[BLE] sent GET_BOUNDARY (0x57)", file=sys.stderr)
                                 await asyncio.sleep(1.0)
                                 with self._lock:
-                                    need_retry = self.boundary_epoch == 0
+                                    need_retry = self.sector_epoch == 0
                                 if need_retry:
                                     print(
                                         "[BLE] no BOUNDARY_PT yet; retry GET_BOUNDARY",
@@ -1045,12 +1049,15 @@ class RadarVisualizer:
                 self._apply_predseq(idx, x, y)
                 return
 
-            # 0x04: boundary point
-            if sub == 0x04 and len(payload) >= 6:
-                corner_idx = int(payload[1])
-                x_mm = _s16le(payload[2], payload[3])
-                y_mm = _s16le(payload[4], payload[5])
-                self._apply_boundary_pt(corner_idx, x_mm, y_mm)
+            # 0x05: sector region (single notify with all 6 params)
+            if sub == 0x05 and len(payload) >= 13:
+                cx = _s16le(payload[1], payload[2])
+                cy = _s16le(payload[3], payload[4])
+                ri = int(payload[5]) | (int(payload[6]) << 8)
+                ro = int(payload[7]) | (int(payload[8]) << 8)
+                a_start = _s16le(payload[9], payload[10])
+                a_end = _s16le(payload[11], payload[12])
+                self._apply_sector_region(cx, cy, ri, ro, a_start, a_end)
                 return
 
         # 逗宠记录 EVENT (cmd=0x33): 记录数据
@@ -1132,19 +1139,11 @@ class RadarVisualizer:
                 return f"[EVT][0x22] height_limit dir={pld[1]} tilt_deg10={tilt}"
         return f"[RX] type=0x{fr.msg_type:02X} cmd=0x{fr.cmd_id:02X} seq={fr.seq} pl={pld.hex()}"
 
-    def _apply_boundary_pt(self, corner_idx: int, x_mm: int, y_mm: int) -> None:
-        if corner_idx < 0 or corner_idx > 3:
-            return
+    def _apply_sector_region(self, cx: int, cy: int, ri: int, ro: int,
+                              a_start_deg10: int, a_end_deg10: int) -> None:
         with self._lock:
-            self._boundary_corner_rcv[corner_idx] = (x_mm, y_mm)
-            if all(self._boundary_corner_rcv[i] is not None for i in range(4)):
-                self.boundary_quad = []
-                for i in range(4):
-                    pt = self._boundary_corner_rcv[i]
-                    assert pt is not None
-                    self.boundary_quad.append(pt)
-                self.boundary_epoch += 1
-                self._boundary_corner_rcv = [None, None, None, None]
+            self.sector_region = (cx, cy, ri, ro, a_start_deg10, a_end_deg10)
+            self.sector_epoch += 1
 
     def _apply_prev_raw(
         self,
@@ -1263,8 +1262,10 @@ class RadarVisualizer:
                 )
             elif parts[0] == "PREDSEQ" and len(parts) >= 4:
                 self._apply_predseq(int(parts[1]), int(parts[2]), int(parts[3]))
-            elif parts[0] == "BND" and len(parts) >= 4:
-                self._apply_boundary_pt(int(parts[1]), int(parts[2]), int(parts[3]))
+            elif parts[0] == "SECTOR" and len(parts) >= 7:
+                self._apply_sector_region(
+                    int(parts[1]), int(parts[2]), int(parts[3]),
+                    int(parts[4]), int(parts[5]), int(parts[6]))
         except ValueError:
             return
 
@@ -1706,7 +1707,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
     def __init__(self, vis: RadarVisualizer, title: str):
         super().__init__()
         self.vis = vis
-        self._last_boundary_epoch = -1
+        self._last_sector_epoch = -1
 
         self.setWindowTitle(title)
         self.resize(1180, 820)
@@ -1785,6 +1786,35 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.speed_btn.setToolTip("仅 BLE 模式可下发")
         right_l.addWidget(speed_box)
 
+        # --- 云台偏移角度控制 ---
+        pan_box = QtWidgets.QGroupBox("云台偏移角度")
+        pan_l = QtWidgets.QVBoxLayout(pan_box)
+        row_p = QtWidgets.QHBoxLayout()
+        row_p.addWidget(QtWidgets.QLabel("pan_deg10:"))
+        self.pan_spin = QtWidgets.QSpinBox()
+        self.pan_spin.setRange(-3000, 3000)
+        self.pan_spin.setValue(-50)
+        self.pan_spin.setSingleStep(10)
+        row_p.addWidget(self.pan_spin, 1)
+        pan_l.addLayout(row_p)
+        row_t = QtWidgets.QHBoxLayout()
+        row_t.addWidget(QtWidgets.QLabel("tilt_deg10:"))
+        self.tilt_spin = QtWidgets.QSpinBox()
+        self.tilt_spin.setRange(-3000, 3000)
+        self.tilt_spin.setValue(0)
+        self.tilt_spin.setSingleStep(10)
+        row_t.addWidget(self.tilt_spin, 1)
+        pan_l.addLayout(row_t)
+        self.pan_btn = QtWidgets.QPushButton("下发 CMD 0x51 (PAN+TILT)")
+        self.pan_btn.clicked.connect(self._on_send_pan_tilt_offset)
+        pan_l.addWidget(self.pan_btn)
+        if vis._transport != "ble":
+            self.pan_spin.setEnabled(False)
+            self.tilt_spin.setEnabled(False)
+            self.pan_btn.setEnabled(False)
+            self.pan_btn.setToolTip("仅 BLE 模式可下发")
+        right_l.addWidget(pan_box)
+
         conn_box = QtWidgets.QGroupBox("BLE 连接")
         conn_l = QtWidgets.QVBoxLayout(conn_box)
         row_addr = QtWidgets.QHBoxLayout()
@@ -1846,6 +1876,17 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.ctrl_timer.timeout.connect(self._flush_ctrl_log)
         self.ctrl_timer.start()
 
+    def _on_send_pan_tilt_offset(self) -> None:
+        ok = self.vis.send_radar_pan_tilt_offset_deg10(
+            self.pan_spin.value(), self.tilt_spin.value()
+        )
+        if not ok:
+            self.radar_text.appendPlainText("[本地] 下发失败（非 BLE 或未连接）\n")
+        else:
+            self.radar_text.appendPlainText(
+                f"[本地] 下发 PAN={self.pan_spin.value()}  TILT={self.tilt_spin.value()} deg10\n"
+            )
+
     def _on_send_speed(self) -> None:
         ok = self.vis.send_radar_track_interval_us(self.speed_spin.value())
         if not ok:
@@ -1884,18 +1925,19 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         self.ax.yaxis.label.set_color(C_TEXT)
         self.ax.title.set_color("#89b4fa")
 
-        with self.vis._lock:
-            bq = [tuple(p) for p in self.vis.boundary_quad]
-        quad = bq + [bq[0]]
-        quad_xs = [p[0] for p in quad]
-        quad_ys = [p[1] for p in quad]
-        (self.boundary_line,) = self.ax.plot(
-            quad_xs,
-            quad_ys,
-            color="#89b4fa",
-            linewidth=2,
-            alpha=0.95,
-            label="Boundary",
+        # 环形扇区：由 2 条弧线 + 2 条径向线组成
+        self.boundary_artists = []  # [inner_arc, outer_arc, left_radial, right_radial]
+        for _ in range(4):
+            (line,) = self.ax.plot([], [], color="#89b4fa", linewidth=2, alpha=0.95)
+            self.boundary_artists.append(line)
+        self._sector_artist_epoch = -1
+
+        # 4 象限分界线：x=0（垂直）和 y=ro*0.5（水平）
+        (self.div_v_line,) = self.ax.plot(
+            [], [], color="#f9e2af", linewidth=1, linestyle="--", alpha=0.5, label="Divider"
+        )
+        (self.div_h_line,) = self.ax.plot(
+            [], [], color="#f9e2af", linewidth=1, linestyle="--", alpha=0.5
         )
 
         (self.prev_point,) = self.ax.plot(
@@ -1967,6 +2009,23 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             self.ctrl_text.verticalScrollBar().maximum()
         )
 
+    @staticmethod
+    def _build_sector_polygon(cx, cy, ri, ro, a_start_deg10, a_end_deg10, n_pts=60):
+        """将环形扇区转为闭合多边形顶点列表 [(x,y),...] 用于 matplotlib 绘图"""
+        a_start = math.radians(a_start_deg10 / 10.0)
+        a_end = math.radians(a_end_deg10 / 10.0)
+        # 沿内弧从 start 到 end
+        angles = [a_start + (a_end - a_start) * i / n_pts for i in range(n_pts + 1)]
+        pts = []
+        # 内弧
+        for a in angles:
+            pts.append((cx + ri * math.sin(a), cy + ri * math.cos(a)))
+        # 外弧（逆行）
+        for a in reversed(angles):
+            pts.append((cx + ro * math.sin(a), cy + ro * math.cos(a)))
+        pts.append(pts[0])  # 闭合
+        return pts
+
     def _update_view(self):
         with self.vis._lock:
             latest_prev = self.vis.latest_prev
@@ -1974,17 +2033,31 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             latest_a = self.vis.latest_pred_a
             latest_b = self.vis.latest_pred_b
             seq = list(self.vis.seq_history)
-            bepoch = self.vis.boundary_epoch
-            bquad = [tuple(p) for p in self.vis.boundary_quad]
+            sepoch = self.vis.sector_epoch
+            sr = self.vis.sector_region  # (cx, cy, ri, ro, a_start, a_end)
             mdir_ok = self.vis.motion_dir_valid
             mdeg10 = self.vis.motion_dir_deg10
             disconnect_count = self.vis._ble_disconnect_count
             last_disconnect_time = self.vis._ble_last_disconnect_time
 
-        if bepoch != self._last_boundary_epoch:
-            self._last_boundary_epoch = bepoch
-            q = bquad + [bquad[0]]
-            self.boundary_line.set_data([p[0] for p in q], [p[1] for p in q])
+        if sepoch != self._last_sector_epoch:
+            self._last_sector_epoch = sepoch
+            cx, cy, ri, ro, ast, aen = sr
+            poly = self._build_sector_polygon(cx, cy, ri, ro, ast, aen)
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            # 用 4 条折线分别绘制内弧/外弧/左径向/右径向 → 只需一条闭合折线即可
+            for i, line in enumerate(self.boundary_artists):
+                if i == 0:
+                    line.set_data(xs, ys)
+                else:
+                    line.set_data([], [])
+            # 更新 4 象限分界线
+            angle_rad = math.radians(ast / 10.0)
+            split_y = ro * math.cos(angle_rad)  # = ro * cos(60°)
+            ext = ro + 500  # 线超出扇区范围一些
+            self.div_v_line.set_data([0, 0], [cy - ext, cy + ext])
+            self.div_h_line.set_data([cx - ext, cx + ext], [split_y, split_y])
 
         if latest_prev is not None:
             self.prev_point.set_data([latest_prev[0]], [latest_prev[1]])
@@ -2032,9 +2105,9 @@ class RadarNightWindow(QtWidgets.QMainWindow):
             "── 预测 / 跟踪 ──",
             f"Seq pts:  {len(seq)}  {seq[-3:] if seq else ''}",
             "",
-            "── 场地 ──",
-            f"Boundary epoch: {bepoch}",
-            f"Quad: {bquad}",
+            "── 场地 (环形扇区) ──",
+            f"Sector epoch: {sepoch}",
+            f"Sector: cx={sr[0]} cy={sr[1]} ri={sr[2]} ro={sr[3]} aStart={sr[4]} aEnd={sr[5]}",
             "",
             f"── BLE ──",
             f"断开连接次数: {disconnect_count}",

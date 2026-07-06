@@ -46,6 +46,8 @@ enum{
     CTRL_CMD_RADAR_TRACK_SPEED         = 0x58,
     
     // 新简化配置接口
+    /** APP -> device: set gimbal pan/tilt offset (deg10, s16 LE) */
+    CTRL_CMD_RADAR_PAN_OFFSET          = 0x51,
     /** APP -> device: set height (applied immediately) */
     CTRL_CMD_RADAR_CONFIG_SET_HEIGHT   = 0x50,
 
@@ -75,6 +77,8 @@ enum{
     CTRL_RADAR_DBG_SUB_PREDSEQ  = 0x03,   // idx (u8), x,y (s16 LE) -> 6 B
     /** corner index 0..3, x_mm,y_mm (s16 LE, clamped from s32 in firmware) -> 6 B */
     CTRL_RADAR_DBG_SUB_BOUNDARY_PT = 0x04,
+    /** 环形扇区参数 (sub=0x05): cx,cy,ri,ro,start_deg10,end_deg10 各 s16 LE -> 13 B */
+    CTRL_RADAR_DBG_SUB_SECTOR = 0x05,
 };
 
 // Error codes for response payload[0]
