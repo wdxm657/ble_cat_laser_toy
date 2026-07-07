@@ -1306,8 +1306,10 @@ void app_radar_reset_sector_default(void)
 
 
 /** 云台偏移角度 (deg10)，远程可配置 */
-_attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -25;
-_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -75;
+// 1.8m  -90 -100
+// 0.8m  -25 -75
+_attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -90;
+_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -100;
 
 /** 设置云台水平和垂直偏移角度 (deg10)，范围 ±3000（±300°）。 */
 void app_radar_set_pan_tilt_offset_deg10(s16 pan_offset, s16 tilt_offset)
@@ -1730,7 +1732,13 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
     StepMotor_GimbalSetSpeedUs(g_radar_track_gimbal_interval_us);
     // 远程可配置偏移角度 (deg10)
     pan_deg10  += g_radar_pan_offset_deg10;
-    tilt_deg10 += g_radar_tilt_offset_deg10;
+    // 如果方向为pi/3-2pi/3
+    if (motion_rad > 0 && motion_rad < M_PI)
+    {
+        // tilt_deg10 += g_radar_tilt_offset_deg10;
+    }else{
+        tilt_deg10 += g_radar_tilt_offset_deg10;
+    }
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
 }
