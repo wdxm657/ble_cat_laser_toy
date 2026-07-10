@@ -38,6 +38,7 @@ enum{
     CTRL_CMD_TIME_SET        = 0x32,   // set device time (YYYY-MM-DD HH:MM:SS)
     CTRL_CMD_PLAY_RECORD_GET = 0x33,   // get play records (start/end time)
     CTRL_CMD_UID_GET         = 0x34,   // get flash UID (16 bytes, split into 2 responses)
+    CTRL_CMD_PLAY_RECORD_DELETE = 0x35,   // delete a specific play record by ID
 
     CTRL_CMD_RADAR_RESET_FLASH_CONFIG   = 0x56,   // reset radar install height and boundary in flash
     /** APP -> device: request boundary quad (device emits 4x EVENT sub BOUNDARY_PT); RSP status only */

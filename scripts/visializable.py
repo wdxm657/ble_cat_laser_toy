@@ -104,6 +104,29 @@ CTRL_RX_RAW_BYTES = bytes(
 )
 CTRL_RX_UUID = str(uuid.UUID(bytes=CTRL_RX_RAW_BYTES))
 
+# Dedicated BLE_LOG_D notify characteristic (03 A0 ... per app_att.c CUSTOM_CTRL_LOG_CHAR_UUID).
+CTRL_LOG_RAW_BYTES = bytes(
+    [
+        0x03,
+        0xA0,
+        0x0D,
+        0x0C,
+        0x0B,
+        0x0A,
+        0x09,
+        0x08,
+        0x07,
+        0x06,
+        0x05,
+        0x04,
+        0x03,
+        0x02,
+        0x01,
+        0x00,
+    ]
+)
+CTRL_LOG_UUID = str(uuid.UUID(bytes=CTRL_LOG_RAW_BYTES))
+
 
 def _ctrl_tx_uuid_int_candidates() -> Set[int]:
     """Same logical characteristic under different 128-bit byte orders."""
@@ -130,6 +153,13 @@ def _ctrl_rx_uuid_int_candidates() -> Set[int]:
     }
 
 
+def _ctrl_log_uuid_int_candidates() -> Set[int]:
+    return {
+        uuid.UUID(bytes=CTRL_LOG_RAW_BYTES).int,
+        uuid.UUID(bytes=CTRL_LOG_RAW_BYTES[::-1]).int,
+    }
+
+
 def _find_ctrl_tx_characteristic(client) -> Optional[object]:
     """Return Bleak GATT characteristic for Ctrl TX, or None."""
     targets = _ctrl_tx_uuid_int_candidates()
@@ -144,6 +174,17 @@ def _find_ctrl_tx_characteristic(client) -> Optional[object]:
 def _find_ctrl_rx_characteristic(client) -> Optional[object]:
     """Return Bleak GATT characteristic for Ctrl RX (write), or None."""
     targets = _ctrl_rx_uuid_int_candidates()
+    for svc in client.services:
+        for char in svc.characteristics:
+            ci = _characteristic_uuid_int(char)
+            if ci is not None and ci in targets:
+                return char
+    return None
+
+
+def _find_ctrl_log_characteristic(client) -> Optional[object]:
+    """Return Bleak GATT characteristic for dedicated Log TX, or None."""
+    targets = _ctrl_log_uuid_int_candidates()
     for svc in client.services:
         for char in svc.characteristics:
             ci = _characteristic_uuid_int(char)
@@ -401,6 +442,7 @@ class RadarVisualizer:
         self._text_rx_chunk_total: int = 0
         self._text_rx_next_chunk: int = 0
         self._text_rx_buf = bytearray()
+        self._ble_log_rx_buf = bytearray()
 
         # OTA state
         self._ota_fw_path: Optional[str] = None
@@ -547,6 +589,9 @@ class RadarVisualizer:
             b = bytes(data)
             self._apply_ble_frame(b)
 
+        def on_log_notify(_handle, data: bytearray):
+            self._apply_ble_log_bytes(bytes(data))
+
         def on_disconnected(*_args):
             print("[BLE] stack reported disconnect", file=sys.stderr)
             with self._lock:
@@ -584,8 +629,17 @@ class RadarVisualizer:
                             "[BLE] Ctrl RX not found; track speed writes disabled",
                             file=sys.stderr,
                         )
+                    log_tx = _find_ctrl_log_characteristic(client)
+                    if log_tx is None:
+                        print(
+                            "[BLE] Log TX characteristic not found; BLE_LOG_D display disabled",
+                            file=sys.stderr,
+                        )
                     print(f"[BLE] notify on {ctrl_tx.uuid}", file=sys.stderr)
                     await client.start_notify(ctrl_tx, on_notify)
+                    if log_tx is not None:
+                        print(f"[BLE] log notify on {log_tx.uuid}", file=sys.stderr)
+                        await client.start_notify(log_tx, on_log_notify)
 
                     # Auto time sync on every successful connect.
                     # This makes firmware print app_radar_set_time_from_epoch() logs immediately after connect.
@@ -751,6 +805,11 @@ class RadarVisualizer:
                         await client.stop_notify(ctrl_tx)
                     except Exception:
                         pass
+                    if log_tx is not None:
+                        try:
+                            await client.stop_notify(log_tx)
+                        except Exception:
+                            pass
                     self._ble_ctrl_tx_char = None
                     self._ble_ctrl_rx_char = None
             except Exception as ex:
@@ -960,6 +1019,38 @@ class RadarVisualizer:
         )
         _ota_log("OTA 流程完成，设备应重启")
 
+    def _apply_ble_log_bytes(self, data: bytes) -> None:
+        if not data:
+            return
+
+        complete_lines = []
+        with self._lock:
+            self._ble_log_rx_buf += data
+            while True:
+                try:
+                    nl = self._ble_log_rx_buf.index(0x0A)
+                except ValueError:
+                    break
+                raw_line = bytes(self._ble_log_rx_buf[:nl])
+                del self._ble_log_rx_buf[: nl + 1]
+                raw_line = raw_line.rstrip(b"\r")
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8", errors="replace")
+                complete_lines.append(line)
+                self.log_lines.append(line)
+
+            # Avoid holding an unterminated partial line forever if firmware sends no newline.
+            if len(self._ble_log_rx_buf) > 512:
+                raw_line = bytes(self._ble_log_rx_buf)
+                self._ble_log_rx_buf.clear()
+                line = raw_line.decode("utf-8", errors="replace")
+                complete_lines.append(line)
+                self.log_lines.append(line)
+
+        for line in complete_lines:
+            self._parse_line(line)
+
     def _apply_ble_frame(self, data: bytes) -> None:
         # 打印16进制数据
         fr = cp.parse_ctrl_frame(data)
@@ -1139,19 +1230,23 @@ class RadarVisualizer:
                 return f"[RSP][0x50] status={st} (new config: height cached)"
             if fr.cmd_id == cp.CTRL_CMD_DEVICE_REBOOT:
                 return f"[RSP][0x5A] status={st} (rebooting)"
+            if fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_DELETE and len(pld) >= 2:
+                remaining = pld[1]
+                return f"[RSP][0x35] PLAY_RECORD_DELETE status={st} remaining={remaining}"
             if fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET and len(pld) >= 2:
                 remaining = pld[1]
                 if remaining == 0:
-                    return f"[RSP][0x33] status={st} remaining={remaining} (全部上传完毕)"
+                    return f"[RSP][0x33] status={st} remaining={remaining} (ACK已废弃, 使用0x35删除代替)"
                 else:
-                    return f"[RSP][0x33] status={st} remaining={remaining} (等待下一条)"
+                    return f"[RSP][0x33] status={st} remaining={remaining} (ACK已废弃, 使用0x35删除代替)"
             return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
 
         if fr.msg_type == CTRL_MSG_TYPE_EVENT and fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET:
-            if len(pld) >= 12:
-                total = pld[1]
-                idx = pld[2]
-                return f"[EVT][0x33] 逗宠记录 {idx + 1}/{total} payload={pld.hex()}"
+            if len(pld) >= 14:
+                rid = pld[1]
+                total = pld[2]
+                idx = pld[3]
+                return f"[EVT][0x33] ID={rid} 记录 {idx + 1}/{total} payload={pld.hex()}"
             return f"[EVT][0x33] pl={pld.hex()}"
 
         # 狩猎游戏命令 RSP 解码
@@ -1228,6 +1323,7 @@ class RadarVisualizer:
     _play_record_count: int = 0
     _play_record_index: int = 0
     _play_record_info: str = ""
+    _play_records: list = []  # 存储所有已收到记录的列表 [(id, start_str, end_str, motion, speed, result_str)]
 
     def _apply_play_record_event(self, payload: bytes) -> None:
         """解析逗宠记录 EVENT payload (13 字节, 含狩猎结果)。
@@ -1235,22 +1331,24 @@ class RadarVisualizer:
         BLE 20 字节限制 (CTRL_TX_MAX_LEN): 6 字节头 + payload ≤ 20。
         end_sec 用 duration_sec (u16) 替代以压缩 payload：duration_sec = end_sec - start_sec。
         APP 侧恢复：end_sec = start_sec + duration_sec。
+        payload[0] 为 record_id（取代原 status 字节）。
         """
-        if len(payload) < 13:
+        if len(payload) < 14:
             return
-        total = int(payload[1])
-        index = int(payload[2])
+        record_id = int(payload[1])  # 记录ID (payload[0]=status)
+        total = int(payload[2])
+        index = int(payload[3])
         start_sec = (
-            int(payload[3])
-            | (int(payload[4]) << 8)
-            | (int(payload[5]) << 16)
-            | (int(payload[6]) << 24)
+            int(payload[4])
+            | (int(payload[5]) << 8)
+            | (int(payload[6]) << 16)
+            | (int(payload[7]) << 24)
         )
-        duration_sec = int(payload[7]) | (int(payload[8]) << 8)  # u16 LE, 替代原 4 字节 end_sec
+        duration_sec = int(payload[8]) | (int(payload[9]) << 8)  # u16 LE
         end_sec = start_sec + duration_sec
-        motion_sec = int(payload[9]) | (int(payload[10]) << 8)   # 原偏移 [11..12]
-        avg_speed = int(payload[11])                              # 原偏移 [13]
-        result = int(payload[12])                                 # 原偏移 [14]
+        motion_sec = int(payload[10]) | (int(payload[11]) << 8)
+        avg_speed = int(payload[12])
+        result = int(payload[13])
 
         RESULT_TEXT = {0: "未完成", 1: "完成", 2: "捕猎成功"}
 
@@ -1271,14 +1369,23 @@ class RadarVisualizer:
         with self._lock:
             self._play_record_count = total
             self._play_record_index = index
+            # 存储记录到列表（替换同ID或追加）
+            found = False
+            for i, rec in enumerate(self._play_records):
+                if rec[0] == record_id:
+                    self._play_records[i] = (record_id, start_str, end_str, motion_sec, avg_speed, result_str)
+                    found = True
+                    break
+            if not found:
+                self._play_records.append((record_id, start_str, end_str, motion_sec, avg_speed, result_str))
+            # 更新当前显示信息
             self._play_record_info = (
-                f"记录 {index + 1}/{total}: {start_str} ~ {end_str}  "
+                f"ID={record_id} 记录 {index + 1}/{total}: {start_str} ~ {end_str}  "
                 f"运动 {motion_sec}s  速度 {avg_speed}cm/s  "
                 f"结果: {result_str}"
             )
 
-        # 自动 ACK：告知设备已收到，请求发送下一条（如有）
-        self.send_cmd(*vc.cmd_play_record_ack())
+        # 不再自动 ACK：删除命令 (0x35) 同时充当 ACK，由用户手动触发删除
 
     def _parse_line(self, line: str):
         s = line.strip()
@@ -1539,6 +1646,13 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         g.addWidget(self.play_record_info, row, 0, 1, 4)
         _nrow()
 
+        # 已收到的记录列表
+        self.play_record_list = QtWidgets.QLabel("")
+        self.play_record_list.setStyleSheet("color: #89b4fa; font-size: 10px;")
+        self.play_record_list.setWordWrap(True)
+        g.addWidget(self.play_record_list, row, 0, 1, 4)
+        _nrow()
+
         b_play_record_ack = QtWidgets.QPushButton("确认收到 (ACK)")
         b_play_record_ack.setStyleSheet(
             "QPushButton { background: #45475a; font-weight: bold; color: #a6e3a1; }"
@@ -1549,6 +1663,23 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
             "告知设备已收到当前逗宠记录，设备将在 1 秒后发送下一条（如有）"
         )
         g.addWidget(b_play_record_ack, row, 0, 1, 4)
+        _nrow()
+
+        # 删除指定记录 (0x35)
+        g.addWidget(QtWidgets.QLabel("删除记录 (0x35):"), row, 0, 1, 1)
+        self.play_record_del_id = QtWidgets.QSpinBox()
+        self.play_record_del_id.setRange(0, 255)
+        self.play_record_del_id.setValue(1)
+        self.play_record_del_id.setStyleSheet("color: #cdd6f4; background: #313244;")
+        g.addWidget(self.play_record_del_id, row, 1, 1, 1)
+        b_play_record_del = QtWidgets.QPushButton("删除")
+        b_play_record_del.setStyleSheet(
+            "QPushButton { background: #f38ba8; font-weight: bold; }"
+            "QPushButton:hover { background: #eba0ac; }"
+        )
+        b_play_record_del.clicked.connect(self._on_play_record_delete)
+        b_play_record_del.setToolTip("删除指定ID的逗宠记录（需先收到记录）")
+        g.addWidget(b_play_record_del, row, 2, 1, 2)
         _nrow()
 
         # 复位和重启
@@ -1644,6 +1775,14 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         else:
             self.log("已发送逗宠记录 ACK (0x33)")
 
+    def _on_play_record_delete(self) -> None:
+        record_id = self.play_record_del_id.value()
+        ok = self.vis.send_cmd(*vc.cmd_play_record_delete(record_id))
+        if not ok:
+            self.log(f"删除记录 ID={record_id} 下发失败（非 BLE 或未连接）")
+        else:
+            self.log(f"已发送删除逗宠记录 ID={record_id} (0x35)")
+
     # ===== OTA 操作 =====
     _ota_selected_fw: str = ""
 
@@ -1722,9 +1861,18 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         # Update play record info from vis state
         with self.vis._lock:
             rec_info = self.vis._play_record_info
+            records = list(self.vis._play_records)  # copy under lock
         cur_text = self.play_record_info.text()
         if rec_info and rec_info != cur_text:
             self.play_record_info.setText(rec_info)
+
+        # Update record list display
+        if records:
+            lines = []
+            for rec in records[-8:]:  # show up to 8 most recent
+                rid, start_str, end_str, motion, speed, result_str = rec
+                lines.append(f"ID={rid}: {start_str}~{end_str} {motion}s {speed}cm/s {result_str}")
+            self.play_record_list.setText("\n".join(lines))
 
         # Check BLE disconnect for auto power stop
         with self.vis._lock:
@@ -1799,7 +1947,7 @@ class RadarNightWindow(QtWidgets.QMainWindow):
         )
         right_l.addWidget(self.radar_text, 1)
 
-        lbl_log = QtWidgets.QLabel("固件日志 (仅 0x40)")
+        lbl_log = QtWidgets.QLabel("固件日志 (Log TX / 0x40)")
         lbl_log.setStyleSheet("font-size: 14px; color: #89b4fa; font-weight: bold;")
         right_l.addWidget(lbl_log)
         self.log_text = QtWidgets.QPlainTextEdit()

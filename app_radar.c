@@ -318,8 +318,11 @@ _attribute_data_retention_ static s8  g_radar_play_tz_q15[RADAR_TIME_MAX_RECORDS
 _attribute_data_retention_ static u8  g_radar_play_hunt_result[RADAR_TIME_MAX_RECORDS]   = {0};
 _attribute_data_retention_ static u32 g_radar_play_motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
 _attribute_data_retention_ static u16 g_radar_play_avg_speed_cms[RADAR_TIME_MAX_RECORDS] = {0};
+_attribute_data_retention_ static u8  g_radar_play_record_id[RADAR_TIME_MAX_RECORDS]     = {0};
 _attribute_data_retention_ static u8  g_radar_play_record_count                          = 0;
 _attribute_data_retention_ static u8  g_radar_play_record_next                           = 0;
+/** 自增记录ID计数器，每push一条新记录+1，溢出回绕 */
+_attribute_data_retention_ static u8  g_radar_play_id_counter                            = 0;
 /** 最近一次雷达串口速度 (cm/s)，用于会话内「是否触发跟踪」等，非逗宠统计主路径 */
 _attribute_data_retention_ static s16 g_radar_last_speed_cms = 0;
 /** 当前进行中逗宠段：工作模式下轨迹点相对上一 newest 位移时累计的毫秒；speed_dt = Σ(v_cm/s×Δt_ms) 供时间加权平均 */
@@ -411,6 +414,7 @@ typedef struct
     u8  hunt_result[RADAR_TIME_MAX_RECORDS];  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
     u32 motion_sec[RADAR_TIME_MAX_RECORDS];
     u16 avg_speed_cms[RADAR_TIME_MAX_RECORDS];
+    u8  record_id[RADAR_TIME_MAX_RECORDS];    // 全局唯一记录ID（自增计数器）
     u32 crc;
 } radar_play_record_flash_t;
 
@@ -418,7 +422,7 @@ _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INS
 
 #define RADAR_LOW_FREQ_ON_US       (1000000u * 1u)   // 1s
 #define RADAR_LOW_FREQ_OFF_US      (1000000u * 4u)   // 4s
-#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 10u)  // 15s
+#define RADAR_HOLD_ON_NO_MOTION_US (1000000u * 1u)   // 10s
 #define RADAR_HOLD_ON_NO_MOTION_S  RADAR_HOLD_ON_NO_MOTION_US / (1000000u)
 #define RADAR_WORK_MAX_US          (1000000u * 600u)      // 10min
 #define RADAR_REST_EXIT_US         (1000000u * 60u)       // 1min
@@ -574,9 +578,11 @@ static void radar_play_records_reset_ram(void)
         g_radar_play_hunt_result[i]   = 0;
         g_radar_play_motion_sec[i]    = 0;
         g_radar_play_avg_speed_cms[i] = 0;
+        g_radar_play_record_id[i]     = 0;
     }
     g_radar_play_record_count          = 0;
     g_radar_play_record_next           = 0;
+    g_radar_play_id_counter            = 0;
     g_radar_play_state                 = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start          = 0;
     g_radar_play_active_idx            = 0;
@@ -603,6 +609,7 @@ static void radar_play_records_save_to_flash(void)
         stored.hunt_result[i]   = g_radar_play_hunt_result[i];
         stored.motion_sec[i]    = g_radar_play_motion_sec[i];
         stored.avg_speed_cms[i] = g_radar_play_avg_speed_cms[i];
+        stored.record_id[i]     = g_radar_play_record_id[i];
     }
 
     stored.crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
@@ -643,6 +650,7 @@ static void radar_play_records_load_from_flash(void)
         g_radar_play_hunt_result[i]   = stored.hunt_result[i];
         g_radar_play_motion_sec[i]    = stored.motion_sec[i];
         g_radar_play_avg_speed_cms[i] = stored.avg_speed_cms[i];
+        g_radar_play_record_id[i]     = stored.record_id[i];
     }
 
     g_radar_play_record_count = stored.record_count;
@@ -654,6 +662,17 @@ static void radar_play_records_load_from_flash(void)
     g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start = 0;
     g_radar_play_active_idx   = 0;
+
+    /* 恢复 ID 计数器到最大现有 ID + 1，避免与新记录 ID 冲突 */
+    {
+        u8 max_id = 0;
+        for (u8 i = 0; i < g_radar_play_record_count; i++)
+        {
+            u8 id = g_radar_play_record_id[i];
+            if (id > max_id) max_id = id;
+        }
+        g_radar_play_id_counter = max_id;
+    }
 }
 
 static u8 radar_is_leap_year(u16 year)
@@ -743,6 +762,8 @@ static u8 radar_play_record_push(u32 start_sec, u32 end_sec)
     g_radar_play_hunt_result[idx]   = HUNT_RESULT_INCOMPLETE;
     g_radar_play_motion_sec[idx]    = 0;
     g_radar_play_avg_speed_cms[idx] = 0;
+    g_radar_play_id_counter++;
+    g_radar_play_record_id[idx]     = g_radar_play_id_counter;
 
     g_radar_play_record_next++;
     if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
@@ -999,6 +1020,7 @@ void app_radar_clear_complete_play_records(void)
     u8  res_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
     u32 mot_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
     u16 av_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u8  id_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
     u8  keep_count                        = 0;
 
     u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
@@ -1016,6 +1038,7 @@ void app_radar_clear_complete_play_records(void)
         res_tmp[keep_count]   = g_radar_play_hunt_result[idx];
         mot_tmp[keep_count]   = g_radar_play_motion_sec[idx];
         av_tmp[keep_count]    = g_radar_play_avg_speed_cms[idx];
+        id_tmp[keep_count]    = g_radar_play_record_id[idx];
         keep_count++;
     }
 
@@ -1027,6 +1050,7 @@ void app_radar_clear_complete_play_records(void)
         g_radar_play_hunt_result[i]   = 0;
         g_radar_play_motion_sec[i]    = 0;
         g_radar_play_avg_speed_cms[i] = 0;
+        g_radar_play_record_id[i]     = 0;
     }
     for (u8 i = 0; i < keep_count; i++)
     {
@@ -1036,11 +1060,166 @@ void app_radar_clear_complete_play_records(void)
         g_radar_play_hunt_result[i]   = res_tmp[i];
         g_radar_play_motion_sec[i]    = mot_tmp[i];
         g_radar_play_avg_speed_cms[i] = av_tmp[i];
+        g_radar_play_record_id[i]     = id_tmp[i];
     }
 
     g_radar_play_record_count = keep_count;
     g_radar_play_record_next  = keep_count % RADAR_TIME_MAX_RECORDS;
     radar_play_records_save_to_flash();
+}
+
+/**
+ * @brief 删除指定 ID 的逗宠记录（从 RAM 和 Flash 中移除）。
+ * @param record_id 要删除的记录 ID
+ * @return 0=成功, -1=未找到
+ */
+int app_radar_delete_play_record_by_id(u8 record_id)
+{
+    u32 start_tmp[RADAR_TIME_MAX_RECORDS] = {0};
+    u32 end_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
+    s8  tz_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u8  res_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
+    u32 mot_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
+    u16 av_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u8  id_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
+    u8  keep_count                        = 0;
+    u8  found                             = 0;
+    u8  ongoing_id                        = 0;  // 进行中记录的ID（如有）
+
+    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
+    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    {
+        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
+        if (g_radar_play_record_id[idx] == record_id)
+        {
+            found = 1;
+            BLE_LOG_D("deleting record id=%d idx=%d", record_id, idx);
+            continue; // 跳过该条
+        }
+        start_tmp[keep_count] = g_radar_play_start_sec[idx];
+        end_tmp[keep_count]   = g_radar_play_end_sec[idx];
+        tz_tmp[keep_count]    = g_radar_play_tz_q15[idx];
+        res_tmp[keep_count]   = g_radar_play_hunt_result[idx];
+        mot_tmp[keep_count]   = g_radar_play_motion_sec[idx];
+        av_tmp[keep_count]    = g_radar_play_avg_speed_cms[idx];
+        id_tmp[keep_count]    = g_radar_play_record_id[idx];
+        keep_count++;
+    }
+
+    if (!found)
+    {
+        BLE_LOG_D("delete record id=%d not found", record_id);
+        return -1;
+    }
+
+    // 记录进行中会话的 ID，用于压缩后重新定位 active_idx
+    if (g_radar_play_state == RADAR_PLAY_STATE_ACTIVE)
+    {
+        ongoing_id = g_radar_play_record_id[g_radar_play_active_idx];
+    }
+
+    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
+    {
+        g_radar_play_start_sec[i]     = 0;
+        g_radar_play_end_sec[i]       = 0;
+        g_radar_play_tz_q15[i]        = 0;
+        g_radar_play_hunt_result[i]   = 0;
+        g_radar_play_motion_sec[i]    = 0;
+        g_radar_play_avg_speed_cms[i] = 0;
+        g_radar_play_record_id[i]     = 0;
+    }
+    for (u8 i = 0; i < keep_count; i++)
+    {
+        g_radar_play_start_sec[i]     = start_tmp[i];
+        g_radar_play_end_sec[i]       = end_tmp[i];
+        g_radar_play_tz_q15[i]        = tz_tmp[i];
+        g_radar_play_hunt_result[i]   = res_tmp[i];
+        g_radar_play_motion_sec[i]    = mot_tmp[i];
+        g_radar_play_avg_speed_cms[i] = av_tmp[i];
+        g_radar_play_record_id[i]     = id_tmp[i];
+    }
+
+    // ★ 修复：压缩后重新定位进行中记录（active_idx 可能指向了错误位置）
+    if (g_radar_play_state == RADAR_PLAY_STATE_ACTIVE && ongoing_id != 0)
+    {
+        u8 new_active = 0xFF;
+        for (u8 i = 0; i < keep_count; i++)
+        {
+            if (id_tmp[i] == ongoing_id)
+            {
+                new_active = i;
+                break;
+            }
+        }
+        if (new_active != 0xFF)
+        {
+            g_radar_play_active_idx = new_active;
+            BLE_LOG_D("delete relocated active_idx to %d (id=%d)", new_active, ongoing_id);
+        }
+        else
+        {
+            // 进行中记录也被删除了（极低概率），置为安全值
+            g_radar_play_state = RADAR_PLAY_STATE_IDLE;
+            BLE_LOG_D("delete: ongoing record was also deleted, state=IDLE");
+        }
+    }
+
+    g_radar_play_record_count = keep_count;
+    g_radar_play_record_next  = keep_count % RADAR_TIME_MAX_RECORDS;
+    radar_play_records_save_to_flash();
+    BLE_LOG_D("delete record id=%d done, remaining=%d", record_id, keep_count);
+    return 0;
+}
+
+/**
+ * @brief 查找缓存中最老的完整逗宠记录 ID。
+ * @return 记录 ID，0=无完整记录（ID 从 1 开始，0 表示无效）
+ */
+u8 app_radar_find_oldest_complete_record_id(void)
+{
+    if (g_radar_play_record_count == 0)
+    {
+        return 0;
+    }
+    BLE_LOG_D("total rec cnt %d", g_radar_play_record_count);
+    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
+    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    {
+        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
+        if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
+        {
+            return g_radar_play_record_id[idx];
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief 按记录 ID 读取一条记录的数据。
+ * @return 0=成功, -1=未找到
+ */
+int app_radar_get_record_data_by_id(u8 id, u32 *start_sec, u32 *end_sec, u32 *motion_sec, u16 *avg_speed, u8 *result)
+{
+    if (g_radar_play_record_count == 0)
+    {
+        return -1;
+    }
+    BLE_LOG_D("total rec cnt %d", g_radar_play_record_count);
+    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
+    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    {
+        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
+        if (g_radar_play_record_id[idx] == id)
+        {
+            if (start_sec)  *start_sec  = g_radar_play_start_sec[idx];
+            if (end_sec)    *end_sec    = g_radar_play_end_sec[idx];
+            if (motion_sec) *motion_sec = g_radar_play_motion_sec[idx];
+            if (avg_speed)  *avg_speed  = g_radar_play_avg_speed_cms[idx];
+            if (result)     *result     = g_radar_play_hunt_result[idx];
+            return 0;
+        }
+    }
+    return -1;
 }
 
 u8 app_radar_is_install_height_set(void)
@@ -2882,43 +3061,6 @@ u8 app_hunt_is_standby(void)
 u8 app_hunt_is_sleeping(void)
 {
     return (g_hunt_state == HUNT_STATE_SLEEP || g_hunt_state == HUNT_STATE_PREY_ZONE_SLEEP) ? 1 : 0;
-}
-
-int app_hunt_get_records_with_result(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out, u16 *avg_speed_cms_out, u8 *result_out, u8 max_records)
-{
-    if (!out_buf || !tz_buf || !result_out || max_records == 0)
-    {
-        return 0;
-    }
-
-    u8 count = g_radar_play_record_count;
-    if (count > max_records)
-        count = max_records;
-
-    u8 idx = g_radar_play_record_next;
-    BLE_LOG_D("get_records_with_result count=%d next_idx=%d", count, idx);
-    for (u8 i = 0; i < count; i++)
-    {
-        if (idx == 0)
-            idx = RADAR_TIME_MAX_RECORDS;
-        idx--;
-
-        out_buf[i * 2]     = g_radar_play_start_sec[idx];
-        out_buf[i * 2 + 1] = g_radar_play_end_sec[idx];
-        tz_buf[i]          = (u8)g_radar_play_tz_q15[idx];
-        result_out[i]      = g_radar_play_hunt_result[idx];
-        if (motion_sec_out)
-            motion_sec_out[i] = g_radar_play_motion_sec[idx];
-        if (avg_speed_cms_out)
-            avg_speed_cms_out[i] = g_radar_play_avg_speed_cms[idx];
-        g_radar_play_start_sec[i]     = 0;
-        g_radar_play_end_sec[i]       = 0;
-        g_radar_play_tz_q15[i]        = 0;
-        g_radar_play_hunt_result[i]   = 0;
-        g_radar_play_motion_sec[i]    = 0;
-        g_radar_play_avg_speed_cms[i] = 0;
-    }
-    return count;
 }
 
 #endif /* UI_RADAR_ENABLE */

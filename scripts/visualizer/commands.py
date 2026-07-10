@@ -88,3 +88,8 @@ def cmd_hunt_settings_set(duration_s: int, count: int, sleep_min: int) -> tuple[
 def cmd_hunt_settings_get() -> tuple[int, bytes, str]:
     """获取当前狩猎设置 (0x64); 无 payload"""
     return p.CTRL_CMD_HUNT_SETTINGS_GET, b"", "HUNT_SETTINGS_GET"
+
+
+def cmd_play_record_delete(record_id: int) -> tuple[int, bytes, str]:
+    """删除指定ID的逗宠记录 (0x35); payload = record_id (1 byte)"""
+    return p.CTRL_CMD_PLAY_RECORD_DELETE, bytes([record_id & 0xFF]), f"PLAY_RECORD_DELETE id={record_id}"

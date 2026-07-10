@@ -129,118 +129,87 @@ static u8 app_ctrl_play_record_upload_allowed(void)
     return 1;
 }
 
-// ----------------------- 逐条逗宠记录上传状态机 -----------------------
-// 每秒上传 1 条，收到 APP ACK 后再发下一条，避免低功耗蓝牙拥塞。
+// ----------------------- 简化逗宠记录上传 -----------------------
+// 每 1s 检查雷达环形缓冲区是否有完整记录，有则上传最老的一条。
+// 上传后等待 ACK（通过 0x35 删除命令确认），超时 2s 重传。
+// 不从雷达缓冲区移除记录，直到收到 0x35 删除命令。
 
 enum
 {
     PLAY_UPLOAD_IDLE = 0,
-    PLAY_UPLOAD_SEND_WAIT,  // 等待 1s 间隔后发送
-    PLAY_UPLOAD_WAIT_ACK,   // 已发送，等待 APP ACK
+    PLAY_UPLOAD_WAIT_ACK,
 };
 
-static u8  g_play_upload_state                              = PLAY_UPLOAD_IDLE;
-static u32 g_play_cache_records[RADAR_TIME_MAX_RECORDS * 2] = {0};
-static u8  g_play_cache_timezones[RADAR_TIME_MAX_RECORDS]   = {0};
-static u32 g_play_cache_motion[RADAR_TIME_MAX_RECORDS]      = {0};
-static u16 g_play_cache_speed[RADAR_TIME_MAX_RECORDS]       = {0};
-static u8  g_play_cache_result[RADAR_TIME_MAX_RECORDS]      = {0};
-static u8  g_play_cache_total                               = 0;
-static u8  g_play_cache_index                               = 0;
-static u32 g_play_upload_tick                               = 0;
+static u8  g_play_upload_state    = PLAY_UPLOAD_IDLE;
+static u8  g_play_upload_id       = 0;     // 当前正在上传的记录 ID（0=无）
+static u32 g_play_upload_tick     = 0;     // 上次发送/重传时间戳
+static u32 g_play_upload_check_tick = 0;   // 上次检查时间戳
+static u8  g_play_upload_pending  = 0;     // 标记需要立即检查（由 notify 设置）
 
-#define PLAY_RECORD_UPLOAD_INTERVAL_US    1000000u  // 每条记录间隔 1s
-#define PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US 2000000u  // ACK 超时 2s，超时后重传当前记录
+#define PLAY_RECORD_UPLOAD_INTERVAL_US    1000000u  // 检查间隔 1s
+#define PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US 2000000u  // ACK 超时 2s
 
 /**
- * @brief 从缓存中发送当前索引的一条记录（EVENT），包含狩猎结果
+ * @brief 从雷达缓冲区读取指定 ID 的记录数据，构建 EVENT 并发送。
+ * @return 0=成功, -1=记录不存在
  */
-static void app_ctrl_upload_one_record_from_cache(void)
+static int app_ctrl_send_play_record(u8 record_id)
 {
-    u8  i         = g_play_cache_index;
-    u32 start_sec = g_play_cache_records[i * 2];
-    u32 end_sec   = g_play_cache_records[i * 2 + 1];
-    u32 duration  = (end_sec > start_sec) ? (end_sec - start_sec) : 0;
-    u16 dur16     = (duration > 0xFFFFu) ? 0xFFFFu : (u16)duration;
-    u32 msec      = g_play_cache_motion[i];
-    u16 avs       = g_play_cache_speed[i];
-    u8  result    = g_play_cache_result[i];
-    u16 m16       = (msec > 0xFFFFu) ? 0xFFFFu : (u16)msec;
-    u8  av8       = (avs > 255u) ? 255u : (u8)avs;
+    u32 start_sec, end_sec, motion_sec;
+    u16 avg_speed;
+    u8  result;
 
-    u8 evt[13] = {0};
+    if (app_radar_get_record_data_by_id(record_id, &start_sec, &end_sec, &motion_sec, &avg_speed, &result) != 0)
+    {
+        return -1;
+    }
+
+    u32 duration = (end_sec > start_sec && end_sec != 0xFFFFFFFFu) ? (end_sec - start_sec) : 0;
+    u16 dur16    = (duration > 0xFFFFu) ? 0xFFFFu : (u16)duration;
+    u16 m16      = (motion_sec > 0xFFFFu) ? 0xFFFFu : (u16)motion_sec;
+    u8  av8      = (avg_speed > 255u) ? 255u : (u8)avg_speed;
+
+    u8 evt[14] = {0};
     evt[0]     = CTRL_STATUS_OK;
-    // 由于APP端需要收到总数后才会发送ACK给设备，所以每次上传记录的total数量都需要是1
-    evt[1] = 1;
-    evt[2] = 0;
-    evt[3] = (u8)(start_sec & 0xFF);
-    evt[4] = (u8)((start_sec >> 8) & 0xFF);
-    evt[5] = (u8)((start_sec >> 16) & 0xFF);
-    evt[6] = (u8)((start_sec >> 24) & 0xFF);
-    // duration_sec = end_sec - start_sec (u16 LE), 替换原 4 字节 end_sec 以将整帧控制在 20 字节内
-    evt[7]  = (u8)(dur16 & 0xFF);
-    evt[8]  = (u8)((dur16 >> 8) & 0xFF);
-    evt[9]  = (u8)(m16 & 0xFF);
-    evt[10] = (u8)((m16 >> 8) & 0xFF);
-    evt[11] = av8;
-    evt[12] = result;  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
-    BLE_LOG_D("upload record %d/%d start:%d dur:%d tz:%d mot:%d av:%d res:%d",
-              i + 1,
-              g_play_cache_total,
-              start_sec,
-              dur16,
-              g_play_cache_timezones[i],
-              (u32)m16,
-              (u32)av8,
-              result);
-    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
+    evt[1]     = record_id;
+    evt[2]     = 1;   // total = 1（逐条上传）
+    evt[3]     = 0;   // index = 0
+    evt[4]     = (u8)(start_sec & 0xFF);
+    evt[5]     = (u8)((start_sec >> 8) & 0xFF);
+    evt[6]     = (u8)((start_sec >> 16) & 0xFF);
+    evt[7]     = (u8)((start_sec >> 24) & 0xFF);
+    evt[8]     = (u8)(dur16 & 0xFF);
+    evt[9]     = (u8)((dur16 >> 8) & 0xFF);
+    evt[10]    = (u8)(m16 & 0xFF);
+    evt[11]    = (u8)((m16 >> 8) & 0xFF);
+    evt[12]    = av8;
+    evt[13]    = result;
 
-    // 记录发送时间戳，用于 ACK 超时重传判断
-    g_play_upload_tick  = clock_time();
-    g_play_upload_state = PLAY_UPLOAD_WAIT_ACK;
+    BLE_LOG_D("upload record id=%d start:%d dur:%d mot:%d av:%d res:%d",
+              record_id, start_sec, dur16, (u32)m16, (u32)av8, result);
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_PLAY_RECORD_GET, g_ctrlSeq++, evt, sizeof(evt));
+    return 0;
 }
 
-static void app_ctrl_try_upload_play_records(void)
+/**
+ * @brief 检查并上传最老的完整记录。
+ */
+static void app_ctrl_play_record_check(void)
 {
-    if (BLS_CONN_HANDLE == 0xFFFF)
+    if (BLS_CONN_HANDLE == 0xFFFF) return;
+    if (!app_ctrl_play_record_upload_allowed()) return;
+    if (g_play_upload_state != PLAY_UPLOAD_IDLE) return;
+
+    u8 id = app_radar_find_oldest_complete_record_id();
+    if (id == 0) return;
+
+    if (app_ctrl_send_play_record(id) == 0)
     {
-        return;
+        g_play_upload_id    = id;
+        g_play_upload_tick  = clock_time();
+        g_play_upload_state = PLAY_UPLOAD_WAIT_ACK;
+        BLE_LOG_D("play upload start: id=%d", id);
     }
-    if (!app_ctrl_play_record_upload_allowed())
-    {
-        return;
-    }
-
-    // 如果正在上传中，不重新开始
-    if (g_play_upload_state != PLAY_UPLOAD_IDLE)
-    {
-        return;
-    }
-
-    if (!app_radar_has_complete_play_records())
-    {
-        return;
-    }
-
-    BLE_LOG_D("app_hunt_get_records_with_result");
-    int count = app_hunt_get_records_with_result(
-        g_play_cache_records, g_play_cache_timezones, g_play_cache_motion, g_play_cache_speed, g_play_cache_result, RADAR_TIME_MAX_RECORDS);
-    if (count <= 0)
-    {
-        return;
-    }
-
-    g_play_cache_total = (u8)count;
-    g_play_cache_index = 0;
-
-    // 一次性取出所有记录到缓存，然后清空雷达端已完成记录。
-    // 后续依靠 ACK 超时重传机制确保每条记录都被 APP 收到后才会推进到下一条。
-    app_radar_clear_complete_play_records();
-
-    // 调度第一条：等待 1s 后发送
-    g_play_upload_tick  = clock_time();
-    g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
-    BLE_LOG_D("play upload start: %d records", count);
 }
 #endif
 
@@ -416,19 +385,19 @@ void app_ctrl_notify_power_rejected_battery_temp_high(void)
 #define RESP_CACHE_SIZE 4
 typedef struct
 {
-    u8  used;
-    u8  frame[CTRL_TX_MAX_LEN];
-    u8  len;
+    u8 used;
+    u8 frame[CTRL_TX_MAX_LEN];
+    u8 len;
 } resp_cache_entry_t;
 
 static resp_cache_entry_t g_resp_cache[RESP_CACHE_SIZE];
-static u8 g_resp_cache_idx = 0;
+static u8                 g_resp_cache_idx = 0;
 
 static void resp_cache_save(const u8 *frame, u8 len, u8 seq)
 {
     resp_cache_entry_t *e = &g_resp_cache[g_resp_cache_idx];
-    e->used = 1;
-    e->len  = (len <= CTRL_TX_MAX_LEN) ? len : CTRL_TX_MAX_LEN;
+    e->used               = 1;
+    e->len                = (len <= CTRL_TX_MAX_LEN) ? len : CTRL_TX_MAX_LEN;
     memcpy(e->frame, frame, e->len);
     g_resp_cache_idx = (g_resp_cache_idx + 1) % RESP_CACHE_SIZE;
 }
@@ -443,8 +412,7 @@ static int resp_cache_resend(u8 cmdId, u8 seq)
         {
             if (BLS_CONN_HANDLE != 0xFFFF)
             {
-                blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_READ_DP_H,
-                                               g_resp_cache[i].frame, g_resp_cache[i].len);
+                blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_READ_DP_H, g_resp_cache[i].frame, g_resp_cache[i].len);
             }
             return 1;
         }
@@ -455,19 +423,22 @@ static int resp_cache_resend(u8 cmdId, u8 seq)
 // ----------------------- log output via dedicated Log TX characteristic (0x03 UUID) -----------------------
 void app_ctrl_log_send_bytes(const u8 *data, u16 len)
 {
-    if (!data || len == 0) return;
-    if (BLS_CONN_HANDLE == 0xFFFF) return;
-    if (!(customCtrlLogCCC[0] & 0x01)) return;
+    if (!data || len == 0)
+        return;
+    if (BLS_CONN_HANDLE == 0xFFFF)
+        return;
+    if (!(customCtrlLogCCC[0] & 0x01))
+        return;
 
     u16 maxChunk = 20;
     u16 offset   = 0;
     while (offset < len)
     {
         u16 chunkLen = (len - offset > maxChunk) ? maxChunk : (u16)(len - offset);
-        blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_LOG_DP_H,
-                                       (u8 *)&data[offset], chunkLen);
+        blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_LOG_DP_H, (u8 *)&data[offset], chunkLen);
         offset += chunkLen;
-        if (offset < len) sleep_us(5000);
+        if (offset < len)
+            sleep_us(5000);
     }
 }
 
@@ -600,7 +571,8 @@ void app_ctrl_radar_dbg_send_prev_raw(s16 prev_x, s16 prev_y, s16 raw_x, s16 raw
 static void app_ctrl_radar_dbg_send_sector_region(void)
 {
     const radar_sector_region_t *s = app_radar_get_sector_region();
-    if (!s) return;
+    if (!s)
+        return;
 
     /* payload[0]=sub(SECTOR), [1..2]=cx(s16 LE), [3..4]=cy(s16 LE),
      * [5..6]=ri(u16 LE), [7..8]=ro(u16 LE),
@@ -1003,54 +975,41 @@ static int app_ctrl_handle_status_get(u8 seq, u8 *payload, u16 len)
     return 0;
 }
 
-static int app_ctrl_handle_play_record_get(u8 seq, u8 *payload, u16 len)
+static int app_ctrl_handle_play_record_delete(u8 seq, u8 *payload, u16 len)
 {
 #if (UI_RADAR_ENABLE)
-    if (len != 0 && len != 1)
+    if (len < 1)
     {
         u8 rsp[2] = {CTRL_STATUS_PARAM_ERROR, 0};
-        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_DELETE, seq, rsp, sizeof(rsp));
         return -1;
     }
 
-    // APP 确认已成功收到当前记录，推进到下一条或结束
-    (void)payload;
+    u8 record_id = payload[0];
+    int ret      = app_radar_delete_play_record_by_id(record_id);
 
-    if (g_play_upload_state == PLAY_UPLOAD_WAIT_ACK)
+    // ACK 处理：匹配当前正在上传的记录 ID，回到 IDLE 准备上传下一条
+    if (g_play_upload_state == PLAY_UPLOAD_WAIT_ACK && g_play_upload_id == record_id)
     {
-        // 清除掉上次发送的那一条记录
-        if (g_play_cache_index + 1 < g_play_cache_total)
-        {
-            // 还有下一条：调度 1s 后发送
-            g_play_cache_index++;
-            g_play_upload_tick  = clock_time();
-            g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
-            BLE_LOG_D("play record ack, next %d/%d", g_play_cache_index + 1, g_play_cache_total);
-        }
-        else
-        {
-            // 所有记录已发送完毕
-            g_play_cache_total  = 0;
-            g_play_cache_index  = 0;
-            g_play_upload_state = PLAY_UPLOAD_IDLE;
-            BLE_LOG_D("play record all done");
-        }
+        g_play_upload_state = PLAY_UPLOAD_IDLE;
+        g_play_upload_id    = 0;
+        BLE_LOG_D("play record ack+del id=%d", record_id);
     }
 
     u8 remaining = 0;
     if (g_play_upload_state != PLAY_UPLOAD_IDLE)
     {
-        remaining = g_play_cache_total - g_play_cache_index - 1;
+        remaining = 1;
     }
 
-    u8 rsp[2] = {CTRL_STATUS_OK, remaining};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
-    return 0;
+    u8 rsp[3] = {ret == 0 ? CTRL_STATUS_OK : CTRL_STATUS_PARAM_ERROR, remaining, 0};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_DELETE, seq, rsp, sizeof(rsp));
+    return ret;
 #else
     (void)payload;
     (void)len;
     u8 rsp[2] = {CTRL_STATUS_UNSUPPORTED_CMD, 0};
-    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_GET, seq, rsp, sizeof(rsp));
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_PLAY_RECORD_DELETE, seq, rsp, sizeof(rsp));
     return -1;
 #endif
 }
@@ -1296,20 +1255,19 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 #endif
 }
 
-
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
-#define APP_FIRMWARE_VERSION_MAJOR  1
-#define APP_FIRMWARE_VERSION_MINOR  0
-#define APP_FIRMWARE_VERSION_PATCH  2
-#define APP_FIRMWARE_VERSION        ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
+#define APP_FIRMWARE_VERSION_MAJOR 1
+#define APP_FIRMWARE_VERSION_MINOR 0
+#define APP_FIRMWARE_VERSION_PATCH 4
+#define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 // ----------------------- handler: firmware version get -----------------------
 static int app_ctrl_handle_fw_version_get(u8 seq, u8 *payload, u16 len)
 {
     (void)payload;
     (void)len;
-    u32 ver = APP_FIRMWARE_VERSION;
-    u8 pl[3] = {(u8)(ver & 0xFF), (u8)((ver >> 8) & 0xFF), (u8)((ver >> 16) & 0xFF)};
+    u32 ver   = APP_FIRMWARE_VERSION;
+    u8  pl[3] = {(u8)(ver & 0xFF), (u8)((ver >> 8) & 0xFF), (u8)((ver >> 16) & 0xFF)};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FW_VERSION_GET, seq, pl, sizeof(pl));
     return 0;
 }
@@ -1531,37 +1489,50 @@ void app_ctrl_notify_play_record_changed(void)
 {
 #if (UI_RADAR_ENABLE)
     BLE_LOG_D("app_ctrl_notify_play_record_changed");
-    app_ctrl_try_upload_play_records();
+    g_play_upload_pending = 1;  // 标记下次 app_ctrl_task 立即检查
 #endif
 }
 
 void app_ctrl_task(void)
 {
 #if (UI_RADAR_ENABLE)
-    // 连接后延迟触发首次上传
+    u32 now = clock_time();
+
+    // 连接后延迟触发首次检查
     if (g_play_record_delay_active && BLS_CONN_HANDLE != 0xFFFF &&
         clock_time_exceed(g_play_record_delay_start_tick, PLAY_RECORD_UPLOAD_DELAY_AFTER_CONN_US) && !StepMotor_GimbalResetBusy())
     {
-        LOG_D("app_ctrl_task upload play records");
-        app_ctrl_try_upload_play_records();
+        g_play_record_delay_active = 0;
+        g_play_upload_pending      = 1;
+        BLE_LOG_D("play record: BLE connected, will check");
     }
 
-    // 逐条上传：每 1s 发送一条记录
-    if (g_play_upload_state == PLAY_UPLOAD_SEND_WAIT &&
-        clock_time_exceed(g_play_upload_tick, PLAY_RECORD_UPLOAD_INTERVAL_US))
-    {
-        app_ctrl_upload_one_record_from_cache();
-    }
-
-    // ACK 超时重传：5s 未收到 ACK 则重新发送当前记录
+    // ACK 超时重传（先于 IDLE 检查）
     if (g_play_upload_state == PLAY_UPLOAD_WAIT_ACK &&
         clock_time_exceed(g_play_upload_tick, PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US))
     {
-        BLE_LOG_D("play record ack timeout, retransmit %d/%d",
-                  g_play_cache_index + 1,
-                  g_play_cache_total);
-        g_play_upload_tick  = clock_time();
-        g_play_upload_state = PLAY_UPLOAD_SEND_WAIT;
+        BLE_LOG_D("play record ack timeout, retransmit id=%d", g_play_upload_id);
+        if (app_ctrl_send_play_record(g_play_upload_id) == 0)
+        {
+            g_play_upload_tick = now;
+        }
+        else
+        {
+            // 记录已不存在 → 回到 IDLE
+            g_play_upload_state = PLAY_UPLOAD_IDLE;
+            g_play_upload_id    = 0;
+        }
+    }
+
+    // 每 1s 检查是否有新的完整记录需要上传
+    if (g_play_upload_state == PLAY_UPLOAD_IDLE)
+    {
+        if (g_play_upload_pending || clock_time_exceed(g_play_upload_check_tick, PLAY_RECORD_UPLOAD_INTERVAL_US))
+        {
+            g_play_upload_pending    = 0;
+            g_play_upload_check_tick = now;
+            app_ctrl_play_record_check();
+        }
     }
 
     // 猎物质点随机移动循环
@@ -1655,13 +1626,14 @@ void app_ctrl_onRx(u8 *data, u16 len)
         BLE_LOG_D("CTRL_CMD_TIME_SET");
         app_ctrl_handle_time_set(seq, payload, payLen);
         break;
-    case CTRL_CMD_PLAY_RECORD_GET:
-        BLE_LOG_D("CTRL_CMD_PLAY_RECORD_GET");
-        app_ctrl_handle_play_record_get(seq, payload, payLen);
-        break;
     case CTRL_CMD_UID_GET:
         BLE_LOG_D("CTRL_CMD_UID_GET");
         app_ctrl_handle_uid_get(seq, payload, payLen);
+        break;
+
+    case CTRL_CMD_PLAY_RECORD_DELETE:
+        BLE_LOG_D("CTRL_CMD_PLAY_RECORD_DELETE");
+        app_ctrl_handle_play_record_delete(seq, payload, payLen);
         break;
     case CTRL_CMD_POWER_CTRL:
         BLE_LOG_D("CTRL_CMD_POWER_CTRL");

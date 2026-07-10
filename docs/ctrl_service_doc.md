@@ -464,23 +464,23 @@ byte6 : status
 byte7 : 0x00
 ```
 
-#### 4.8 逗宠记录主动上报与 ACK（PLAY_RECORD_GET，CMD = 0x33）
+#### 4.8 逗宠记录主动上报（PLAY_RECORD_GET，CMD = 0x33）
 
-用途：设备主动上报"完整逗宠记录"（即狩猎结果记录），APP 成功接收后发送 ACK 通知设备清理记录。  
+用途：设备主动上报"完整逗宠记录"（即狩猎结果记录），每条记录携带全局唯一ID。
 说明：完整记录指同时有 `start_sec` 和 `end_sec`；仅有开始时间（`end_sec = 0xFFFFFFFF`）的进行中记录不会上报。
 每条记录包含狩猎结果：`0=未完成`、`1=完成`、`2=捕猎成功`。
 为满足 BLE 单帧 20 字节（`CTRL_TX_MAX_LEN`）限制，`end_sec` 压缩为 `duration_sec = end_sec − start_sec`（u16 LE），APP 侧恢复：`end_sec = start_sec + duration_sec`。
 
 **触发时机（设备 → APP）**
 
-- 每次新增一条完整记录（会话结束）时，若 BLE 已连接，主动上报未 ACK 的完整记录。
-- BLE 首次连接成功或重连成功后，若存在未 ACK 的完整记录，主动补发。
+- 每次新增一条完整记录（会话结束）时，若 BLE 已连接，主动上报未删除的完整记录。
+- BLE 首次连接成功或重连成功后，若存在未删除的完整记录，主动补发。
 
 **长度约束（与实现对齐）**
 
 - 控制面单帧总长须满足 `6 + payloadLen ≤ CTRL_TX_MAX_LEN`（当前 **20** 字节，见 §1 / `app_ctrl.h`）。
 - 由于 20 字节限制，本事件的 `end_sec` 字段压缩为 `duration_sec = end_sec - start_sec`（u16 LE），APP 端恢复：`end_sec = start_sec + duration_sec`。
-- 本事件 **payload 固定 13 字节**（`payloadLen = 0x000D`），总长 **19 字节**。
+- 本事件 **payload 固定 14 字节**（`payloadLen = 0x000E`），总长 **20 字节**。
 
 **主动上报帧（设备 → APP，EVENT）**
 
@@ -488,14 +488,15 @@ byte7 : 0x00
 
 | payload 偏移 | 长度 | 类型   | 说明                                                                                                                                                                                     |
 | ------------ | ---- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0            | 1    | u8     | `status`                                                                                                                                                                                 |
-| 1            | 1    | u8     | `total`：本批次完整记录条数（与 ACK 前设备内待上报条数一致）                                                                                                                             |
-| 2            | 1    | u8     | `index`：当前条在批次中的序号 `0 .. total-1`                                                                                                                                             |
-| 3            | 4    | u32 LE | `start_sec`：逗宠段开始 Unix 秒                                                                                                                                                          |
-| 7            | 2    | u16 LE | `duration_sec`：**逗宠持续秒数**。`duration_sec = end_sec − start_sec`（u16，饱和 65535）。APP 恢复 `end_sec = start_sec + duration_sec`。替代原 4 字节 `end_sec` 以符合 20 字节单帧限制 |
-| 9            | 2    | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535**                                  |
-| 11           | 1    | u8     | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255**                            |
-| 12           | 1    | u8     | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)`                                                            |
+| 0            | 1    | u8     | `status`（固定 `0x00`）                                                                                                                                                                  |
+| 1            | 1    | u8     | `record_id`：**全局唯一记录ID**（每条新记录自增，0回绕后仍唯一）                                                                                                                          |
+| 2            | 1    | u8     | `total`：本批次完整记录条数（当前固定为1）                                                                                                                                               |
+| 3            | 1    | u8     | `index`：当前条在批次中的序号 `0 .. total-1`（当前固定为0）                                                                                                                              |
+| 4            | 4    | u32 LE | `start_sec`：逗宠段开始 Unix 秒                                                                                                                                                          |
+| 8            | 2    | u16 LE | `duration_sec`：**逗宠持续秒数**。`duration_sec = end_sec − start_sec`（u16，饱和 65535）。APP 恢复 `end_sec = start_sec + duration_sec`。替代原 4 字节 `end_sec` 以符合 20 字节单帧限制 |
+| 10           | 2    | u16 LE | `motion_sec`：**累计运动时长**（秒）。由段内毫秒累计 **四舍五入**（`(ΣΔt_ms+500)/1000`）得到；毫秒累计规则见下 **「运动统计」**；**u16 上报饱和 65535**                                  |
+| 12           | 1    | u8     | `avg_speed_cm_s`：**平均速度**（cm/s）。**时间加权**：`round( Σ(v×Δt_ms) / Σ(Δt_ms) )`，其中 `v` 为相邻轨迹点弦速（见 **「运动统计」**）；**u8 上报饱和 255**                            |
+| 13           | 1    | u8     | `result`：**狩猎结果**。`0=未完成(HUNT_RESULT_INCOMPLETE)`、`1=完成(HUNT_RESULT_COMPLETE)`、`2=捕猎成功(HUNT_RESULT_SUCCESS)`                                                            |
 
 **运动统计（与固件 `RadarMotionCachePush` / `radar_play_on_cache_displacement_ms` 对齐）**
 
@@ -504,60 +505,32 @@ byte7 : 0x00
 - 弦速（cm/s）：`v = √(Δx²+Δy²)_mm × 100 / Δt_ms`（`Δx/Δy` 为相对 newest 的毫米位移）；位移小于 0.5mm 时 `v` 按 0，仍累加 **`Δt_ms`**。
 - 段结束时写入 flash / 上报：`motion_sec` 为秒，`avg_speed_cm_s` 为上述加权平均（u16 存 flash，经 BLE 再截断为 u8）。
 
-**整帧 19 字节示例（6 字节头 + 13 字节 payload；`payloadLen` 小端为 `0x0D 0x00`）**
+**整帧 20 字节示例（6 字节头 + 14 字节 payload；`payloadLen` 小端为 `0x0E 0x00`）**
 
 ```
 byte0 : 0x01
 byte1 : 0x03           // msgType = EVENT
 byte2 : 0x33           // cmdId = PLAY_RECORD_GET
 byte3 : seq
-byte4 : 0x0D           // payloadLen L0 = 13
+byte4 : 0x0E           // payloadLen L0 = 14
 byte5 : 0x00           // payloadLen L1 = 0
-byte6 : status         // payload[0]
-byte7 : total          // payload[1]
-byte8 : index          // payload[2]
-byte9 : start_sec_L0   // payload[3..6]
-byte10: start_sec_L1
-byte11: start_sec_L2
-byte12: start_sec_L3
-byte13: duration_L0    // payload[7..8]  duration_sec = end_sec - start_sec (u16 LE)
-byte14: duration_L1
-byte15: motion_sec_L0  // payload[9..10]
-byte16: motion_sec_L1
-byte17: avg_speed_cm_s // payload[11]
-byte18: result         // payload[12] 狩猎结果: 0=未完成 1=完成 2=捕猎成功
+byte6 : status         // payload[0] 固定0x00
+byte7 : record_id      // payload[1] 记录ID
+byte8 : total          // payload[2]
+byte9 : index          // payload[3]
+byte10: start_sec_L0   // payload[4..7]
+byte11: start_sec_L1
+byte12: start_sec_L2
+byte13: start_sec_L3
+byte14: duration_L0    // payload[8..9]  duration_sec = end_sec - start_sec (u16 LE)
+byte15: duration_L1
+byte16: motion_sec_L0  // payload[10..11]
+byte17: motion_sec_L1
+byte18: avg_speed_cm_s // payload[12]
+byte19: result         // payload[13] 狩猎结果: 0=未完成 1=完成 2=捕猎成功
 ```
 
-**ACK 请求帧（APP → 设备，CMD）**
-
-```
-byte0 : 0x01
-byte1 : 0x01           // msgType = CMD
-byte2 : 0x33           // cmdId = PLAY_RECORD_GET
-byte3 : seq
-byte4 : 0x00           // payloadLen = 0（推荐）
-byte5 : 0x00
-```
-
-兼容：固件也接受 `payloadLen = 1` 的 ACK 帧。
-
-**ACK 响应帧（设备 → APP，RSP）**
-
-```
-byte0 : 0x01
-byte1 : 0x02           // msgType = RSP
-byte2 : 0x33           // cmdId = PLAY_RECORD_GET
-byte3 : seq
-byte4 : 0x02           // payloadLen = 2
-byte5 : 0x00
-byte6 : status         // 0x00=成功，其它为错误码
-byte7 : remain_complete// 0:无剩余完整记录, 1:仍有完整记录
-```
-
-**清理策略**
-
-- 设备仅在收到有效 ACK 后清理完整记录，并持久化到 flash。
-- 进行中记录（仅开始时间）始终保留，不会因 ACK 被清理。
+> **重要：0x33 命令已废弃** — 旧版 APP 使用 `CMD 0x33` 发送 ACK 确认记录，现已被 `CMD 0x35` 删除命令取代（见 §4.10）。固件仍兼容接收 `0x33` 命令，但仅返回 `UNSUPPORTED_CMD` 错误。**APP 无需再发送 0x33 ACK**，记录确认和清理通过 §4.10 的删除命令完成。
 
 #### 4.9 读取 SN（UID_GET，CMD = 0x34）
 
@@ -594,7 +567,70 @@ byte7 : part           // 0: UID[0..7], 1: UID[8..15]
 byte8..byte15 : uid8   // 8 字节 UID 分片
 ```
 
-#### 4.10 设置安装高度（RADAR_CONFIG_SET_HEIGHT，CMD = 0x50）
+#### 4.10 逗宠记录删除与ACK（PLAY_RECORD_DELETE，CMD = 0x35）
+
+用途：APP 按记录ID删除指定逗宠记录。**此命令同时充当 ACK** — 设备收到后删除该记录并自动推进上传状态机，准备发送下一条记录（如有）。
+
+> **取代旧的 ACK 机制**：旧版使用 `CMD 0x33`（空payload）作为 ACK，导致无法控制删除哪条记录。现改为每条的 `record_id` 精准删除，`0x33 ACK` 已废弃。
+
+**请求帧（APP → 设备）**
+
+```
+byte0 : 0x01           // version
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x35           // cmdId = PLAY_RECORD_DELETE
+byte3 : seq
+byte4 : 0x01           // payloadLen = 1
+byte5 : 0x00
+byte6 : record_id      // 要删除的记录ID（对应 EVENT 中的 record_id，见 §4.8）
+```
+
+**示例**（删除 ID=3 的记录）：
+```
+01 01 35 01 01 00 03
+```
+
+**响应帧（设备 → APP）**
+
+```
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x35           // cmdId = PLAY_RECORD_DELETE
+byte3 : seq
+byte4 : 0x03           // payloadLen = 3
+byte5 : 0x00
+byte6 : status         // 0x00=成功, 0x03=未找到指定记录ID
+byte7 : remaining      // 剩余待上传记录数（0=全部已处理）
+byte8 : 0x00           // 保留
+```
+
+**处理流程（设备侧）**
+
+1. 搜索 `record_id`：先在雷达端 RAM 缓冲区搜索，若未找到则在 **上传缓存**（已取出待发送但尚未 ACK 的记录）中搜索。
+2. 若找到：从所在位置删除该记录，剩余记录**向前压缩**。
+3. **ACK 推进**：无论记录在何处找到，都执行 ACK 逻辑——推进上传状态机到下一条记录（若还有剩余）或进入 IDLE（全部完成）。
+4. **Flash 持久化**：记录从雷达缓冲区删除后立即保存到 Flash。
+
+**典型交互时序**
+
+```
+设备端                           APP端
+  |                                |
+  |--- EVENT(0x33, ID=5) -------->|  设备上报第1条记录
+  |                                |  用户看到 ID=5 的记录
+  |<--- CMD(0x35, ID=5) ---------|  APP 发送删除（同时也是 ACK）
+  |  删除ID=5，发送下一条           |
+  |--- RSP(0x35, status=0, rem=1)->|  还有1条剩余
+  |--- EVENT(0x33, ID=6) -------->|  设备上报第2条记录
+  |                                |  用户看到 ID=6 的记录
+  |<--- CMD(0x35, ID=6) ---------|  APP 再次删除
+  |  删除ID=6，无剩余记录          |
+  |--- RSP(0x35, status=0, rem=0)->|  全部完成
+```
+
+---
+
+#### 4.11 设置安装高度（RADAR_CONFIG_SET_HEIGHT，CMD = 0x50）
 
 用途：APP 设置雷达安装高度，设备立即应用。
 
@@ -702,7 +738,7 @@ APP 侧发送完整长文本的推荐流程：
 
 1. 当所有分片均成功，应答 `status=0x00` 后，本次文本在设备端即可视为“已完整接收并处理”。
 
-#### 4.12 解绑复位
+#### 4.13 解绑复位
 
 **请求帧（APP → 设备）**
 
@@ -729,7 +765,7 @@ byte6 : status
 
 设备行为：清除FLASH中的高度和坐标信息和逗宠记录
 
-#### 4.13 设备软复位（DEVICE_REBOOT，CMD = 0x5A）
+#### 4.14 设备软复位（DEVICE_REBOOT，CMD = 0x5A）
 
 用途：APP 请求设备执行 MCU 软复位（重启）。  
 注意：设备会尽量先回复一帧 RSP，但随后会很快复位，因此 **APP 不应依赖一定能收到响应**；链路会断开，设备会重新广播/可被重新连接。
@@ -759,7 +795,7 @@ byte6 : status         // 0x00=OK，其它为错误码
 
 设备行为：回复 RSP 后在 `app_ctrl_task()` 中延时约 120ms 触发 `start_reboot()`。
 
-#### 4.14 获取固件版本（FW_VERSION_GET，CMD = 0x5B）
+#### 4.15 获取固件版本（FW_VERSION_GET，CMD = 0x5B）
 
 **方向**：APP → 设备
 
@@ -789,7 +825,7 @@ byte8 : major          // APP_FIRMWARE_VERSION bits[23:16]
 
 ---
 
-#### 4.15 OTA 状态事件（OTA_STATUS_EVENT，CMD = 0x5C）
+#### 4.16 OTA 状态事件（OTA_STATUS_EVENT，CMD = 0x5C）
 
 **方向**：设备 → APP（主动 EVENT）
 
@@ -808,20 +844,20 @@ byte6 : status         // 1=更新中 2=更新成功 3=更新失败
 
 ---
 
-#### 4.16 电池电量使用电池服务特帧读取
+#### 4.17 电池电量使用电池服务特帧读取
 
 Battery Service
 UUID:0000180F-0000-1000-8000-00805F9B34FB
 Battery Level
 UUID:00002A19-0000-1000-8000-00805F9B34FB
 
-#### 4.17 狩猎游戏设置（CMD = 0x60 ~ 0x64）
+#### 4.18 狩猎游戏设置（CMD = 0x60 ~ 0x64）
 
 用途：APP 配置狩猎游戏的各项参数，包括猎物点、狩猎时长、狩猎次数、休眠时长等。
 
 ---
 
-##### 4.17.1 进入狩猎设置模式（HUNT_SETTINGS_ENTER，CMD = 0x60）
+##### 4.18.1 进入狩猎设置模式（HUNT_SETTINGS_ENTER，CMD = 0x60）
 
 进入后光斑移动到当前猎物点，设备进入设置模式（`setting_mode=1`），停止自动狩猎。
 
@@ -850,7 +886,7 @@ byte6 : status
 
 ---
 
-##### 4.17.2 退出狩猎设置模式（HUNT_SETTINGS_EXIT，CMD = 0x61）
+##### 4.18.2 退出狩猎设置模式（HUNT_SETTINGS_EXIT，CMD = 0x61）
 
 退出时可以选择应用或丢弃设置。
 
@@ -880,7 +916,7 @@ byte6 : status
 
 ---
 
-##### 4.17.3 猎物点随机移动（HUNT_PREY_RANDOM，CMD = 0x62）
+##### 4.18.3 猎物点随机移动（HUNT_PREY_RANDOM，CMD = 0x62）
 
 在设置模式下，控制光斑在水平±60°、俯仰15°~30°范围内连续随机移动。
 - `start=1`：光斑开始移动到随机点，到达后停留 **0.5 秒**，然后自动移动到下一个随机点，不断循环。
@@ -913,7 +949,7 @@ byte7 : start          // 回显 0x00/0x01
 
 ---
 
-##### 4.17.4 统一设置狩猎参数（HUNT_SETTINGS_SET，CMD = 0x63）
+##### 4.18.4 统一设置狩猎参数（HUNT_SETTINGS_SET，CMD = 0x63）
 
 一次设置单次狩猎时长、次数和休眠时长。payload 共 4 字节：u16 LE 时长 + u8 次数 + u8 休眠分钟。
 
@@ -957,7 +993,7 @@ byte10: sleep_min      // 实际生效休眠分钟 u8
 
 ---
 
-##### 4.17.5 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x64）
+##### 4.18.5 获取当前狩猎设置（HUNT_SETTINGS_GET，CMD = 0x64）
 
 获取当前配置的单次狩猎时长、狩猎次数和休眠时长。无需 payload。
 

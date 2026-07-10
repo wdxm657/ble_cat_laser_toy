@@ -33,6 +33,9 @@ int  app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records);
 int  app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out, u16 *avg_speed_cms_out, u8 max_records);
 u8   app_radar_has_complete_play_records(void);
 void app_radar_clear_complete_play_records(void);
+int app_radar_delete_play_record_by_id(u8 record_id);
+u8   app_radar_find_oldest_complete_record_id(void);
+int  app_radar_get_record_data_by_id(u8 id, u32 *start_sec, u32 *end_sec, u32 *motion_sec, u16 *avg_speed, u8 *result);
 void app_radar_set_install_height_mm(s32 height_mm);
 void app_radar_get_install_height_mm(s32 *height_mm);
 u8   app_radar_is_install_height_set(void);
@@ -116,9 +119,6 @@ u8 app_hunt_is_standby(void);
 /** 当前状态：是否处于休眠 */
 u8 app_hunt_is_sleeping(void);
 
-/** 获取当前捕猎记录（附带结果），用于上报 */
-int app_hunt_get_records_with_result(u32 *out_buf, u8 *tz_buf, u32 *motion_sec_out,
-                                     u16 *avg_speed_cms_out, u8 *result_out, u8 max_records);
 
 #else
 static inline void app_radar_debug_rx_poll(void)
@@ -145,7 +145,9 @@ static inline void app_hunt_prey_random_move(void) {}
 static inline u8 app_hunt_is_hunting(void) { return 0; }
 static inline u8 app_hunt_is_standby(void) { return 0; }
 static inline u8 app_hunt_is_sleeping(void) { return 0; }
-static inline int app_hunt_get_records_with_result(u32 *a, u8 *b, u32 *c, u16 *d, u8 *e, u8 f) { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f; return 0; }
+static inline int app_radar_delete_play_record_by_id(u8 id) { (void)id; return -1; }
+static inline u8 app_radar_find_oldest_complete_record_id(void) { return 0; }
+static inline int app_radar_get_record_data_by_id(u8 id, u32 *a, u32 *b, u32 *c, u16 *d, u8 *e) { (void)id;(void)a;(void)b;(void)c;(void)d;(void)e; return -1; }
 #endif /* UI_RADAR_ENABLE */
 
 #endif /* APP_RADAR_H_ */
