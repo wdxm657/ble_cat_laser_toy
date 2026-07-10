@@ -37,6 +37,9 @@ static u8  g_ctrlSeq        = 0;
 static u32 g_power_on_tick  = 0;
 static u32 g_power_off_tick = 0;
 
+// Log TX CCC from app_att.c
+extern u8 customCtrlLogCCC[2];
+
 #define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 30  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
@@ -409,6 +412,65 @@ void app_ctrl_notify_power_rejected_battery_temp_high(void)
     app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_POWER_CTRL, g_ctrlSeq++, pl, sizeof(pl));
 }
 
+// ----------------------- response cache for duplicate seq -----------------------
+#define RESP_CACHE_SIZE 4
+typedef struct
+{
+    u8  used;
+    u8  frame[CTRL_TX_MAX_LEN];
+    u8  len;
+} resp_cache_entry_t;
+
+static resp_cache_entry_t g_resp_cache[RESP_CACHE_SIZE];
+static u8 g_resp_cache_idx = 0;
+
+static void resp_cache_save(const u8 *frame, u8 len, u8 seq)
+{
+    resp_cache_entry_t *e = &g_resp_cache[g_resp_cache_idx];
+    e->used = 1;
+    e->len  = (len <= CTRL_TX_MAX_LEN) ? len : CTRL_TX_MAX_LEN;
+    memcpy(e->frame, frame, e->len);
+    g_resp_cache_idx = (g_resp_cache_idx + 1) % RESP_CACHE_SIZE;
+}
+
+static int resp_cache_resend(u8 cmdId, u8 seq)
+{
+    for (u8 i = 0; i < RESP_CACHE_SIZE; i++)
+    {
+        if (g_resp_cache[i].used &&
+            g_resp_cache[i].frame[2] == cmdId &&
+            g_resp_cache[i].frame[3] == seq)
+        {
+            if (BLS_CONN_HANDLE != 0xFFFF)
+            {
+                blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_READ_DP_H,
+                                               g_resp_cache[i].frame, g_resp_cache[i].len);
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// ----------------------- log output via dedicated Log TX characteristic (0x03 UUID) -----------------------
+void app_ctrl_log_send_bytes(const u8 *data, u16 len)
+{
+    if (!data || len == 0) return;
+    if (BLS_CONN_HANDLE == 0xFFFF) return;
+    if (!(customCtrlLogCCC[0] & 0x01)) return;
+
+    u16 maxChunk = 20;
+    u16 offset   = 0;
+    while (offset < len)
+    {
+        u16 chunkLen = (len - offset > maxChunk) ? maxChunk : (u16)(len - offset);
+        blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_LOG_DP_H,
+                                       (u8 *)&data[offset], chunkLen);
+        offset += chunkLen;
+        if (offset < len) sleep_us(5000);
+    }
+}
+
 // ----------------------- sending -----------------------
 int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen)
 {
@@ -447,6 +509,11 @@ int app_ctrl_send(u8 msgType, u8 cmdId, u8 seq, u8 *payload, u16 payloadLen)
     if (BLS_CONN_HANDLE != 0xFFFF)
     {
         blc_gatt_pushHandleValueNotify(BLS_CONN_HANDLE, CUSTOM_COUNTER_READ_DP_H, g_ctrlTxBuf, totalLen);
+    }
+    /* 缓存 RSP 帧用于重复 seq 重发 */
+    if (msgType == CTRL_MSG_TYPE_RSP)
+    {
+        resp_cache_save(g_ctrlTxBuf, (u8)totalLen, seq);
     }
     // memset(g_ctrlRxBuf, 0, sizeof(g_ctrlRxBuf));
     // memset(g_ctrlTxBuf, 0, sizeof(g_ctrlTxBuf));
@@ -1233,7 +1300,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR  1
 #define APP_FIRMWARE_VERSION_MINOR  0
-#define APP_FIRMWARE_VERSION_PATCH  1
+#define APP_FIRMWARE_VERSION_PATCH  2
 #define APP_FIRMWARE_VERSION        ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 // ----------------------- handler: firmware version get -----------------------
@@ -1558,6 +1625,22 @@ void app_ctrl_onRx(u8 *data, u16 len)
         u8 rsp[2] = {CTRL_STATUS_LEN_ERROR, 0};
         app_ctrl_send(CTRL_MSG_TYPE_RSP, cmdId, seq, rsp, sizeof(rsp));
         return;
+    }
+
+    /* 重复 seq 检测：相同 seq 表示 APP 重发，回复上次缓存的响应 */
+    {
+        static u8 s_last_seq = 0xFF;
+        if (seq == s_last_seq)
+        {
+            BLE_LOG_D("[DUP_SEQ] cmd=0x%02x seq=%d resend cached response", cmdId, seq);
+            if (!resp_cache_resend(cmdId, seq))
+            {
+                u8 rsp[1] = {CTRL_STATUS_OK};
+                app_ctrl_send(CTRL_MSG_TYPE_RSP, cmdId, seq, rsp, sizeof(rsp));
+            }
+            return;
+        }
+        s_last_seq = seq;
     }
 
     u8 *payload = &data[6];

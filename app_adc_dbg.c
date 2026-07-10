@@ -677,25 +677,11 @@ void app_adc_dbg_poll(void)
                 app_adc_dbg_bat_percent_save_to_flash();
             }
 
-            if (app_adc_dbg_is_charging() && s_bat_percent < 5)
-            {  // 充电中，软件开机状态，则软件关机
-                if (app_get_power_state()){
-                    BLE_LOG_D("s_bat_percent  < 5 close");
-                    app_set_power_state(0);
-                }
-            }
-
-            // if (s_bat_percent_inited)
-            // {
-            //     if (s_bat_flash_save_tick == 0)
-            //     {
-            //         app_adc_dbg_bat_percent_save_to_flash();
-            //         s_bat_flash_save_tick = now;
-            //     }
-            //     else if (clock_time_exceed(s_bat_flash_save_tick, APP_BAT_FLASH_SAVE_INTERVAL_US))
-            //     {
-            //         app_adc_dbg_bat_percent_save_to_flash();
-            //         s_bat_flash_save_tick = now;
+            // if (app_adc_dbg_is_charging() && s_bat_percent < 5)
+            // {  // 充电中，软件开机状态，则软件关机
+            //     if (app_get_power_state()){
+            //         BLE_LOG_D("s_bat_percent  < 5 close");
+            //         app_set_power_state(0);
             //     }
             // }
         }

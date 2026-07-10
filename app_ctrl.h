@@ -161,6 +161,18 @@ void app_ctrl_notify_power_rejected_battery_temp_high(void);
  */
 void app_ctrl_text_send_bytes(const u8 *data, u16 len);
 
+/**
+ * @brief   Send log text to PC via dedicated Log TX characteristic (0x03 UUID).
+ *          Best-effort: if not connected, the call returns without sending.
+ */
+void app_ctrl_log_send_bytes(const u8 *data, u16 len);
+
+static inline void app_ctrl_log_send_str(const char *s)
+{
+    if (!s) return;
+    app_ctrl_log_send_bytes((const u8 *)s, (u16)strlen(s));
+}
+
 static inline void app_ctrl_text_send_str(const char *s)
 {
     if (!s)
@@ -186,7 +198,7 @@ char _ble_log_buf[96];
          * 之前使用栈上 96B buffer + sprintf，存在栈溢出导致“冷启动式重启”的风险。            \
          * 这里改为静态 buffer（非线程安全，但足够用于调试输出）。 */                         \
         tl_sprintf(_ble_log_buf, fmt "\r\n", ##__VA_ARGS__);                                \
-        app_ctrl_text_send_bytes((const u8 *)_ble_log_buf, (u16)strlen(_ble_log_buf));      \
+        app_ctrl_log_send_bytes((const u8 *)_ble_log_buf, (u16)strlen(_ble_log_buf));       \
     } while (0)
 #else
 #define BLE_LOG_D(fmt, ...) ((void)0)
