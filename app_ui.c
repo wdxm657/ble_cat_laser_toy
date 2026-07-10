@@ -67,11 +67,13 @@ void app_ota_result(int result)
     {  // OTA success
         BLE_LOG_D("[APP][OTA] SUCCESSF");
         app_ctrl_send_ota_status(2);  // 更新成功
+        sleep_ms(500);
     }
     else
     {  // OTA fail
         BLE_LOG_D("[APP][OTA] FAILED %d", result);
         app_ctrl_send_ota_status(3);  // 更新失败
+        sleep_ms(500);
     }
 }
 
