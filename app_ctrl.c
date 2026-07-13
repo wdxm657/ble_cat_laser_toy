@@ -246,6 +246,7 @@ static u8 g_last_hunting_state  = 0xFF;
 static u8 g_last_standby_state  = 0xFF;
 static u8 g_last_sleeping_state = 0xFF;
 static u8 g_last_power_on       = 0xFF;
+static s32 g_last_height_mm     = 0xFFFF;
 
 static void app_ctrl_calc_exclusive_mode_flags(u8 *hunting, u8 *standby, u8 *sleeping, u8 *setting)
 {
@@ -310,9 +311,17 @@ void       app_ctrl_status_notify_task(void)
         g_last_hunting_state  = hunting_mode;
         g_last_standby_state  = standby_mode;
         g_last_sleeping_state = sleeping_mode;
+        g_last_height_mm = height_mm;
         return;
     }
 
+    if (height_mm != g_last_height_mm)
+    {
+        BLE_LOG_D("height_mm changed: %d -> %d", g_last_height_mm, height_mm);
+        g_last_height_mm = height_mm;
+        changed             = 1;
+    }
+    
     if (charging != g_last_charge_state)
     {
         BLE_LOG_D("charging changed: %d -> %d", g_last_charge_state, charging);
@@ -1258,7 +1267,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 4
+#define APP_FIRMWARE_VERSION_PATCH 5
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 // ----------------------- handler: firmware version get -----------------------
