@@ -171,6 +171,7 @@ enum{
 	#define	V_NTC_CON		GPIO_PC5 //控制NTC电压AD检测开关 现在常开即可
 	#define	GPIO_LED_WHITE	GPIO_PC6 // 激光指示灯
 	#define	LEIDA_SWITCH  	GPIO_PD7 // 雷达模块开关
+	#define	Set_Charg_I  	GPIO_PD4 // 充电电流限制开关
 	#define PA0_FUNC				AS_GPIO
 	#define PA1_FUNC				AS_GPIO
 	#define PA2_FUNC				AS_GPIO
@@ -184,6 +185,7 @@ enum{
 	#define PC5_FUNC				AS_GPIO
 	#define PC6_FUNC				AS_GPIO
 	#define PD7_FUNC				AS_GPIO
+	#define PD4_FUNC				AS_GPIO
 	#define	PA0_OUTPUT_ENABLE		1
 	#define	PA1_INPUT_ENABLE		1
 	#define PA2_INPUT_ENABLE		1
@@ -197,6 +199,7 @@ enum{
 	#define PC5_OUTPUT_ENABLE       1
 	#define PC6_OUTPUT_ENABLE       1
 	#define PD7_OUTPUT_ENABLE       1
+	#define PD4_OUTPUT_ENABLE       1
 
 	#define	AD_BAT			GPIO_PB2 // 电池电压ADC采样
 	#define	AD_NTC			GPIO_PC4 //NTC电压 ADC采样

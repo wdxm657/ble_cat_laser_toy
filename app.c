@@ -66,6 +66,7 @@ _attribute_data_retention_ static u8 s_bat_percent_last_reported = 0xFF;
 void app_set_power_state(u8 on)
 {
     g_app_power_on = on ? 1 : 0;
+    gpio_write(Set_Charg_I, !on);
     app_radar_set_enabled(g_app_power_on);
     if (!g_app_power_on)
     {
@@ -777,6 +778,8 @@ _attribute_no_inline_ void user_init_normal(void)
     gpio_write(V_BAT_CON, 1);
     // 关闭雷达模块开关
     gpio_write(LEIDA_SWITCH, 0);
+    // 关闭充电电流限制 高电平关闭 低电平打开
+    gpio_write(Set_Charg_I, 1);
 #endif
 #ifdef UI_RADAR_ENABLE
     // app_radar_uart_init();

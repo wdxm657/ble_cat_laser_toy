@@ -40,7 +40,7 @@ static u32 g_power_off_tick = 0;
 // Log TX CCC from app_att.c
 extern u8 customCtrlLogCCC[2];
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 30  // 30s
+#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 1  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -313,52 +313,53 @@ void       app_ctrl_status_notify_task(void)
         return;
     }
 
-    if (charging != g_last_charge_state)
+    
+    // 状态最多允许1s更新1次，避免过于频繁地通知APP（尤其是充电状态可能会有较大波动）
+    if (clock_time_exceed(status_check_tick, 1000000))
     {
-        BLE_LOG_D("charging changed: %d -> %d", g_last_charge_state, charging);
-        g_last_charge_state = charging;
-        changed             = 1;
-    }
-    if (power_on != g_last_power_on)
-    {
-        BLE_LOG_D("power_on changed: %d -> %d", g_last_power_on, power_on);
-        g_last_power_on = power_on;
-        changed         = 1;
-    }
+        if (charging != g_last_charge_state)
+        {
+            BLE_LOG_D("charging changed: %d -> %d", g_last_charge_state, charging);
+            g_last_charge_state = charging;
+            changed             = 1;
+        }
+        if (power_on != g_last_power_on)
+        {
+            BLE_LOG_D("power_on changed: %d -> %d", g_last_power_on, power_on);
+            g_last_power_on = power_on;
+            changed         = 1;
+        }
 
-    if (setting_mode != g_last_setting_state)
-    {
-        BLE_LOG_D("setting_mode changed: %d -> %d", g_last_setting_state, setting_mode);
-        g_last_setting_state = setting_mode;
-        changed              = 1;
-    }
-    if (hunting_mode != g_last_hunting_state)
-    {
-        BLE_LOG_D("hunting_mode changed: %d -> %d", g_last_hunting_state, hunting_mode);
-        g_last_hunting_state = hunting_mode;
-        changed              = 1;
-    }
-    if (standby_mode != g_last_standby_state)
-    {
-        BLE_LOG_D("standby_mode changed: %d -> %d", g_last_standby_state, standby_mode);
-        g_last_standby_state = standby_mode;
-        changed              = 1;
-    }
-    if (sleeping_mode != g_last_sleeping_state)
-    {
-        BLE_LOG_D("sleeping_mode changed: %d -> %d", g_last_sleeping_state, sleeping_mode);
-        g_last_sleeping_state = sleeping_mode;
-        changed               = 1;
+        if (setting_mode != g_last_setting_state)
+        {
+            BLE_LOG_D("setting_mode changed: %d -> %d", g_last_setting_state, setting_mode);
+            g_last_setting_state = setting_mode;
+            changed              = 1;
+        }
+        if (hunting_mode != g_last_hunting_state)
+        {
+            BLE_LOG_D("hunting_mode changed: %d -> %d", g_last_hunting_state, hunting_mode);
+            g_last_hunting_state = hunting_mode;
+            changed              = 1;
+        }
+        if (standby_mode != g_last_standby_state)
+        {
+            BLE_LOG_D("standby_mode changed: %d -> %d", g_last_standby_state, standby_mode);
+            g_last_standby_state = standby_mode;
+            changed              = 1;
+        }
+        if (sleeping_mode != g_last_sleeping_state)
+        {
+            BLE_LOG_D("sleeping_mode changed: %d -> %d", g_last_sleeping_state, sleeping_mode);
+            g_last_sleeping_state = sleeping_mode;
+            changed               = 1;
+        }
     }
     if (changed)
     {
-        // 状态最多允许1s更新1次，避免过于频繁地通知APP（尤其是充电状态可能会有较大波动）
-        // if (clock_time_exceed(status_check_tick, 1000000))
-        // {
         status_check_tick = clock_time();
         u8 pl[10]         = {CTRL_STATUS_OK, power_on, boundary_set, install_height, install_height_hi, charging, setting_mode, hunting_mode, standby_mode, sleeping_mode};
         app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_STATUS_GET, g_ctrlSeq++, pl, sizeof(pl));
-        // }
     }
 #endif
 }
@@ -870,17 +871,17 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     u8 reason       = CTRL_REASON_NONE;
 
     // 低电量禁止开机：bat_percent < 20 且未充电
-    if (target_on && !cur_on)
-    {
-        u8 bat_percent = app_adc_dbg_get_bat_percent_exact();
-        u8 is_charging = app_adc_dbg_is_charging() ? 1 : 0;
-        if (bat_percent < 20)
-        {
-            status       = CTRL_STATUS_REJECT_ERROR;
-            reason       = CTRL_REASON_LOW_BATTERY;
-            on_effective = 0;
-        }
-    }
+    // if (target_on && !cur_on)
+    // {
+    //     u8 bat_percent = app_adc_dbg_get_bat_percent_exact();
+    //     u8 is_charging = app_adc_dbg_is_charging() ? 1 : 0;
+    //     if (bat_percent < 20)
+    //     {
+    //         status       = CTRL_STATUS_REJECT_ERROR;
+    //         reason       = CTRL_REASON_LOW_BATTERY;
+    //         on_effective = 0;
+    //     }
+    // }
 
     // 电池温度过高禁止开机（>70°C；此时充电开关已由固件关闭）
     if (status == CTRL_STATUS_OK && target_on && !cur_on)
@@ -1258,7 +1259,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 9
+#define APP_FIRMWARE_VERSION_PATCH 13
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 // ----------------------- handler: firmware version get -----------------------
