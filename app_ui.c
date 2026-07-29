@@ -38,11 +38,6 @@
 _attribute_data_retention_ int ota_is_working = 0;
 #if (BLE_OTA_SERVER_ENABLE)
 
-void app_get_firmware_version(void)
-{
-    BLE_LOG_D("[APP][OTA] GET VERSION TEST");
-}
-
 /**
  * @brief      this function is used to register the function for OTA start.
  * @param[in]  none

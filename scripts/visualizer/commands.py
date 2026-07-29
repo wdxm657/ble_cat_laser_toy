@@ -57,6 +57,10 @@ def cmd_device_reboot() -> tuple[int, bytes, str]:
     return p.CTRL_CMD_DEVICE_REBOOT, b"", "DEVICE_REBOOT"
 
 
+def cmd_factory_test_enter() -> tuple[int, bytes, str]:
+    return p.CTRL_CMD_FACTORY_TEST_ENTER, b"", "FACTORY_TEST_ENTER"
+
+
 def cmd_radar_config_set_height(mm: int) -> tuple[int, bytes, str]:
     """设置雷达安装高度 (CMD 0x50)"""
     return p.CTRL_CMD_RADAR_CONFIG_SET_HEIGHT, p.s16le(mm), f"RADAR_CONFIG_SET_HEIGHT mm={mm}"

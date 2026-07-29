@@ -1982,18 +1982,21 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
     u8    oldest        = 0;
     u8    newest        = 0;
 
+
+    // 0.5s打印一次
+    if (tick_xy_mm == 0 || clock_time_exceed(tick_xy_mm, 1000000))
+    {
+        tick_xy_mm = clock_time();
+        BLE_LOG_D("x = %d,  y = %d", x_mm, y_mm);
+    }
+    // 测试程序不需要往下走了
+
     if (abs(g_radar_pred.prev_x_mm - x_mm) > STATIONARY_DXY_THRESHOLD_MM || abs(g_radar_pred.prev_y_mm - y_mm) > STATIONARY_DXY_THRESHOLD_MM)
     {
         gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
         motion_valid  = 1;
         is_stationary = 0;
         RadarSessionOnMotion(now_tick);
-    }
-    // 0.5s打印一次
-    if (tick_xy_mm == 0 || clock_time_exceed(tick_xy_mm, 1000000))
-    {
-        tick_xy_mm = clock_time();
-        BLE_LOG_D("x = %d,  y = %d", x_mm, y_mm);
     }
     g_radar_pred.prev_x_mm = x_mm;
     g_radar_pred.prev_y_mm = y_mm;

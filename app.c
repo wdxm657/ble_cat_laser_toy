@@ -63,6 +63,21 @@ own_addr_type_t app_own_address_type = OWN_ADDRESS_PUBLIC;
 static u8                            g_app_power_on              = 0;
 _attribute_data_retention_ static u8 s_bat_percent_last_reported = 0xFF;
 
+static u8 s_factory_test_mode = 0;
+
+static void factory_test_prepare_io(void)
+{
+    gpio_set_func(LEIDA_SWITCH, AS_GPIO);
+    gpio_set_input_en(LEIDA_SWITCH, 0);
+    gpio_set_output_en(LEIDA_SWITCH, 1);
+    gpio_write(LEIDA_SWITCH, 1);
+
+    gpio_set_func(GPIO_LED_WHITE, AS_GPIO);
+    gpio_set_input_en(GPIO_LED_WHITE, 0);
+    gpio_set_output_en(GPIO_LED_WHITE, 1);
+    gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+}
+
 void app_set_power_state(u8 on)
 {
     g_app_power_on = on ? 1 : 0;
@@ -77,6 +92,23 @@ void app_set_power_state(u8 on)
 u8 app_get_power_state(void)
 {
     return g_app_power_on;
+}
+
+void app_factory_test_enter(void)
+{
+    s_factory_test_mode = 1;
+    factory_test_prepare_io();
+    app_set_power_state(1);
+    factory_test_prepare_io();
+#if (UI_STEP_MOTOR_ENABLE)
+    StepMotor_GimbalResetStart();
+#endif
+    BLE_LOG_D("[APP][FACTORY] enter test mode");
+}
+
+u8 app_factory_test_is_active(void)
+{
+    return s_factory_test_mode;
 }
 
 u8 g_flash_uid[16];
@@ -790,6 +822,7 @@ _attribute_no_inline_ void user_init_normal(void)
     StepMotor_Init();
     StepMotor_GimbalResetStart();
 #endif
+
     //////////////////////////// peripheral hardware Initialization  End //////////////////////////////////
     //////////////////////////// basic hardware Initialization  Begin //////////////////////////////////
     /* random number generator must be initiated before any BLE stack initialization.
@@ -966,7 +999,7 @@ _attribute_no_inline_ void user_init_normal(void)
     blc_pm_setDeepsleepRetentionEarlyWakeupTiming(550);
 #endif
 #else
-    bls_pm_setSuspendMask(SUSPEND_ADV | SUSPEND_CONN);
+    bls_pm_setSuspendMask(SUSPEND_DISABLE);
 #endif
     bls_app_registerEventCallback(BLT_EV_FLAG_SUSPEND_ENTER, &task_sleep_enter);
 #else
@@ -1119,6 +1152,54 @@ void main_loop(void)
 {
     ////////////////////////////////////// BLE entry /////////////////////////////////
     blc_sdk_main_loop();
+
+    if (s_factory_test_mode)
+    {
+#if (APP_BATT_CHECK_ENABLE)
+        if (battery_get_detect_enable() && clock_time_exceed(lowBattDet_tick, 500000))
+        {
+            lowBattDet_tick = clock_time();
+            user_battery_power_check(VBAT_ALARM_THRES_MV);
+        }
+#endif
+        app_adc_dbg_poll();
+        app_ctrl_status_notify_task();
+        {
+            u8 bat_percent_now = app_adc_dbg_get_bat_percent();
+            if (bat_percent_now != s_bat_percent_last_reported)
+            {
+                s_bat_percent_last_reported = bat_percent_now;
+                app_att_battery_update(bat_percent_now);
+            }
+        }
+#ifdef UI_RADAR_ENABLE
+        app_ctrl_task();
+        if (!g_time_tick_last)
+        {
+            g_time_tick_last = clock_time();
+        }
+        if (clock_time_exceed(g_time_tick_last, 1000000))
+        {
+            g_time_tick_last = clock_time();
+            app_radar_on_time_tick();
+        }
+        factory_test_prepare_io();
+        if (!app_radar_is_power_on())
+        {
+            app_set_power_state(1);
+        }
+        if (app_radar_is_power_on())
+        {
+            app_radar_parse_and_report_frame();
+        }
+        factory_test_prepare_io();
+#endif
+#if (UI_STEP_MOTOR_ENABLE)
+        StepMotor_GimbalResetTask();
+#endif
+        blt_pm_proc();
+        return;
+    }
 
 ////////////////////////////////////// UI entry /////////////////////////////////
 ///////////////////////////////////// Battery Check ////////////////////////////////

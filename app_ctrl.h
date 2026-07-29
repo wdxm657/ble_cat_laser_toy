@@ -60,6 +60,7 @@ enum{
     CTRL_CMD_OTA_STATUS_EVENT         = 0x5C,
     /** APP -> device: request a soft reboot (MCU reset). */
     CTRL_CMD_DEVICE_REBOOT            = 0x5A,
+    CTRL_CMD_FACTORY_TEST_ENTER       = 0x5D,   // enter assembly factory test mode until reboot
 
     // 狩猎游戏设置
     /** 进入狩猎设置模式 */
@@ -215,5 +216,12 @@ void app_ctrl_status_notify_task(void);
 
 u8 app_ctrl_is_setting_mode(void);
 
-#endif /* APP_CTRL_H_ */
 
+/**
+ * @brief      this function is used to get the firmware version.
+ * @param[in]  none
+ * @return     none
+ */
+void app_get_firmware_version(void);
+
+#endif /* APP_CTRL_H_ */

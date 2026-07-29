@@ -79,12 +79,6 @@ void app_enter_ota_mode(void);
  */
 void app_ota_result(int result);
 
-/**
- * @brief      this function is used to get the firmware version.
- * @param[in]  none
- * @return     none
- */
-void app_get_firmware_version(void);
 
 void app_ui_led_task(void);
 void app_ui_power_led_task(void);

@@ -1262,6 +1262,12 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 #define APP_FIRMWARE_VERSION_PATCH 13
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
+
+void app_get_firmware_version(void)
+{
+    BLE_LOG_D("[APP][VER] %d.%d.%d", APP_FIRMWARE_VERSION_MAJOR, APP_FIRMWARE_VERSION_MINOR, APP_FIRMWARE_VERSION_PATCH);
+}
+
 // ----------------------- handler: firmware version get -----------------------
 static int app_ctrl_handle_fw_version_get(u8 seq, u8 *payload, u16 len)
 {
@@ -1458,6 +1464,22 @@ static int app_ctrl_handle_device_reboot(u8 seq, u8 *payload, u16 len)
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_DEVICE_REBOOT, seq, rsp, sizeof(rsp));
     s_ctrl_reboot_pending = 1;
     s_ctrl_reboot_tick    = clock_time();
+    return 0;
+}
+
+// ----------------------- handler: assembly factory test enter -----------------------
+static int app_ctrl_handle_factory_test_enter(u8 seq, u8 *payload, u16 len)
+{
+    if (len != 0)
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+
+    u8 rsp[1] = {CTRL_STATUS_OK};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
+    app_factory_test_enter();
     return 0;
 }
 
@@ -1696,6 +1718,10 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_DEVICE_REBOOT:
         BLE_LOG_D("CTRL_CMD_DEVICE_REBOOT");
         app_ctrl_handle_device_reboot(seq, payload, payLen);
+        break;
+    case CTRL_CMD_FACTORY_TEST_ENTER:
+        BLE_LOG_D("CTRL_CMD_FACTORY_TEST_ENTER");
+        app_ctrl_handle_factory_test_enter(seq, payload, payLen);
         break;
     case CTRL_CMD_FW_VERSION_GET:
         BLE_LOG_D("CTRL_CMD_FW_VERSION_GET");
