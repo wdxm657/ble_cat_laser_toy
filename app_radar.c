@@ -14,6 +14,7 @@
 #include "StepMotor.h"
 
 #include "app_config.h"
+#include "app.h"
 #include "app_ctrl.h"
 
 /** 置 0 可关闭 ISR 计数与周期日志，发布前建议关闭。 */
@@ -442,6 +443,14 @@ static void app_radar_power_switch(u8 on)
     g_radar_power_on = on ? 1 : 0;
 }
 
+static inline void app_radar_status_led_set(u8 on)
+{
+    if (!app_factory_test_is_active())
+    {
+        gpio_write(GPIO_LED_WHITE, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    }
+}
+
 static void app_radar_power_state_reset(void)
 {
     if (g_radar_power_log_last_state == 0)
@@ -817,7 +826,7 @@ static void radar_play_record_end(void)
     BLE_LOG_D("radar_play_record_end");
     radar_working_mode_set(0);
 
-    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+    app_radar_status_led_set(0);
     {
         u32                mot_ms  = g_radar_sess_motion_ms;
         u32                mot_sec = (mot_ms + 500u) / 1000u;
@@ -1983,17 +1992,22 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
     u8    newest        = 0;
 
 
-    // 0.5s打印一次
-    if (tick_xy_mm == 0 || clock_time_exceed(tick_xy_mm, 1000000))
+
+    if (app_factory_test_is_active())
     {
-        tick_xy_mm = clock_time();
-        BLE_LOG_D("x = %d,  y = %d", x_mm, y_mm);
+        // 0.5s打印一次
+        if (tick_xy_mm == 0 || clock_time_exceed(tick_xy_mm, 1000000))
+        {
+            tick_xy_mm = clock_time();
+            BLE_LOG_D("x = %d,  y = %d", x_mm, y_mm);
+        }
+        return;
     }
     // 测试程序不需要往下走了
 
     if (abs(g_radar_pred.prev_x_mm - x_mm) > STATIONARY_DXY_THRESHOLD_MM || abs(g_radar_pred.prev_y_mm - y_mm) > STATIONARY_DXY_THRESHOLD_MM)
     {
-        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        app_radar_status_led_set(1);
         motion_valid  = 1;
         is_stationary = 0;
         RadarSessionOnMotion(now_tick);
@@ -2234,7 +2248,7 @@ void app_radar_set_enabled(u8 on)
         g_hunt_success         = 0;
         g_hunt_acc_tick_last   = 0;
         g_hunt_sleep_end_tick  = 0;
-        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+        app_radar_status_led_set(0);
         radar_working_mode_set(1);
         g_radar_hold_on_mode = 1;
         app_radar_power_switch(1);
@@ -2427,7 +2441,7 @@ void app_radar_task_power_schedule(void)
             {
                 radar_play_record_end();  // 记录为未完成
                 StepMotor_StopAll();
-                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+                app_radar_status_led_set(0);
                 g_radar_hold_on_mode  = 0;
                 g_hunt_state          = HUNT_STATE_STANDBY;
                 g_hunt_no_target_tick = 0;
@@ -2454,7 +2468,7 @@ void app_radar_task_power_schedule(void)
                 radar_play_record_end();  // 记录为未完成
                 radar_working_mode_set(0);
                 StepMotor_StopAll();
-                gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+                app_radar_status_led_set(0);
                 app_radar_power_switch(0);
                 g_radar_hold_on_mode  = 0;
                 g_hunt_state          = HUNT_STATE_PREY_ZONE_SLEEP;
@@ -2483,7 +2497,7 @@ void app_radar_task_power_schedule(void)
             StepMotor_GimbalSetSpeedUs(12000);
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
-            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+            app_radar_status_led_set(1);
             return;
         }
 
@@ -2522,7 +2536,7 @@ void app_radar_task_power_schedule(void)
             RadarSessionOnMotion(now_tick);
             radar_play_record_start();  // 启动新狩猎记录
             radar_working_mode_set(1);
-            gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+            app_radar_status_led_set(1);
         }
         return;
     }
@@ -2535,7 +2549,7 @@ void app_radar_task_power_schedule(void)
         }
         app_radar_power_switch(0);
         g_radar_hold_on_mode = 0;
-        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+        app_radar_status_led_set(0);
 
         if (clock_time_exceed(g_hunt_prey_zone_tick, HUNT_PREY_ZONE_SLEEP_DUR_US))
         {
@@ -2568,7 +2582,7 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 停留10秒: 检查目标是否进入猎物点半径 -------- */
     case HUNT_STATE_CELEBRATE: {
-        gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+        app_radar_status_led_set(1);
         // 激光停在猎物点, 电机已停止
         StepMotor_StopAll();
 
@@ -2601,7 +2615,7 @@ void app_radar_task_power_schedule(void)
                       g_hunt_count,
                       g_hunt_total_active_ms,
                       (u32)g_hunt_duration_s * (u32)g_hunt_count);
-            gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+            app_radar_status_led_set(0);
 
             // 判断是否进入休眠
             if (g_hunt_completed >= g_hunt_count)
@@ -2625,7 +2639,7 @@ void app_radar_task_power_schedule(void)
     case HUNT_STATE_SLEEP: {
         app_radar_power_switch(0);
         g_radar_hold_on_mode = 0;
-        gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
+        app_radar_status_led_set(0);
 
         if (clock_time_exceed(g_hunt_sleep_end_tick, hunt_sleep_duration_us()))
         {

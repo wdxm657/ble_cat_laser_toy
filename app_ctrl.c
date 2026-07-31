@@ -1470,16 +1470,52 @@ static int app_ctrl_handle_device_reboot(u8 seq, u8 *payload, u16 len)
 // ----------------------- handler: assembly factory test enter -----------------------
 static int app_ctrl_handle_factory_test_enter(u8 seq, u8 *payload, u16 len)
 {
-    if (len != 0)
+    if (len == 0)
+    {
+        u8 rsp[1] = {CTRL_STATUS_OK};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
+        app_factory_test_enter();
+        return 0;
+    }
+
+    if (len != 2)
     {
         u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
         app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
         return -1;
     }
 
-    u8 rsp[1] = {CTRL_STATUS_OK};
+    if (!app_factory_test_is_active())
+    {
+        u8 rsp[1] = {CTRL_STATUS_REJECT_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+
+    u8 module = payload[0];
+    u8 enable = payload[1] ? 1 : 0;
+
+    switch (module)
+    {
+    case CTRL_FACTORY_TEST_MODULE_RADAR:
+        app_factory_test_set_radar(enable);
+        break;
+    case CTRL_FACTORY_TEST_MODULE_MOTOR:
+        app_factory_test_set_motor(enable);
+        break;
+    case CTRL_FACTORY_TEST_MODULE_LASER:
+        app_factory_test_set_laser(enable);
+        break;
+    default:
+    {
+        u8 rsp[1] = {CTRL_STATUS_PARAM_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+    }
+
+    u8 rsp[3] = {CTRL_STATUS_OK, module, enable};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_FACTORY_TEST_ENTER, seq, rsp, sizeof(rsp));
-    app_factory_test_enter();
     return 0;
 }
 

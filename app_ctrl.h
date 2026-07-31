@@ -60,7 +60,7 @@ enum{
     CTRL_CMD_OTA_STATUS_EVENT         = 0x5C,
     /** APP -> device: request a soft reboot (MCU reset). */
     CTRL_CMD_DEVICE_REBOOT            = 0x5A,
-    CTRL_CMD_FACTORY_TEST_ENTER       = 0x5D,   // enter assembly factory test mode until reboot
+    CTRL_CMD_FACTORY_TEST_ENTER       = 0x5D,   // enter factory test mode / control test modules
 
     // 狩猎游戏设置
     /** 进入狩猎设置模式 */
@@ -104,6 +104,12 @@ enum{
     CTRL_REASON_POWER_ON_COOLDOWN_30S  = 0x02,  // 30s 冷却中，禁止开机
     CTRL_REASON_POWER_OFF_COOLDOWN_30S = 0x03,  // 30s 冷却中，禁止关机
     CTRL_REASON_BATTERY_TEMP_HIGH      = 0x04,  // 电池温度过高，禁止开机/强制关机
+};
+
+enum{
+    CTRL_FACTORY_TEST_MODULE_RADAR = 0x01,
+    CTRL_FACTORY_TEST_MODULE_MOTOR = 0x02,
+    CTRL_FACTORY_TEST_MODULE_LASER = 0x03,
 };
 
 // ATT value max length for RX/TX.

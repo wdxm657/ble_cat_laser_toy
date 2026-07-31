@@ -58,6 +58,10 @@ typedef enum
     MOTOR_RESET_WAIT_PAN_LEFT,
     MOTOR_RESET_PAN_RIGHT,
     MOTOR_RESET_WAIT_PAN_RIGHT,
+    MOTOR_RESET_PAN_RIGHT_1,
+    MOTOR_RESET_WAIT_PAN_RIGHT_1,
+    MOTOR_RESET_PAN_LEFT_1,
+    MOTOR_RESET_WAIT_PAN_LEFT_1,
     MOTOR_RESET_PAN_SET_ZERO,
     MOTOR_RESET_DONE,
 } step_motor_reset_state_e;
@@ -451,7 +455,7 @@ void StepMotor_GimbalResetTask(void)
         break;
 
     case MOTOR_RESET_TILT_UP:
-        LOG_D("[MOTOR] reset tilt up to -105");
+        LOG_D("[MOTOR] reset tilt up to -90");
         StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-90), 1);
         g_reset_state = MOTOR_RESET_WAIT_TILT_UP;
         break;
@@ -483,12 +487,42 @@ void StepMotor_GimbalResetTask(void)
         break;
 
     case MOTOR_RESET_PAN_RIGHT:
-        LOG_D("[MOTOR] reset pan right to -100");
+        LOG_D("[MOTOR] reset pan right to -97");
         StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-97), 1);
         g_reset_state = MOTOR_RESET_WAIT_PAN_RIGHT;
         break;
 
     case MOTOR_RESET_WAIT_PAN_RIGHT:
+        if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN))
+        {
+            if (app_factory_test_is_active())
+            {
+                g_reset_state = MOTOR_RESET_PAN_RIGHT_1;
+            }else{
+                g_reset_state = MOTOR_RESET_PAN_SET_ZERO;
+            }
+        }
+        break;
+
+    case MOTOR_RESET_PAN_RIGHT_1:
+        LOG_D("[MOTOR] reset pan right to 0");
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(0), 1);
+        g_reset_state = MOTOR_RESET_WAIT_PAN_RIGHT_1;
+        break;
+
+    case MOTOR_RESET_WAIT_PAN_RIGHT_1:
+        if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN))
+        {
+            g_reset_state = MOTOR_RESET_PAN_LEFT_1;
+        }
+        break;
+
+    case MOTOR_RESET_PAN_LEFT_1:
+        LOG_D("[MOTOR] reset pan left to -97");
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-97), 1);
+        g_reset_state = MOTOR_RESET_WAIT_PAN_LEFT_1;
+        break;
+    case MOTOR_RESET_WAIT_PAN_LEFT_1:
         if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN))
         {
             g_reset_state = MOTOR_RESET_PAN_SET_ZERO;

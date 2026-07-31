@@ -53,6 +53,9 @@ void app_set_power_state(u8 on);
 u8 app_get_power_state(void);
 void app_factory_test_enter(void);
 u8 app_factory_test_is_active(void);
+void app_factory_test_set_radar(u8 on);
+void app_factory_test_set_motor(u8 on);
+void app_factory_test_set_laser(u8 on);
 void app_get_flash_uid(u8 *uid, u8 len);
 
 /**

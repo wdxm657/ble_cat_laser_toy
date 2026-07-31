@@ -64,25 +64,35 @@ static u8                            g_app_power_on              = 0;
 _attribute_data_retention_ static u8 s_bat_percent_last_reported = 0xFF;
 
 static u8 s_factory_test_mode = 0;
+static u8 s_factory_test_radar_on = 0;
+static u8 s_factory_test_motor_on = 0;
+static u8 s_factory_test_laser_on = 0;
 
 static void factory_test_prepare_io(void)
 {
     gpio_set_func(LEIDA_SWITCH, AS_GPIO);
     gpio_set_input_en(LEIDA_SWITCH, 0);
     gpio_set_output_en(LEIDA_SWITCH, 1);
-    gpio_write(LEIDA_SWITCH, 1);
+    gpio_write(LEIDA_SWITCH, 0);
 
     gpio_set_func(GPIO_LED_WHITE, AS_GPIO);
     gpio_set_input_en(GPIO_LED_WHITE, 0);
     gpio_set_output_en(GPIO_LED_WHITE, 1);
-    gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
+    gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
 }
 
 void app_set_power_state(u8 on)
 {
     g_app_power_on = on ? 1 : 0;
     gpio_write(Set_Charg_I, !on);
-    app_radar_set_enabled(g_app_power_on);
+    if (!s_factory_test_mode)
+    {
+        app_radar_set_enabled(g_app_power_on);
+    }
+    else if (!g_app_power_on)
+    {
+        app_radar_set_enabled(0);
+    }
     if (!g_app_power_on)
     {
         StepMotor_GimbalResetStart();
@@ -97,18 +107,55 @@ u8 app_get_power_state(void)
 void app_factory_test_enter(void)
 {
     s_factory_test_mode = 1;
+    s_factory_test_radar_on = 0;
+    s_factory_test_motor_on = 0;
+    s_factory_test_laser_on = 0;
     factory_test_prepare_io();
-    app_set_power_state(1);
-    factory_test_prepare_io();
-#if (UI_STEP_MOTOR_ENABLE)
-    StepMotor_GimbalResetStart();
-#endif
+    // app_set_power_state(0);
+    app_factory_test_set_radar(0);
+    app_factory_test_set_motor(0);
+    app_factory_test_set_laser(0);
     BLE_LOG_D("[APP][FACTORY] enter test mode");
 }
 
 u8 app_factory_test_is_active(void)
 {
     return s_factory_test_mode;
+}
+
+void app_factory_test_set_radar(u8 on)
+{
+    s_factory_test_radar_on = on ? 1 : 0;
+    if (!s_factory_test_radar_on)
+    {
+        app_radar_uart_deinit();
+    }else{
+        app_radar_uart_init();
+    }
+    BLE_LOG_D("[APP][FACTORY] radar=%d", s_factory_test_radar_on);
+}
+
+void app_factory_test_set_motor(u8 on)
+{
+    s_factory_test_motor_on = on ? 1 : 0;
+#if (UI_STEP_MOTOR_ENABLE)
+    if (s_factory_test_motor_on)
+    {
+        StepMotor_GimbalResetStart();
+    }
+    else
+    {
+        StepMotor_StopAll();
+    }
+#endif
+    BLE_LOG_D("[APP][FACTORY] motor=%d", s_factory_test_motor_on);
+}
+
+void app_factory_test_set_laser(u8 on)
+{
+    s_factory_test_laser_on = on ? 1 : 0;
+    gpio_write(GPIO_LED_WHITE, s_factory_test_laser_on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    BLE_LOG_D("[APP][FACTORY] laser=%d", s_factory_test_laser_on);
 }
 
 u8 g_flash_uid[16];
@@ -814,7 +861,7 @@ _attribute_no_inline_ void user_init_normal(void)
     gpio_write(Set_Charg_I, 1);
 #endif
 #ifdef UI_RADAR_ENABLE
-    // app_radar_uart_init();
+    app_radar_uart_init();
     app_radar_init();
     app_ctrl_init();
 #endif
@@ -1183,16 +1230,10 @@ void main_loop(void)
             g_time_tick_last = clock_time();
             app_radar_on_time_tick();
         }
-        factory_test_prepare_io();
-        if (!app_radar_is_power_on())
-        {
-            app_set_power_state(1);
-        }
-        if (app_radar_is_power_on())
+        if (s_factory_test_radar_on)
         {
             app_radar_parse_and_report_frame();
         }
-        factory_test_prepare_io();
 #endif
 #if (UI_STEP_MOTOR_ENABLE)
         StepMotor_GimbalResetTask();
