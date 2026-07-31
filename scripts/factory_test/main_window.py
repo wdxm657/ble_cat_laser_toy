@@ -1,375 +1,28 @@
-# -*- coding: utf-8 -*-
-"""
-Assembly factory BLE test tool for W2M laser toy devices.
+﻿# -*- coding: utf-8 -*-
+"""Main PyQt window for W2MLaserTOY factory test."""
 
-Dependencies:
-    pip install PyQt5 bleak openpyxl
-
-This tool intentionally does not auto-connect or auto-reconnect. The operator
-scans, selects a device, connects manually, then sends the test or reboot
-command.
-"""
-
-import asyncio
 import csv
 import datetime as _dt
 import os
-import sys
-import threading
-import uuid
-from dataclasses import dataclass
-from typing import Dict, Optional, Set
+from typing import Dict, Optional
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
-try:
-    from bleak import BleakClient, BleakScanner
-except Exception as ex:  # pragma: no cover - shown in UI at runtime
-    BleakClient = None
-    BleakScanner = None
-    BLEAK_IMPORT_ERROR = ex
-else:
-    BLEAK_IMPORT_ERROR = None
-
-try:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font, PatternFill
-except Exception as ex:  # pragma: no cover - shown in UI at runtime
-    Workbook = None
-    OPENPYXL_IMPORT_ERROR = ex
-else:
-    OPENPYXL_IMPORT_ERROR = None
-
-
-CTRL_PROTO_VERSION = 0x01
-CTRL_MSG_TYPE_CMD = 0x01
-CTRL_MSG_TYPE_RSP = 0x02
-CTRL_MSG_TYPE_EVENT = 0x03
-
-CTRL_STATUS_TEXT = {
-    0x00: "OK",
-    0x01: "LEN_ERROR",
-    0x02: "UNSUPPORTED_CMD",
-    0x03: "PARAM_ERROR",
-    0x04: "INTERNAL_ERROR",
-    0x05: "REJECT_ERROR",
-}
-
-CTRL_CMD_DEVICE_REBOOT = 0x5A
-CTRL_CMD_FACTORY_TEST_ENTER = 0x5D
-CTRL_FACTORY_TEST_MODULE_RADAR = 0x01
-CTRL_FACTORY_TEST_MODULE_MOTOR = 0x02
-CTRL_FACTORY_TEST_MODULE_LASER = 0x03
-
-RESULT_HEADERS = [
-    "时间",
-    "设备名称",
-    "MAC/地址",
-    "MANUFACTURER_DATA",
-    "雷达测试",
-    "电机测试",
-    "激光灯测试",
-    "结果",
-]
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_RESULT_CSV = os.path.join(SCRIPT_DIR, "factory_test_results.csv")
-DEFAULT_RESULT_XLSX = os.path.join(SCRIPT_DIR, "factory_test_results.xlsx")
-
-CTRL_RX_RAW_BYTES = bytes(
-    [0x01, 0xA0, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00]
+from .ble_worker import BleWorker
+from .camera_dialog import CameraQrScanDialog
+from .constants import (
+    CTRL_CMD_FACTORY_TEST_ENTER,
+    CTRL_FACTORY_TEST_MODULE_LASER,
+    CTRL_FACTORY_TEST_MODULE_MOTOR,
+    CTRL_FACTORY_TEST_MODULE_RADAR,
+    CTRL_MSG_TYPE_RSP,
+    DEFAULT_RESULT_CSV,
+    DEFAULT_RESULT_XLSX,
+    RESULT_HEADERS,
 )
-CTRL_TX_RAW_BYTES = bytes(
-    [0x02, 0xA0, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00]
-)
-CTRL_LOG_RAW_BYTES = bytes(
-    [0x03, 0xA0, 0x0D, 0x0C, 0x0B, 0x0A, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00]
-)
-
-
-def _uuid_candidates(raw: bytes) -> Set[int]:
-    return {uuid.UUID(bytes=raw).int, uuid.UUID(bytes=raw[::-1]).int}
-
-
-def _char_uuid_int(char) -> Optional[int]:
-    try:
-        return uuid.UUID(str(char.uuid)).int
-    except Exception:
-        return None
-
-
-def _find_characteristic(client, raw_uuid: bytes):
-    targets = _uuid_candidates(raw_uuid)
-    for service in client.services:
-        for char in service.characteristics:
-            if _char_uuid_int(char) in targets:
-                return char
-    return None
-
-
-def _format_manufacturer_data(mfr: Dict[int, bytes]) -> str:
-    if not mfr:
-        return ""
-    parts = []
-    for company_id, data in sorted(mfr.items()):
-        # Bleak exposes the first two manufacturer bytes as a little-endian
-        # company_id. Rebuild the original advertising payload byte order.
-        raw = int(company_id).to_bytes(2, "little") + bytes(data)
-        parts.append("0x" + raw.hex().upper())
-    return "; ".join(parts)
-
-
-def _build_ctrl_cmd(cmd_id: int, seq: int, payload: bytes = b"") -> bytes:
-    plen = len(payload)
-    return bytes(
-        [
-            CTRL_PROTO_VERSION,
-            CTRL_MSG_TYPE_CMD,
-            cmd_id & 0xFF,
-            seq & 0xFF,
-            plen & 0xFF,
-            (plen >> 8) & 0xFF,
-        ]
-    ) + payload
-
-
-def _decode_ctrl_frame(data: bytes) -> Dict[str, object]:
-    if len(data) < 6:
-        return {
-            "short": True,
-            "raw": data,
-            "text": f"CTRL short: {data.hex(' ').upper()}",
-        }
-    version, msg_type, cmd_id, seq = data[0], data[1], data[2], data[3]
-    payload_len = data[4] | (data[5] << 8)
-    payload = data[6 : 6 + payload_len]
-    type_name = {CTRL_MSG_TYPE_CMD: "CMD", CTRL_MSG_TYPE_RSP: "RSP", CTRL_MSG_TYPE_EVENT: "EVT"}.get(msg_type, f"0x{msg_type:02X}")
-    status = None
-    if msg_type == CTRL_MSG_TYPE_RSP and payload:
-        status = CTRL_STATUS_TEXT.get(payload[0], f"0x{payload[0]:02X}")
-    return {
-        "short": False,
-        "raw": data,
-        "version": version,
-        "msg_type": msg_type,
-        "cmd_id": cmd_id,
-        "seq": seq,
-        "payload_len": payload_len,
-        "payload": payload,
-        "type_name": type_name,
-        "status": status,
-        "text": f"[{type_name}] cmd=0x{cmd_id:02X} seq={seq} len={payload_len}"
-        + (f" status={status}" if status is not None else "")
-        + f" payload={payload.hex(' ').upper()}",
-    }
-
-
-@dataclass
-class ScanDevice:
-    name: str
-    address: str
-    rssi: Optional[int]
-    manufacturer_data: str
-
-
-class BleWorker(QtCore.QObject):
-    devices_changed = QtCore.pyqtSignal(list)
-    log_line = QtCore.pyqtSignal(str)
-    firmware_log_line = QtCore.pyqtSignal(str)
-    status_changed = QtCore.pyqtSignal(str, bool)
-    ctrl_frame = QtCore.pyqtSignal(dict)
-
-    def __init__(self):
-        super().__init__()
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
-        self._thread.start()
-        self._client = None
-        self._rx_char = None
-        self._seq = 0
-        self._log_buf = bytearray()
-        self._devices: Dict[str, ScanDevice] = {}
-
-    def _run_loop(self):
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
-
-    def stop(self):
-        try:
-            self.disconnect()
-        finally:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-
-    def _schedule(self, coro):
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
-
-    def scan(self, timeout_s: float = 1.0):
-        self._schedule(self._scan(timeout_s))
-
-    def connect(self, address: str):
-        self._schedule(self._connect(address))
-
-    def disconnect(self):
-        self._schedule(self._disconnect())
-
-    def send_factory_test_enter(self):
-        self._schedule(self._send_cmd(CTRL_CMD_FACTORY_TEST_ENTER, '进入测试模式'))
-
-    def send_factory_test_module(self, module: int, enable: bool):
-        labels = {
-            CTRL_FACTORY_TEST_MODULE_RADAR: '雷达',
-            CTRL_FACTORY_TEST_MODULE_MOTOR: '电机',
-            CTRL_FACTORY_TEST_MODULE_LASER: '激光灯',
-        }
-        label = labels.get(module, f'模块0x{module:02X}')
-        suffix = '开启' if enable else '关闭'
-        payload = bytes([module & 0xFF, 1 if enable else 0])
-        self._schedule(self._send_cmd(CTRL_CMD_FACTORY_TEST_ENTER, f'{label}{suffix}', payload))
-
-    def send_reboot(self):
-        self._schedule(self._send_cmd(CTRL_CMD_DEVICE_REBOOT, '重启设备'))
-
-    async def _scan(self, timeout_s: float):
-        if BLEAK_IMPORT_ERROR is not None:
-            self.log_line.emit(f'Bleak 未安装或导入失败: {BLEAK_IMPORT_ERROR}')
-            return
-
-        self.log_line.emit(f'开始扫描 W2MLaserTOY 设备，{timeout_s:.0f}s...')
-        found: Dict[str, ScanDevice] = {}
-
-        def on_adv(device, adv):
-            name = adv.local_name or getattr(device, 'name', None) or ''
-            if not name.startswith('W2MLaserTOY'):
-                return
-            rssi = getattr(adv, 'rssi', None)
-            if rssi is None:
-                rssi = getattr(device, 'rssi', None)
-            found[device.address] = ScanDevice(
-                name=name,
-                address=device.address,
-                rssi=rssi,
-                manufacturer_data=_format_manufacturer_data(getattr(adv, 'manufacturer_data', {}) or {}),
-            )
-            self._devices = dict(found)
-            self.devices_changed.emit(list(found.values()))
-
-        scanner = BleakScanner(detection_callback=on_adv)
-        try:
-            await scanner.start()
-            await asyncio.sleep(timeout_s)
-            await scanner.stop()
-        except Exception as ex:
-            self.log_line.emit(f'扫描失败: {ex}')
-            return
-
-        self._devices = dict(found)
-        self.devices_changed.emit(list(found.values()))
-        self.log_line.emit(f'扫描完成，找到 {len(found)} 个 W2MLaserTOY 设备')
-
-    async def _connect(self, address: str):
-        if BLEAK_IMPORT_ERROR is not None:
-            self.log_line.emit(f'Bleak 未安装或导入失败: {BLEAK_IMPORT_ERROR}')
-            return
-        if not address:
-            self.log_line.emit('请先选择设备')
-            return
-        if self._client and self._client.is_connected:
-            self.log_line.emit('已连接，请先断开')
-            return
-
-        self.log_line.emit(f'连接中: {address}')
-
-        def on_disconnect(_client):
-            self._client = None
-            self._rx_char = None
-            self.status_changed.emit('已断开', False)
-            self.log_line.emit('设备已断开')
-
-        client = BleakClient(address, disconnected_callback=on_disconnect)
-        try:
-            await client.connect()
-            get_services = getattr(client, 'get_services', None)
-            if get_services:
-                out = get_services()
-                if asyncio.iscoroutine(out):
-                    await out
-            else:
-                _ = client.services
-
-            self._rx_char = _find_characteristic(client, CTRL_RX_RAW_BYTES)
-            tx_char = _find_characteristic(client, CTRL_TX_RAW_BYTES)
-            log_char = _find_characteristic(client, CTRL_LOG_RAW_BYTES)
-            if self._rx_char is None:
-                raise RuntimeError('未找到 Ctrl RX 写特征')
-            if tx_char is not None:
-                await client.start_notify(tx_char, self._on_ctrl_notify)
-            if log_char is not None:
-                await client.start_notify(log_char, self._on_log_notify)
-            else:
-                self.log_line.emit('未找到 BLE_LOG_D 日志特征，仅显示控制响应')
-
-            self._client = client
-            self.status_changed.emit(f'已连接 {address}', True)
-            self.log_line.emit('连接成功')
-        except Exception as ex:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-            self._client = None
-            self._rx_char = None
-            self.status_changed.emit('连接失败', False)
-            self.log_line.emit(f'连接失败: {ex}')
-
-    async def _disconnect(self):
-        client = self._client
-        self._client = None
-        self._rx_char = None
-        if client is None:
-            self.status_changed.emit('未连接', False)
-            return
-        try:
-            if client.is_connected:
-                await client.disconnect()
-        except Exception as ex:
-            self.log_line.emit(f'断开失败: {ex}')
-            return
-        self.status_changed.emit('已断开', False)
-        self.log_line.emit('已手动断开')
-
-    async def _send_cmd(self, cmd_id: int, label: str, payload: bytes = b''):
-        client = self._client
-        if client is None or not client.is_connected or self._rx_char is None:
-            self.log_line.emit('未连接，无法发送命令')
-            return
-        seq = self._seq & 0xFF
-        self._seq = (self._seq + 1) & 0xFF
-        frame = _build_ctrl_cmd(cmd_id, seq, payload)
-        try:
-            await client.write_gatt_char(self._rx_char, frame, response=False)
-            self.log_line.emit(f'已发送 {label}: cmd=0x{cmd_id:02X} seq={seq}')
-        except Exception as ex:
-            self.log_line.emit(f'发送失败 {label}: {ex}')
-
-    def _on_ctrl_notify(self, _sender, data: bytearray):
-        frame = _decode_ctrl_frame(bytes(data))
-        self.ctrl_frame.emit(frame)
-        self.log_line.emit(frame['text'])
-
-    def _on_log_notify(self, _sender, data: bytearray):
-        self._log_buf.extend(bytes(data))
-        while b'\n' in self._log_buf:
-            idx = self._log_buf.index(0x0A)
-            raw = bytes(self._log_buf[:idx]).rstrip(b'\r')
-            del self._log_buf[: idx + 1]
-            if raw:
-                self.firmware_log_line.emit(raw.decode('utf-8', errors='replace'))
-        if len(self._log_buf) > 512:
-            raw = bytes(self._log_buf)
-            self._log_buf.clear()
-            self.firmware_log_line.emit(raw.decode('utf-8', errors='replace'))
-
+from .deps import BLEAK_IMPORT_ERROR, OPENPYXL_IMPORT_ERROR, Font, PatternFill, Workbook
+from .models import ScanDevice
 
 class FactoryTestWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -387,6 +40,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.ui_font_size = 20
         self.result_csv_path = DEFAULT_RESULT_CSV
         self.result_xlsx_path = DEFAULT_RESULT_XLSX
+        self.qr_dialog = None
 
         self.setWindowTitle('W2MLaserTOY 组装工厂测试工具')
         self.resize(1280, 860)
@@ -604,11 +258,13 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         device_layout = QtWidgets.QVBoxLayout(device_box)
         scan_row = QtWidgets.QHBoxLayout()
         self.scan_btn = QtWidgets.QPushButton('扫描 W2MLaserTOY 设备')
+        self.scan_qr_btn = QtWidgets.QPushButton('摄像头扫码')
         self.device_combo = QtWidgets.QComboBox()
         self.device_combo.setMinimumWidth(380)
         self.connect_btn = QtWidgets.QPushButton('连接')
         self.disconnect_btn = QtWidgets.QPushButton('断开')
         scan_row.addWidget(self.scan_btn)
+        scan_row.addWidget(self.scan_qr_btn)
         scan_row.addWidget(self.device_combo, 1)
         scan_row.addWidget(self.connect_btn)
         scan_row.addWidget(self.disconnect_btn)
@@ -635,6 +291,8 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.device_tree.setRootIsDecorated(False)
         self.device_tree.setAlternatingRowColors(True)
         self.device_tree.setUniformRowHeights(True)
+        self.device_tree.headerItem().setTextAlignment(2, Qt.AlignCenter)
+        self.device_tree.headerItem().setTextAlignment(3, Qt.AlignCenter)
         self.device_tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         self.device_tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
         self.device_tree.header().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
@@ -649,12 +307,16 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.start_test_btn = QtWidgets.QPushButton('开始测试')
         self.reboot_btn = QtWidgets.QPushButton('重启设备')
         self.clear_log_btn = QtWidgets.QPushButton('清空日志')
+        self.criteria_help_btn = QtWidgets.QPushButton('测试结果判据说明')
+        self.usage_help_btn = QtWidgets.QPushButton('使用说明')
         self.start_test_btn.setMinimumHeight(40)
         self.reboot_btn.setMinimumHeight(40)
         action_row.addWidget(self.start_test_btn)
         action_row.addWidget(self.reboot_btn)
         action_row.addStretch(1)
         action_row.addWidget(self.clear_log_btn)
+        action_row.addWidget(self.criteria_help_btn)
+        action_row.addWidget(self.usage_help_btn)
         action_box_layout.addLayout(action_row)
         root.addWidget(action_box)
 
@@ -761,11 +423,14 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
 
     def _connect_signals(self):
         self.scan_btn.clicked.connect(lambda: self.worker.scan())
+        self.scan_qr_btn.clicked.connect(self._on_scan_qr_clicked)
         self.connect_btn.clicked.connect(self._on_connect_clicked)
         self.disconnect_btn.clicked.connect(self.worker.disconnect)
         self.start_test_btn.clicked.connect(self._on_start_test_clicked)
         self.reboot_btn.clicked.connect(self.worker.send_reboot)
         self.clear_log_btn.clicked.connect(self._clear_logs)
+        self.criteria_help_btn.clicked.connect(self._show_criteria_help)
+        self.usage_help_btn.clicked.connect(self._show_usage_help)
         self.device_tree.itemDoubleClicked.connect(self._on_device_double_clicked)
         self.font_size_spin.valueChanged.connect(self._on_font_size_changed)
 
@@ -802,6 +467,29 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         idx = self.device_combo.findData(address)
         if idx >= 0:
             self.device_combo.setCurrentIndex(idx)
+
+    def _on_scan_qr_clicked(self):
+        if self.qr_dialog is not None:
+            self.qr_dialog.close()
+        self.qr_dialog = CameraQrScanDialog(self)
+        self.qr_dialog.device_matched.connect(self._on_qr_device_matched)
+        self.qr_dialog.finished.connect(lambda _result: setattr(self, 'qr_dialog', None))
+        self.qr_dialog.update_devices(list(self.devices.values()))
+        self.qr_dialog.show()
+        self.worker.scan(3.0)
+        self._append_log('已打开摄像头扫码窗口，并开始扫描蓝牙设备')
+
+    def _on_qr_device_matched(self, address: str, qr_value: str):
+        idx = self.device_combo.findData(address)
+        if idx >= 0:
+            self.device_combo.setCurrentIndex(idx)
+        for row_idx in range(self.device_tree.topLevelItemCount()):
+            item = self.device_tree.topLevelItem(row_idx)
+            if item.data(0, Qt.UserRole) == address:
+                self.device_tree.setCurrentItem(item)
+                self.device_tree.scrollToItem(item)
+                break
+        self._append_log(f'二维码匹配到设备: {address}, MANUFACTURER_DATA={qr_value}')
 
     def _on_start_test_clicked(self):
         self.factory_ready = False
@@ -860,6 +548,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.device_combo.blockSignals(False)
 
         self.device_tree.clear()
+        mono_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
         for row_idx, dev in enumerate(devices):
             tested = '已测' if dev.manufacturer_data and dev.manufacturer_data in self.tested_mfr_set else '未测'
             item = QtWidgets.QTreeWidgetItem([
@@ -878,10 +567,23 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
                 item.setForeground(3, QtGui.QBrush(QtGui.QColor('#86efac')))
             else:
                 item.setForeground(3, QtGui.QBrush(QtGui.QColor('#fbbf24')))
+            item.setFont(1, mono_font)
+            item.setFont(4, mono_font)
+            item.setTextAlignment(0, Qt.AlignVCenter | Qt.AlignLeft)
+            item.setTextAlignment(1, Qt.AlignVCenter | Qt.AlignLeft)
+            item.setTextAlignment(2, Qt.AlignCenter)
+            item.setTextAlignment(3, Qt.AlignCenter)
+            item.setTextAlignment(4, Qt.AlignVCenter | Qt.AlignLeft)
             item.setData(0, Qt.UserRole, dev.address)
             self.device_tree.addTopLevelItem(item)
         if self.device_combo.count() > 0 and self.device_combo.currentIndex() < 0:
             self.device_combo.setCurrentIndex(0)
+        self.device_tree.resizeColumnToContents(0)
+        self.device_tree.resizeColumnToContents(1)
+        self.device_tree.resizeColumnToContents(2)
+        self.device_tree.resizeColumnToContents(3)
+        if self.qr_dialog is not None:
+            self.qr_dialog.update_devices(devices)
 
     def _on_status_changed(self, text: str, connected: bool):
         self.status_label.setText(text)
@@ -895,6 +597,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
 
     def _set_connected(self, connected: bool):
         self.scan_btn.setEnabled(not connected)
+        self.scan_qr_btn.setEnabled(not connected)
         self.device_combo.setEnabled(not connected)
         self.device_tree.setEnabled(not connected)
         self.connect_btn.setEnabled(not connected)
@@ -1122,6 +825,52 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
             return
         self._append_log(f'CSV 已转换为 Excel: {self.result_xlsx_path}')
 
+    def _show_usage_help(self):
+        self._show_text_dialog(
+            '使用说明',
+            """1. 选中设备
+   1.1. 点击扫描设备按钮后，在设备预览框中双击选择需要测试的设备。
+   1.2. 点击摄像头扫码按钮识别设备二维码，并双击匹配为√的设备。
+2. 选中设备后点击连接按钮。
+3. 点击开始测试按钮即可开始测试。
+4. 测试完成后，在测试结果中确认结果并将测试结果保存。
+5. CSV 转 EXCEL 若有 EXCEL 需要则点击即可。""",
+        )
+
+    def _show_criteria_help(self):
+        self._show_text_dialog(
+            '测试结果判据说明',
+            """雷达成功判据：
+点击雷达开启按钮约 1 秒后，固件上传日志中出现 x=...，y=... 即代表成功，雷达关闭按钮可不使用。
+
+电机成功判据：
+点击电机开启按钮后，电机下转 90°、上转 90°、左转 90°、右转 180°、左转 90°，整个流程走完即可代表电机测试成功，电机关闭按钮可不使用。
+
+激光成功判据：
+点击激光灯开启或关闭按钮后，激光灯对应开关即可代表测试成功。""",
+        )
+
+    def _show_text_dialog(self, title: str, text: str):
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(760, 520)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        layout.setContentsMargins(12, 12, 12, 12)
+        text_edit = QtWidgets.QPlainTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(text)
+        text_edit.setStyleSheet(
+            'background: #0b1220; color: #e5e7eb; border: 1px solid #334155; border-radius: 4px; padding: 8px;'
+        )
+        close_btn = QtWidgets.QPushButton('关闭')
+        close_btn.clicked.connect(dialog.accept)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(close_btn)
+        layout.addWidget(text_edit, 1)
+        layout.addLayout(btn_row)
+        dialog.exec_()
+
     def _clear_logs(self):
         self.host_log_text.clear()
         self.firmware_log_text.clear()
@@ -1135,17 +884,12 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.firmware_log_text.appendPlainText(f'[{now}] {line}')
 
     def closeEvent(self, event):
+        if self.qr_dialog is not None:
+            self.qr_dialog.close()
+            self.qr_dialog = None
         self.worker.stop()
         super().closeEvent(event)
 
 
 
-def main():
-    app = QtWidgets.QApplication(sys.argv)
-    win = FactoryTestWindow()
-    win.show()
-    sys.exit(app.exec_())
 
-
-if __name__ == "__main__":
-    main()

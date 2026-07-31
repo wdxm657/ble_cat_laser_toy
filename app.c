@@ -1238,6 +1238,10 @@ void main_loop(void)
 #if (UI_STEP_MOTOR_ENABLE)
         StepMotor_GimbalResetTask();
 #endif
+#if (UI_LED_ENABLE)
+    app_ui_power_led_task();
+    app_ui_led_task();
+#endif
         blt_pm_proc();
         return;
     }
