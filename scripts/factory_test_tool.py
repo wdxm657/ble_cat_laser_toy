@@ -384,7 +384,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
             'motor': None,
             'laser': None,
         }
-        self.ui_font_size = 14
+        self.ui_font_size = 20
         self.result_csv_path = DEFAULT_RESULT_CSV
         self.result_xlsx_path = DEFAULT_RESULT_XLSX
 
@@ -621,7 +621,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         font_row.setSpacing(8)
         self.font_size_label = QtWidgets.QLabel('字体大小')
         self.font_size_spin = QtWidgets.QSpinBox()
-        self.font_size_spin.setRange(11, 20)
+        self.font_size_spin.setRange(15, 25)
         self.font_size_spin.setValue(self.ui_font_size)
         self.font_size_spin.setSuffix(' px')
         self.font_size_spin.setFixedWidth(96)
