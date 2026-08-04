@@ -696,7 +696,7 @@ void app_adc_dbg_poll(void)
         {
             last_s_bat_percent = s_bat_percent;
             // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
-            BLE_LOG_D("ntc=%d NTC_R=%d(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
+            // BLE_LOG_D("ntc=%d NTC_R=%d(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
             s_bat_flash_save_tick = now;
         }
         app_adc_dbg_temp_charge_manage();
