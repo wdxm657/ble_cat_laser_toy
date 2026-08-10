@@ -95,7 +95,6 @@ static void app_ui_led_all_off(void)
 #if (UI_LED_ENABLE)
     gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
     gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
-    // gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
     gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
 #endif
 }

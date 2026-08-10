@@ -1,5 +1,5 @@
 Altium Designer Pick and Place Locations
-C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v5\Pick Place for AICat V1.5 Ë«Ãæ°å °åºñ1.6mm.txt
+C:\Users\JampMar\Desktop\code\qiuqiu\tc_ble_simple_sdk_B80_V3.4.2.2_P10\b80_ble_sdk\vendor\ble_cat_laser_toy\hardware\v5\Pick Place for AICat V1.5 Ë«ï¿½ï¿½ï¿½ ï¿½ï¿½ï¿½1.6mm.txt
 
 ========================================================================================================================
 File Design Information:
@@ -17,44 +17,44 @@ C29        "22uF 10v"            TopLayer    0603_C                             
 P1         DEBUG                 TopLayer    SIP4-2.54                                           2365.000      2782.000      270      "Header, 4-Pin"               
 BAT        BX-PH2.0-3PWT         TopLayer    HDR-TH_3P-P2.50_ZX-XH2.54-3PWZ                      3915.470      3734.812      180      ""                            
 C1         0.1uF                 TopLayer    0603_C                                              4023.001      3079.000      180      Capacitor                     
-C2         1uf                   TopLayer    0603_C                                              3387.000      3062.001      270      ÎÞ¼«µçÈÝ                          
+C2         1uf                   TopLayer    0603_C                                              3387.000      3062.001      270      ï¿½Þ¼ï¿½ï¿½ï¿½ï¿½ï¿½                          
 C4         10uF                  TopLayer    0603_C                                              3157.000      3030.999      90       Capacitor                     
 C5         10uf                  TopLayer    0603_C                                              3928.000      3548.001      270      Capacitor                     
 C6         10UF                  TopLayer    0603_c                                              3879.001      3262.000      180      ""                            
 C9         100nF                 TopLayer    0603_C                                              3160.001      2650.000      180      ""                            
 C10        220pF                 TopLayer    0402_c                                              2641.000      3208.000      180      Capacitor                     
-C11        NC                    TopLayer    0402_C                                              2578.000      3226.000      270      Capacitor                     
-C12        NC                    TopLayer    0402_C                                              2450.000      3225.000      270      Capacitor                     
+C11        1.5pF                 TopLayer    0402_C                                              2578.000      3226.000      270      Capacitor                     
+C12        2pF                   TopLayer    0402_C                                              2450.000      3225.000      270      Capacitor                     
 C13        NC                    TopLayer    0402_C                                              2320.000      3227.000      270      Capacitor                     
 C14        NC                    TopLayer    0402_C                                              2192.000      3226.200      270      Capacitor                     
 C16        12PF                  TopLayer    0603_c                                              2496.000      3424.001      270      Capacitor                     
 C17        12PF                  TopLayer    0603_c                                              2741.000      3428.999      90       Capacitor                     
 C18        1UF                   TopLayer    0603_c                                              3023.999      3405.000      360      ""                            
 C19        1UF                   TopLayer    0603_c                                              3021.999      3340.000      360      ""                            
-C20        220uF/10V             TopLayer    SMD_6.3*5.4_µç½â                                      2968.900      3692.983      270      ""                            
-C21        100nf                 TopLayer    0603_C                                              2758.000      3717.999      90       ÎÞ¼«µçÈÝ                          
+C20        220uF/10V             TopLayer    SMD_6.3*5.4_ï¿½ï¿½ï¿½                                      2968.900      3692.983      270      ""                            
+C21        100nf                 TopLayer    0603_C                                              2758.000      3717.999      90       ï¿½Þ¼ï¿½ï¿½ï¿½ï¿½ï¿½                          
 C22        1UF                   TopLayer    0603_c                                              3115.001      3207.000      180      ""                            
 C24        0.1uF                 TopLayer    0603_C                                              3581.999      3796.000      360      Capacitor                     
-C25        22uf-16v              TopLayer    0805_c                                              3549.000      3299.000      180      ÎÞ¼«µçÈÝ                          
-C26        22uf-16v              TopLayer    0805_c                                              3585.000      3720.000      180      ÎÞ¼«µçÈÝ                          
+C25        22uf-16v              TopLayer    0805_c                                              3549.000      3299.000      180      ï¿½Þ¼ï¿½ï¿½ï¿½ï¿½ï¿½                          
+C26        22uf-16v              TopLayer    0805_c                                              3585.000      3720.000      180      ï¿½Þ¼ï¿½ï¿½ï¿½ï¿½ï¿½                          
 Laser      JiGuang               TopLayer    CONN-SMD_2P-P1.25-LT                                2373.000      3637.000      270      ""                            
 LeiDa      HC-1.25-4PLT          TopLayer    CONN-SMD_4P-P1.25_LT                                3522.000      3987.000      180      ""                            
-D1         SMF5.0CA_C726939      TopLayer    SOD-123_Ë«Ïò                                          3753.552      3082.370      360      ""                            
-D2         "SE6V3LHN102T 6.3vµ¥Ïò" TopLayer    0402-D                                              2701.846      3191.652      270      ""                            
+D1         SMF5.0CA_C726939      TopLayer    SOD-123_Ë«ï¿½ï¿½                                          3753.552      3082.370      360      ""                            
+D2         "SE6V3LHN102T 6.3vï¿½ï¿½ï¿½ï¿½" TopLayer    0402-D                                              2701.846      3191.652      270      ""                            
 D3         DSK24                 TopLayer    SOD-123FL                                           3537.135      3210.535      180      "High Conductance Fast Diode" 
 M1         MOTORA                TopLayer    CONN-SMD_1.25-5PLT                                  2526.000      3989.000      180      ""                            
 M2         MOTORB                TopLayer    CONN-SMD_1.25-5PLT                                  3048.000      3990.000      180      ""                            
-L1         0R                    TopLayer    0402_R                                              2518.000      3208.000      180      ""                            
-L2         0R                    TopLayer    0402_R                                              2384.000      3209.000      180      ""                            
+L1         2.7nH                 TopLayer    0402_R                                              2518.000      3208.000      180      ""                            
+L2         3nH                   TopLayer    0402_R                                              2384.000      3209.000      180      ""                            
 L3         0R                    TopLayer    0402_R                                              2255.000      3210.000      180      ""                            
 L4         47uH                  TopLayer    IND-SMD_L3.5-W3.0_CD31                              3574.000      3445.000      90       ""                            
 LED1       XL-A3528RGBC-BM       TopLayer    LED-ARRAY-SMD_4P-L3.2-W2.8-LS3.5-BL_XL-A3528RGBC-BM 2712.000      2512.000      360      ""                            
 LED2       *                     TopLayer    LED-SMD_4P-L3.2-W1.6-TL_XL-3216SURUGC               3206.000      2511.000      360      ""                            
 P2         UART                  TopLayer    SIP4-2.54                                           2484.110      3032.000      360      "Header, 4-Pin"               
 Q1         "SI2301 P"            TopLayer    SOT-23                                              3308.480      2831.315      270      ""                            
-Q2         S8050                 TopLayer    SOT-23(SOT-23-3)                                    3457.000      2659.000      90       NPNÈý¼«¹Ü                        
+Q2         S8050                 TopLayer    SOT-23(SOT-23-3)                                    3457.000      2659.000      90       NPNï¿½ï¿½ï¿½ï¿½ï¿½ï¿½                        
 Q4         "SI2301 P"            TopLayer    SOT-23                                              3367.520      3257.685      90       ""                            
-Q5         S8050                 TopLayer    SOT-23(SOT-23-3)                                    3417.000      3576.000      90       NPNÈý¼«¹Ü                        
+Q5         S8050                 TopLayer    SOT-23(SOT-23-3)                                    3417.000      3576.000      90       NPNï¿½ï¿½ï¿½ï¿½ï¿½ï¿½                        
 R1         3.9K                  TopLayer    0603_R                                              3731.001      3260.000      360      ""                            
 R2         10k                   TopLayer    0603_R                                              3462.000      3063.001      90       Resistor                      
 R3         R250                  TopLayer    1206_R                                              3849.011      3173.516      180      ""                            
@@ -106,7 +106,6 @@ TX_D       J-CSD                 BottomLayer TP                                 
 2D         J-CSD                 BottomLayer TP                                                  2911.000      4034.000      270      ""                            
 VBUS       J-CSD                 BottomLayer TP                                                  3920.000      3083.000      270      ""                            
 VBAT       J-CSD                 BottomLayer TP                                                  3040.000      2585.000      270      ""                            
-Laser      J-CSD                 BottomLayer TP                                                  2481.000      3568.000      270      ""                            
 TX_L       J-CSD                 BottomLayer TP                                                  3442.000      3681.000      270      ""                            
 RX_L       J-CSD                 BottomLayer TP                                                  3546.000      3807.000      270      ""                            
 +5v_L      J-CSD                 BottomLayer TP                                                  3636.000      3765.000      270      ""                            
