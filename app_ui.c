@@ -90,54 +90,155 @@ static void app_ui_led_blink_update(void)
     }
 }
 
-static void app_ui_led_all_off(void)
+/*=================== RGB 工作状态灯：普通 IO → PWM 调光/调色 ===================
+ * 引脚：GPIO_LED_BLUE(PA5) / GPIO_LED_RED(PA6) / GPIO_LED_GREEN(PA7)
+ * ⚠  PWM 通道与引脚的对应关系由 B80 数据手册「GPIO 功能复用表」决定，
+ *     以下默认值为 Telink 常规映射（PWM0→PA5, PWM1→PA6, PWM2→PA7），
+ *     烧录前请对照手册确认；如需调整，修改下面三个 LED_PWM_*_ID 宏即可，
+ *     也可在 app_config.h 中提前定义进行覆盖。
+ */
+#ifndef LED_RGB_PWM_CLK_HZ
+#define LED_RGB_PWM_CLK_HZ      2000000u   /* PWM 计数时钟 2MHz */
+#endif
+#ifndef LED_RGB_PWM_CYCLE
+#define LED_RGB_PWM_CYCLE       256u       /* 周期 256 tick → 7.8kHz；占空比 0~255 */
+#endif
+#ifndef LED_PWM_BLUE_ID
+#define LED_PWM_BLUE_ID         PWM0_ID    /* GPIO_LED_BLUE  PA5 */
+#endif
+#ifndef LED_PWM_RED_ID
+#define LED_PWM_RED_ID          PWM1_ID    /* GPIO_LED_RED   PA6 */
+#endif
+#ifndef LED_PWM_GREEN_ID
+#define LED_PWM_GREEN_ID        PWM2_ID    /* GPIO_LED_GREEN PA7 */
+#endif
+
+/* pwm_id(0~5) 与 gpio 功能码 PWM0(3)~PWM5(8) 一一对应 */
+static gpio_func_e app_ui_led_pwm_func(pwm_id id)
+{
+    return (gpio_func_e)(PWM0 + (int)id);
+}
+
+/* duty: 0~255，映射到占空比 0~100%；LED_ON_LEVEL==0（低电平点灯）时反相 */
+static void app_ui_led_pwm_set(pwm_id id, u8 duty)
+{
+    u32 cmp = ((u32)LED_RGB_PWM_CYCLE * duty) / 255u;
+    if (cmp > LED_RGB_PWM_CYCLE)
+    {
+        cmp = LED_RGB_PWM_CYCLE;
+    }
+#if (LED_ON_LEVEL == 0)
+    cmp = LED_RGB_PWM_CYCLE - cmp;
+#endif
+    pwm_set_cmp(id, (u16)cmp);
+}
+
+static void app_ui_led_pwm_channel_init(pwm_id id, GPIO_PinTypeDef pin)
 {
 #if (UI_LED_ENABLE)
-    gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
-    gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
-    gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
+    pwm_set_cycle_and_duty(id, (u16)LED_RGB_PWM_CYCLE, 0);  /* 周期 + 初始熄灭 */
+    gpio_set_func(pin, app_ui_led_pwm_func(id));            /* 引脚复用为 PWMx */
+    gpio_set_output_en(pin, 1);
+    pwm_start(id);
 #endif
 }
 
-static void app_ui_led_set_blue(u8 on)
+/**
+ * @brief  初始化 RGB 工作状态灯的 PWM 输出。
+ *         必须在任何点灯操作之前调用一次（例如低电检测点灯前）。
+ */
+void app_ui_led_init(void)
 {
 #if (UI_LED_ENABLE)
-    gpio_write(GPIO_LED_BLUE, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    static u8 s_inited = 0;
+    if (s_inited)
+    {
+        return;
+    }
+    s_inited = 1;
+
+    pwm_set_clk(CLOCK_SYS_CLOCK_HZ, (int)LED_RGB_PWM_CLK_HZ);
+    app_ui_led_pwm_channel_init(LED_PWM_BLUE_ID, GPIO_LED_BLUE);
+    app_ui_led_pwm_channel_init(LED_PWM_RED_ID, GPIO_LED_RED);
+    app_ui_led_pwm_channel_init(LED_PWM_GREEN_ID, GPIO_LED_GREEN);
+    app_ui_led_show(LED_COLOR_OFF);  /* 默认熄灭 */
 #endif
 }
 
-static void app_ui_led_set_green(u8 on)
+/**
+ * @brief  设置 RGB 三通道亮度，用于调光/调色/开关。
+ * @param[in] r 红通道亮度 0~255
+ * @param[in] g 绿通道亮度 0~255
+ * @param[in] b 蓝通道亮度 0~255
+ */
+void app_ui_led_set_color(u8 r, u8 g, u8 b)
 {
 #if (UI_LED_ENABLE)
-    gpio_write(GPIO_LED_GREEN, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    app_ui_led_pwm_set(LED_PWM_RED_ID, r);
+    app_ui_led_pwm_set(LED_PWM_GREEN_ID, g);
+    app_ui_led_pwm_set(LED_PWM_BLUE_ID, b);
 #endif
 }
 
-static void app_ui_led_set_red(u8 on)
+/* 预设颜色表：索引与 led_color_t 一一对应 */
+static const u8 s_led_rgb_tbl[LED_COLOR_MAX][3] = {
+    {  0,   0,   0},   /* OFF 黑(关闭) */
+    {255,   0,   0},   /* RED 红 */
+    {255, 128,   0},   /* ORANGE 橙 */
+    {255, 255,   0},   /* YELLOW 黄 */
+    {  0, 255,   0},   /* GREEN 绿 */
+    {  0, 255, 255},   /* CYAN 青 */
+    {  0,   0, 255},   /* BLUE 蓝 */
+    {255,   0, 255},   /* PURPLE 紫 */
+    {128, 128, 128},   /* GRAY 灰 */
+    {255, 128, 128},   /* PINK 粉 */
+    {255, 255, 255},   /* WHITE 白 */
+    {165,  42,  42},   /* BROWN 棕 */
+};
+
+/**
+ * @brief  按预设颜色点亮 RGB 工作状态灯（LED_COLOR_OFF 熄灭）。
+ *         预设颜色定义于 s_led_rgb_tbl，如需自定义直接用 app_ui_led_set_color。
+ */
+void app_ui_led_show(led_color_t color)
 {
-#if (UI_LED_ENABLE)
-    gpio_write(GPIO_LED_RED, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
-#endif
+    if (color >= LED_COLOR_MAX)
+    {
+        color = LED_COLOR_OFF;
+    }
+    app_ui_led_set_color(s_led_rgb_tbl[color][0],
+                         s_led_rgb_tbl[color][1],
+                         s_led_rgb_tbl[color][2]);
 }
 
-static void app_ui_led_set_white(u8 on)
+/* 点亮指定颜色，on=0 时熄灭 */
+static void app_ui_led_set_on(led_color_t color, u8 on)
 {
-#if (UI_LED_ENABLE)
-    gpio_write(GPIO_LED_WHITE, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
-#endif
+    app_ui_led_show(on ? color : LED_COLOR_OFF);
 }
 
-static void app_ui_power_led_set_green(u8 on)
+/*================ 测试代码：每秒切换一个颜色（调试用，测完删除） ================*/
+void app_ui_led_test_cycle(void)
 {
-#if (UI_LED_ENABLE)
-    gpio_write(GPIO_CHARGE_LED_GREEN, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
-#endif
+    static u32       s_tick  = 0;
+    static led_color_t s_color = LED_COLOR_RED;   /* 从红开始循环 */
+
+    if (clock_time_exceed(s_tick, 1000000))       /* 每秒 */
+    {
+        s_tick = clock_time();
+        app_ui_led_show(s_color);
+        s_color = (led_color_t)(s_color + 1);
+        if (s_color >= LED_COLOR_MAX)
+        {
+            s_color = LED_COLOR_RED;              /* 循环，跳过 OFF */
+        }
+    }
 }
 
-static void app_ui_power_led_set_red(u8 on)
+static void app_ui_power_led_set(GPIO_PinTypeDef pin, u8 on)
 {
 #if (UI_LED_ENABLE)
-    gpio_write(GPIO_CHARGE_LED_RED, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    gpio_write(pin, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
 #endif
 }
 
@@ -148,58 +249,32 @@ void app_ui_led_task(void)
 //     - 代表物理关机状态
 #if (UI_LED_ENABLE)
     app_ui_led_blink_update();
+
     if (ota_is_working)
     {
-        app_ui_led_all_off();
-        app_ui_led_set_red(g_led_blink_on); 
-        app_ui_led_set_green(g_led_blink_on); 
-        app_ui_led_set_blue(g_led_blink_on); 
+        /* 白灯闪烁：OTA 升级中 */
+        app_ui_led_set_on(LED_COLOR_WHITE, g_led_blink_on);
         return;
     }
 
-    // - 红色灯闪烁
-    //     - 代表处在设置模式
+    // - 红色灯闪烁：设置模式
     if (app_ctrl_is_setting_mode())
     {
-        app_ui_led_all_off();
-        app_ui_led_set_red(g_led_blink_on);
+        app_ui_led_set_on(LED_COLOR_RED, g_led_blink_on);
         return;
     }
     if (app_get_power_state())
     {
-        // - 绿色灯常亮
-        //     - 代表有蓝牙连接的软件开机状态
-        if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_green(1);
-        }
-        // - 绿色灯闪烁
-        //     - 代表没有蓝牙连接的软件开机状态
-        else
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_green(g_led_blink_on);
-        }
+        /* 绿灯：软件开机状态，有连接常亮 / 无连接闪烁 */
+        app_ui_led_set_on(LED_COLOR_GREEN,
+                          (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN) ? 1 : g_led_blink_on);
     }
     else
     {
-        // - 蓝色灯常亮
-        //     - 代表软件关机状态，且有蓝牙连接
-        if (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN)
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_blue(1);
-        }
-        // - 蓝色灯闪烁
-        //     - 代表软件关机状态，且没有蓝牙连接
-        else
-        {
-            app_ui_led_all_off();
-            app_ui_led_set_blue(g_led_blink_on);
-        }
+        /* 蓝灯：软件关机状态，有连接常亮 / 无连接闪烁 */
+        app_ui_led_set_on(LED_COLOR_BLUE,
+                          (blc_ll_getCurrentState() == BLS_LINK_STATE_CONN) ? 1 : g_led_blink_on);
     }
-
 #endif
 }
 
@@ -214,23 +289,23 @@ void app_ui_power_led_task(void)
 
     if (bat_percent >= 80)
     {
-        app_ui_power_led_set_green(1);
-        app_ui_power_led_set_red(0);
+        app_ui_power_led_set(GPIO_CHARGE_LED_GREEN, 1);
+        app_ui_power_led_set(GPIO_CHARGE_LED_RED, 0);
     }
     else if (charging)
     {
-        app_ui_power_led_set_green(0);
-        app_ui_power_led_set_red(1);
+        app_ui_power_led_set(GPIO_CHARGE_LED_GREEN, 0);
+        app_ui_power_led_set(GPIO_CHARGE_LED_RED, 1);
     }
     else if (bat_percent < 20)
     {
-        app_ui_power_led_set_green(0);
-        app_ui_power_led_set_red(g_led_blink_on);
+        app_ui_power_led_set(GPIO_CHARGE_LED_GREEN, 0);
+        app_ui_power_led_set(GPIO_CHARGE_LED_RED, g_led_blink_on);
     }
     else
     {
-        app_ui_power_led_set_green(0);
-        app_ui_power_led_set_red(0);
+        app_ui_power_led_set(GPIO_CHARGE_LED_GREEN, 0);
+        app_ui_power_led_set(GPIO_CHARGE_LED_RED, 0);
     }
 #endif
 }

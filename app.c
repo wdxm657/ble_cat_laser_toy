@@ -319,7 +319,7 @@ void task_terminate(u8 e, u8 *p, int n)  //*p is terminate reason
 #endif
 #if (UI_LED_ENABLE)
     LOG_D("[APP][TERMINATE] Terminate request");
-    gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);  // light off
+    app_ui_led_show(LED_COLOR_OFF);  // RGB 工作状态灯熄灭(PWM)
 #endif
     advertise_begin_tick = clock_time();
 
@@ -386,10 +386,8 @@ static void app_request_deep_sleep(void)
         cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
         gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
 
-        gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
-        gpio_write(GPIO_LED_GREEN, !LED_ON_LEVEL);
+        app_ui_led_show(LED_COLOR_OFF);  // RGB 工作状态灯熄灭(PWM)
         gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
-        gpio_write(GPIO_LED_RED, !LED_ON_LEVEL);
         gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
         gpio_write(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
         gpio_write(V_NTC_CON, 0);
@@ -606,9 +604,9 @@ _attribute_ram_code_ void user_battery_power_check(u16 alarm_vol_mv)
 #if (UI_LED_ENABLE)  // led indicate
         for (int k = 0; k < 3; k++)
         {
-            gpio_write(GPIO_LED_BLUE, LED_ON_LEVEL);
+            app_ui_led_show(LED_COLOR_BLUE);  // 蓝灯点亮(PWM)
             sleep_us(200000);
-            gpio_write(GPIO_LED_BLUE, !LED_ON_LEVEL);
+            app_ui_led_show(LED_COLOR_OFF);   // 蓝灯熄灭(PWM)
             sleep_us(200000);
         }
 #endif
@@ -859,6 +857,8 @@ _attribute_no_inline_ void user_init_normal(void)
     gpio_write(LEIDA_SWITCH, 0);
     // 关闭充电电流限制 高电平关闭 低电平打开
     gpio_write(Set_Charg_I, 1);
+    // RGB 工作状态灯改为 PWM 驱动（调光/调色），需在低电检测点灯前初始化
+    app_ui_led_init();
 #endif
 #ifdef UI_RADAR_ENABLE
     app_radar_uart_init();
@@ -1332,6 +1332,7 @@ void main_loop(void)
 
 #if (UI_LED_ENABLE)
     app_ui_power_led_task();
+    // app_ui_led_test_cycle();
     app_ui_led_task();
 #endif
     // ////////////////////////////////////// PM Process /////////////////////////////////

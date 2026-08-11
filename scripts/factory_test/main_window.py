@@ -20,6 +20,7 @@ from .constants import (
     DEFAULT_RESULT_CSV,
     DEFAULT_RESULT_XLSX,
     RESULT_HEADERS,
+    THEMES,
 )
 from .deps import BLEAK_IMPORT_ERROR, OPENPYXL_IMPORT_ERROR, Font, PatternFill, Workbook
 from .models import ScanDevice
@@ -38,6 +39,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
             'laser': None,
         }
         self.ui_font_size = 20
+        self.ui_theme = 'dark'
         self.result_csv_path = DEFAULT_RESULT_CSV
         self.result_xlsx_path = DEFAULT_RESULT_XLSX
         self.qr_dialog = None
@@ -53,102 +55,103 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         if BLEAK_IMPORT_ERROR is not None:
             self._append_log(f'Bleak 未安装或导入失败: {BLEAK_IMPORT_ERROR}')
 
-    def _build_stylesheet(self, font_px: int) -> str:
+    def _build_stylesheet(self, font_px: int, theme: str = 'dark') -> str:
+        c = THEMES.get(theme, THEMES['dark'])
         return f"""
             QWidget {{
                 font-size: {font_px}px;
-                color: #e5e7eb;
-                background: #0f172a;
+                color: {c['text']};
+                background: {c['window']};
             }}
             QGroupBox {{
                 font-weight: 600;
-                border: 1px solid #334155;
+                border: 1px solid {c['border']};
                 border-radius: 6px;
                 margin-top: 10px;
-                background: #111827;
+                background: {c['groupbox']};
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 4px;
-                color: #cbd5e1;
+                color: {c['text_secondary']};
             }}
             QPushButton {{
                 min-width: 76px;
                 padding: 6px 10px;
-                border: 1px solid #475569;
+                border: 1px solid {c['button_border']};
                 border-radius: 5px;
-                background: #1f2937;
-                color: #e5e7eb;
+                background: {c['button']};
+                color: {c['text']};
             }}
-            QPushButton:hover {{ background: #334155; }}
-            QPushButton:pressed {{ background: #475569; }}
+            QPushButton:hover {{ background: {c['button_hover']}; }}
+            QPushButton:pressed {{ background: {c['button_pressed']}; }}
             QPushButton:disabled {{
-                color: #64748b;
-                background: #1e293b;
-                border-color: #334155;
+                color: {c['button_disabled_text']};
+                background: {c['button_disabled']};
+                border-color: {c['border']};
             }}
             QPlainTextEdit, QTableWidget, QTreeWidget, QComboBox, QSpinBox {{
-                border: 1px solid #334155;
+                border: 1px solid {c['border']};
                 border-radius: 4px;
-                background: #0b1220;
-                color: #e5e7eb;
+                background: {c['input']};
+                color: {c['text']};
             }}
             QPlainTextEdit, QTableWidget, QTreeWidget {{
-                selection-background-color: #2563eb;
-                selection-color: #ffffff;
+                selection-background-color: {c['selection']};
+                selection-color: {c['selection_text']};
             }}
-            QTreeWidget {{
-                alternate-background-color: #111827;
+            QTreeWidget, QTableWidget {{
+                alternate-background-color: {c['alternate']};
             }}
             QTreeWidget::item {{
                 padding: 2px 4px;
-                color: #e5e7eb;
+                color: {c['text']};
             }}
             QTreeWidget::item:alternate {{
-                background: #111827;
+                background: {c['alternate']};
             }}
             QTreeWidget::item:selected {{
-                background: #1d4ed8;
-                color: #ffffff;
+                background: {c['selection_hover']};
+                color: {c['selection_text']};
             }}
             QTreeWidget:disabled {{
-                background: #0b1220;
-                color: #cbd5e1;
+                background: {c['input']};
+                color: {c['text_secondary']};
             }}
             QTreeWidget::item:disabled {{
-                color: #cbd5e1;
+                color: {c['text_secondary']};
             }}
             QHeaderView::section {{
-                background: #1e293b;
-                color: #e2e8f0;
-                border: 1px solid #334155;
+                background: {c['header_bg']};
+                color: {c['header_text']};
+                border: 1px solid {c['border']};
                 padding: 6px 8px;
                 font-weight: 600;
             }}
             QTableWidget::item:selected {{
-                background: #1d4ed8;
-                color: #ffffff;
+                background: {c['selection_hover']};
+                color: {c['selection_text']};
             }}
             QComboBox::drop-down, QSpinBox::up-button, QSpinBox::down-button {{
-                border-left: 1px solid #334155;
+                border-left: 1px solid {c['border']};
                 width: 20px;
             }}
             QComboBox QAbstractItemView {{
-                background: #0b1220;
-                color: #e5e7eb;
-                selection-background-color: #2563eb;
-                border: 1px solid #334155;
+                background: {c['input']};
+                color: {c['text']};
+                selection-background-color: {c['selection']};
+                border: 1px solid {c['border']};
             }}
             QLabel#statusLabel {{
                 padding: 6px 10px;
                 border-radius: 5px;
-                background: #1e293b;
-                color: #bfdbfe;
+                background: {c['status_bg']};
+                color: {c['status_text']};
                 font-weight: 600;
             }}
             QSplitter::handle {{
-                background: #334155;
+                background: {c['splitter']};
             }}
         """
 
@@ -158,7 +161,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
             app_font = app.font()
             app_font.setPointSize(self.ui_font_size)
             app.setFont(app_font)
-        self.setStyleSheet(self._build_stylesheet(self.ui_font_size))
+        self.setStyleSheet(self._build_stylesheet(self.ui_font_size, self.ui_theme))
 
     def _on_font_size_changed(self, value: int):
         self.ui_font_size = value
@@ -169,6 +172,23 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.device_tree.resizeColumnToContents(3)
         self.csv_preview_table.resizeRowsToContents()
 
+    def _update_theme_button(self):
+        if self.ui_theme == 'dark':
+            self.theme_toggle_btn.setText('浅色模式')
+            self.theme_toggle_btn.setToolTip('切换为浅色界面')
+        else:
+            self.theme_toggle_btn.setText('深色模式')
+            self.theme_toggle_btn.setToolTip('切换为深色界面')
+
+    def _on_toggle_theme(self):
+        self.ui_theme = 'light' if self.ui_theme == 'dark' else 'dark'
+        self._apply_ui_style()
+        self._update_theme_button()
+        if self.qr_dialog is not None:
+            self.qr_dialog.set_theme(self.ui_theme)
+        self._on_devices_changed(list(self.devices.values()))
+        self.csv_preview_table.resizeRowsToContents()
+
     def _build_ui(self):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
@@ -176,85 +196,8 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
         self._apply_ui_style()
-        self.setStyleSheet("""
-            QWidget {
-                font-size: 13px;
-                color: #e5e7eb;
-                background: #0f172a;
-            }
-            QGroupBox {
-                font-weight: 600;
-                border: 1px solid #334155;
-                border-radius: 6px;
-                margin-top: 10px;
-                background: #111827;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
-                color: #cbd5e1;
-            }
-            QPushButton {
-                min-width: 76px;
-                padding: 6px 10px;
-                border: 1px solid #475569;
-                border-radius: 5px;
-                background: #1f2937;
-                color: #e5e7eb;
-            }
-            QPushButton:hover { background: #334155; }
-            QPushButton:pressed { background: #475569; }
-            QPushButton:disabled {
-                color: #64748b;
-                background: #1e293b;
-                border-color: #334155;
-            }
-            QPlainTextEdit, QTableWidget, QTreeWidget, QComboBox {
-                border: 1px solid #334155;
-                border-radius: 4px;
-                background: #0b1220;
-                color: #e5e7eb;
-            }
-            QPlainTextEdit, QTableWidget, QTreeWidget {
-                selection-background-color: #2563eb;
-                selection-color: #ffffff;
-            }
-            QHeaderView::section {
-                background: #1e293b;
-                color: #e2e8f0;
-                border: 1px solid #334155;
-                padding: 6px 8px;
-                font-weight: 600;
-            }
-            QTableWidget::item:selected, QTreeWidget::item:selected {
-                background: #1d4ed8;
-                color: #ffffff;
-            }
-            QComboBox::drop-down {
-                border-left: 1px solid #334155;
-                width: 20px;
-            }
-            QComboBox QAbstractItemView {
-                background: #0b1220;
-                color: #e5e7eb;
-                selection-background-color: #2563eb;
-                border: 1px solid #334155;
-            }
-            QLabel#statusLabel {
-                padding: 6px 10px;
-                border-radius: 5px;
-                background: #1e293b;
-                color: #bfdbfe;
-                font-weight: 600;
-            }
-            QSplitter::handle {
-                background: #334155;
-            }
-        """)
 
         device_box = QtWidgets.QGroupBox('设备选择')
-        self._apply_ui_style()
         device_layout = QtWidgets.QVBoxLayout(device_box)
         scan_row = QtWidgets.QHBoxLayout()
         self.scan_btn = QtWidgets.QPushButton('扫描 W2MLaserTOY 设备')
@@ -283,6 +226,9 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.font_size_spin.setFixedWidth(96)
         font_row.addWidget(self.font_size_label)
         font_row.addWidget(self.font_size_spin)
+        self.theme_toggle_btn = QtWidgets.QPushButton()
+        font_row.addWidget(self.theme_toggle_btn)
+        self._update_theme_button()
         font_row.addStretch(1)
         device_layout.addLayout(font_row)
 
@@ -433,6 +379,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.usage_help_btn.clicked.connect(self._show_usage_help)
         self.device_tree.itemDoubleClicked.connect(self._on_device_double_clicked)
         self.font_size_spin.valueChanged.connect(self._on_font_size_changed)
+        self.theme_toggle_btn.clicked.connect(self._on_toggle_theme)
 
         self.radar_on_btn.clicked.connect(lambda: self._send_module_ctrl(CTRL_FACTORY_TEST_MODULE_RADAR, True))
         self.radar_off_btn.clicked.connect(lambda: self._send_module_ctrl(CTRL_FACTORY_TEST_MODULE_RADAR, False))
@@ -471,7 +418,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
     def _on_scan_qr_clicked(self):
         if self.qr_dialog is not None:
             self.qr_dialog.close()
-        self.qr_dialog = CameraQrScanDialog(self)
+        self.qr_dialog = CameraQrScanDialog(self, theme=self.ui_theme)
         self.qr_dialog.device_matched.connect(self._on_qr_device_matched)
         self.qr_dialog.finished.connect(lambda _result: setattr(self, 'qr_dialog', None))
         self.qr_dialog.update_devices(list(self.devices.values()))
@@ -549,6 +496,7 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
 
         self.device_tree.clear()
         mono_font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
+        c = THEMES.get(self.ui_theme, THEMES['dark'])
         for row_idx, dev in enumerate(devices):
             tested = '已测' if dev.manufacturer_data and dev.manufacturer_data in self.tested_mfr_set else '未测'
             item = QtWidgets.QTreeWidgetItem([
@@ -558,15 +506,15 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
                 tested,
                 dev.manufacturer_data,
             ])
-            row_bg = QtGui.QBrush(QtGui.QColor('#0b1220' if row_idx % 2 == 0 else '#111827'))
-            row_fg = QtGui.QBrush(QtGui.QColor('#e5e7eb'))
+            row_bg = QtGui.QBrush(QtGui.QColor(c['input'] if row_idx % 2 == 0 else c['alternate']))
+            row_fg = QtGui.QBrush(QtGui.QColor(c['text']))
             for col_idx in range(5):
                 item.setBackground(col_idx, row_bg)
                 item.setForeground(col_idx, row_fg)
             if tested == '已测':
-                item.setForeground(3, QtGui.QBrush(QtGui.QColor('#86efac')))
+                item.setForeground(3, QtGui.QBrush(QtGui.QColor(c['ok_text'])))
             else:
-                item.setForeground(3, QtGui.QBrush(QtGui.QColor('#fbbf24')))
+                item.setForeground(3, QtGui.QBrush(QtGui.QColor(c['warn_text'])))
             item.setFont(1, mono_font)
             item.setFont(4, mono_font)
             item.setTextAlignment(0, Qt.AlignVCenter | Qt.AlignLeft)
@@ -737,9 +685,24 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self._refresh_tested_mfr_set(rows)
         self._on_devices_changed(list(self.devices.values()))
 
+    def _sort_rows_by_time_desc(self, rows):
+        def parse_time(row):
+            if not row or not row[0]:
+                return _dt.datetime.min
+            text = str(row[0]).strip()
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M:%S.%f'):
+                try:
+                    return _dt.datetime.strptime(text, fmt)
+                except ValueError:
+                    continue
+            return _dt.datetime.min
+
+        return sorted(rows, key=parse_time, reverse=True)
+
     def _refresh_csv_preview(self, rows=None):
         if rows is None:
             rows = self._read_csv_rows()
+        rows = self._sort_rows_by_time_desc(rows)
         self._refresh_tested_mfr_set(rows)
         self.csv_preview_table.setRowCount(len(rows))
         for row_idx, row in enumerate(rows):
@@ -859,8 +822,9 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         text_edit = QtWidgets.QPlainTextEdit()
         text_edit.setReadOnly(True)
         text_edit.setPlainText(text)
+        c = THEMES.get(self.ui_theme, THEMES['dark'])
         text_edit.setStyleSheet(
-            'background: #0b1220; color: #e5e7eb; border: 1px solid #334155; border-radius: 4px; padding: 8px;'
+            f'background: {c["input"]}; color: {c["text"]}; border: 1px solid {c["border"]}; border-radius: 4px; padding: 8px;'
         )
         close_btn = QtWidgets.QPushButton('关闭')
         close_btn.clicked.connect(dialog.accept)

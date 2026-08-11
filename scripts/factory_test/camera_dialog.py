@@ -4,6 +4,7 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
+from .constants import THEMES
 from .deps import CV2_IMPORT_ERROR, PYZBAR_IMPORT_ERROR, cv2, decode_qr
 from .protocol import mfr_matches
 
@@ -15,8 +16,9 @@ MISS_MARK = '×'
 class CameraQrScanDialog(QtWidgets.QDialog):
     device_matched = QtCore.pyqtSignal(str, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, theme: str = 'dark'):
         super().__init__(parent)
+        self.theme = theme
         self.setWindowTitle('二维码扫描选择设备')
         self.resize(1120, 680)
         self.devices = []
@@ -53,30 +55,6 @@ class CameraQrScanDialog(QtWidgets.QDialog):
         self.device_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.device_table.cellDoubleClicked.connect(self._on_device_row_double_clicked)
         self.device_table.itemDoubleClicked.connect(self._on_device_item_double_clicked)
-        self.device_table.setStyleSheet("""
-            QTableWidget {
-                background: #0b1220;
-                alternate-background-color: #111827;
-                color: #e5e7eb;
-                gridline-color: #334155;
-                selection-background-color: #1d4ed8;
-                selection-color: #ffffff;
-            }
-            QTableWidget::item {
-                background: #0b1220;
-                color: #e5e7eb;
-            }
-            QTableWidget::item:alternate {
-                background: #111827;
-            }
-            QHeaderView::section {
-                background: #1e293b;
-                color: #e2e8f0;
-                border: 1px solid #334155;
-                padding: 6px 8px;
-                font-weight: 600;
-            }
-        """)
         left_layout.addWidget(self.device_table)
 
         right_box = QtWidgets.QGroupBox('摄像头实时画面')
@@ -84,11 +62,49 @@ class CameraQrScanDialog(QtWidgets.QDialog):
         self.preview_label = QtWidgets.QLabel('正在打开摄像头...')
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(520, 390)
-        self.preview_label.setStyleSheet('background: #020617; border: 1px solid #334155; color: #cbd5e1;')
         right_layout.addWidget(self.preview_label, 1)
 
         layout.addWidget(left_box, 1)
         layout.addWidget(right_box, 1)
+        self._apply_theme()
+
+    def _palette(self):
+        return THEMES.get(self.theme, THEMES['dark'])
+
+    def set_theme(self, theme: str):
+        self.theme = theme
+        self._apply_theme()
+        self._refresh_device_table()
+
+    def _apply_theme(self):
+        c = self._palette()
+        self.device_table.setStyleSheet(f"""
+            QTableWidget {{
+                background: {c['input']};
+                alternate-background-color: {c['alternate']};
+                color: {c['text']};
+                gridline-color: {c['border']};
+                selection-background-color: {c['selection_hover']};
+                selection-color: {c['selection_text']};
+            }}
+            QTableWidget::item {{
+                background: {c['input']};
+                color: {c['text']};
+            }}
+            QTableWidget::item:alternate {{
+                background: {c['alternate']};
+            }}
+            QHeaderView::section {{
+                background: {c['header_bg']};
+                color: {c['header_text']};
+                border: 1px solid {c['border']};
+                padding: 6px 8px;
+                font-weight: 600;
+            }}
+        """)
+        self.preview_label.setStyleSheet(
+            f'background: {c["input"]}; border: 1px solid {c["border"]}; color: {c["text_secondary"]};'
+        )
 
     def _start_camera(self):
         if cv2 is None:
@@ -128,10 +144,11 @@ class CameraQrScanDialog(QtWidgets.QDialog):
                 matched,
                 dev.manufacturer_data,
             ]
+            c = self._palette()
             for col_idx, value in enumerate(values):
                 item = QtWidgets.QTableWidgetItem(value)
-                item.setBackground(QtGui.QColor('#0b1220' if row_idx % 2 == 0 else '#111827'))
-                item.setForeground(QtGui.QColor('#e5e7eb'))
+                item.setBackground(QtGui.QColor(c['input'] if row_idx % 2 == 0 else c['alternate']))
+                item.setForeground(QtGui.QColor(c['text']))
                 if col_idx in (1, 4):
                     item.setFont(mono_font)
                 if col_idx in (2, 3):
@@ -139,10 +156,10 @@ class CameraQrScanDialog(QtWidgets.QDialog):
                 else:
                     item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
                 if matched == MATCH_MARK:
-                    item.setBackground(QtGui.QColor('#164e63'))
-                    item.setForeground(QtGui.QColor('#ecfeff'))
+                    item.setBackground(QtGui.QColor(c['match_bg']))
+                    item.setForeground(QtGui.QColor(c['match_text']))
                 elif col_idx == 3:
-                    item.setForeground(QtGui.QColor('#f87171'))
+                    item.setForeground(QtGui.QColor(c['miss_text']))
                 self.device_table.setItem(row_idx, col_idx, item)
         self.device_table.resizeRowsToContents()
 
