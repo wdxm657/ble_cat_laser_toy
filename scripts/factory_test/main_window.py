@@ -25,6 +25,7 @@ from .constants import (
 from .deps import BLEAK_IMPORT_ERROR, OPENPYXL_IMPORT_ERROR, Font, PatternFill, Workbook
 from .models import ScanDevice
 
+CSV_PAGE_SIZE = 10
 class FactoryTestWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -42,6 +43,8 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.ui_theme = 'dark'
         self.result_csv_path = DEFAULT_RESULT_CSV
         self.result_xlsx_path = DEFAULT_RESULT_XLSX
+        self.csv_page = 1
+        self._csv_sorted_rows = []
         self.qr_dialog = None
 
         self.setWindowTitle('W2MLaserTOY 组装工厂测试工具')
@@ -335,6 +338,16 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.csv_preview_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.csv_preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         preview_layout.addWidget(self.csv_preview_table)
+        pager_row = QtWidgets.QHBoxLayout()
+        pager_row.setSpacing(8)
+        self.csv_prev_btn = QtWidgets.QPushButton('上一页')
+        self.csv_page_label = QtWidgets.QLabel('1 / 1')
+        self.csv_next_btn = QtWidgets.QPushButton('下一页')
+        pager_row.addWidget(self.csv_prev_btn)
+        pager_row.addWidget(self.csv_page_label)
+        pager_row.addWidget(self.csv_next_btn)
+        pager_row.addStretch(1)
+        preview_layout.addLayout(pager_row)
         root.addWidget(preview_box, 2)
 
         log_splitter = QtWidgets.QSplitter(Qt.Horizontal)
@@ -380,6 +393,8 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.device_tree.itemDoubleClicked.connect(self._on_device_double_clicked)
         self.font_size_spin.valueChanged.connect(self._on_font_size_changed)
         self.theme_toggle_btn.clicked.connect(self._on_toggle_theme)
+        self.csv_prev_btn.clicked.connect(lambda: self._change_csv_page(-1))
+        self.csv_next_btn.clicked.connect(lambda: self._change_csv_page(1))
 
         self.radar_on_btn.clicked.connect(lambda: self._send_module_ctrl(CTRL_FACTORY_TEST_MODULE_RADAR, True))
         self.radar_off_btn.clicked.connect(lambda: self._send_module_ctrl(CTRL_FACTORY_TEST_MODULE_RADAR, False))
@@ -703,14 +718,33 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         if rows is None:
             rows = self._read_csv_rows()
         rows = self._sort_rows_by_time_desc(rows)
+        self._csv_sorted_rows = rows
         self._refresh_tested_mfr_set(rows)
-        self.csv_preview_table.setRowCount(len(rows))
-        for row_idx, row in enumerate(rows):
+        self.csv_page = 1
+        self._fill_csv_page()
+
+    def _fill_csv_page(self):
+        rows = self._csv_sorted_rows or []
+        total = len(rows)
+        total_pages = max(1, (total + CSV_PAGE_SIZE - 1) // CSV_PAGE_SIZE)
+        self.csv_page = max(1, min(self.csv_page, total_pages))
+        start = (self.csv_page - 1) * CSV_PAGE_SIZE
+        page_rows = rows[start:start + CSV_PAGE_SIZE]
+        table = self.csv_preview_table
+        table.setRowCount(len(page_rows))
+        for row_idx, row in enumerate(page_rows):
             normalized = list(row[:len(RESULT_HEADERS)]) + [''] * max(0, len(RESULT_HEADERS) - len(row))
             for col_idx, value in enumerate(normalized[:len(RESULT_HEADERS)]):
                 item = QtWidgets.QTableWidgetItem(str(value))
-                self.csv_preview_table.setItem(row_idx, col_idx, item)
-        self.csv_preview_table.resizeRowsToContents()
+                table.setItem(row_idx, col_idx, item)
+        table.resizeRowsToContents()
+        self.csv_page_label.setText(f'{self.csv_page} / {total_pages}')
+        self.csv_prev_btn.setEnabled(self.csv_page > 1)
+        self.csv_next_btn.setEnabled(self.csv_page < total_pages)
+
+    def _change_csv_page(self, delta: int):
+        self.csv_page += delta
+        self._fill_csv_page()
 
     def _dedupe_rows_by_manufacturer_data(self, rows):
         mfr_col = RESULT_HEADERS.index('MANUFACTURER_DATA')
