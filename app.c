@@ -1262,7 +1262,7 @@ void main_loop(void)
     // {
     app_adc_dbg_poll();
     app_ctrl_status_notify_task();
-    u8 bat_percent_now = app_adc_dbg_get_bat_percent();
+    u8 bat_percent_now = app_adc_dbg_get_bat_percent_exact();
     {
         if (bat_percent_now != s_bat_percent_last_reported)
         {
