@@ -104,6 +104,69 @@ u8 app_get_power_state(void)
     return g_app_power_on;
 }
 
+/* ===================== 软件开关机状态 FLASH 持久化 ===================== */
+#define SOFT_POWER_FLASH_MAGIC 0x53505752u /* "SPWR" */
+
+typedef struct
+{
+    u32 magic;
+    u8  power_on; /* 1=上电开机, 0=上电关机 */
+    u8  reserved[3];
+    u32 crc;
+} soft_power_flash_t;
+
+static u32 app_soft_power_crc32(const u8 *data, u32 len)
+{
+    u32 crc = 0xFFFFFFFFu;
+    for (u32 i = 0; i < len; i++)
+    {
+        crc ^= data[i];
+        for (u8 b = 0; b < 8; b++)
+        {
+            if (crc & 1u)
+            {
+                crc = (crc >> 1) ^ 0xEDB88320u;
+            }
+            else
+            {
+                crc >>= 1;
+            }
+        }
+    }
+    return ~crc;
+}
+
+void app_save_power_state_to_flash(void)
+{
+    soft_power_flash_t stored;
+    stored.magic       = SOFT_POWER_FLASH_MAGIC;
+    stored.power_on    = g_app_power_on ? 1 : 0;
+    stored.reserved[0] = 0;
+    stored.reserved[1] = 0;
+    stored.reserved[2] = 0;
+    stored.crc         = app_soft_power_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
+    flash_erase_sector(SOFT_POWER_STATE_FLASH_ADDR);
+    flash_write_page(SOFT_POWER_STATE_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    soft_power_flash_t stored1;
+    flash_read_page(SOFT_POWER_STATE_FLASH_ADDR, sizeof(stored1), (u8 *)&stored1);
+    BLE_LOG_D("app_save_power_state_to_flash pn = %d", stored1.power_on);
+}
+
+void app_restore_power_state_from_flash(void)
+{
+    soft_power_flash_t stored;
+    u8 power_on = 0; /* 默认关机（首次上电/标志无效时保持出厂行为） */
+
+    flash_read_page(SOFT_POWER_STATE_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    if (stored.magic == SOFT_POWER_FLASH_MAGIC &&
+        app_soft_power_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc)) == stored.crc &&
+        stored.power_on <= 1)
+    {
+        power_on = stored.power_on;
+    }
+    app_set_power_state(power_on);
+}
+
 void app_factory_test_enter(void)
 {
     s_factory_test_mode = 1;
@@ -1066,6 +1129,10 @@ _attribute_no_inline_ void user_init_normal(void)
      * attention that code will stuck in "while(1)" if any error detected in initialization, user need find what error happens and then fix it */
     blc_app_checkControllerHostInitialization();
     advertise_begin_tick = clock_time();
+
+    
+    // 上电时从 FLASH 恢复软件开关机状态（APP 控制关机后重新上电保持关机）
+    app_restore_power_state_from_flash();
 }
 #if (PM_DEEPSLEEP_RETENTION_ENABLE)
 /**

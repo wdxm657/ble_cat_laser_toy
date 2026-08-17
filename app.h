@@ -51,6 +51,8 @@ void main_loop (void);
 
 void app_set_power_state(u8 on);
 u8 app_get_power_state(void);
+void app_save_power_state_to_flash(void);
+void app_restore_power_state_from_flash(void);
 void app_factory_test_enter(void);
 u8 app_factory_test_is_active(void);
 void app_factory_test_set_radar(u8 on);

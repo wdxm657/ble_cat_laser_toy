@@ -943,6 +943,8 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
 
     LOG_D("pc: %d  payload: %d", on_effective, payload[0]);
     app_set_power_state(on_effective);
+    // 电源状态实际改变时持久化到 FLASH，重新上电后按此标志恢复开关机
+    app_save_power_state_to_flash();
 
     u8 rsp[3] = {CTRL_STATUS_OK, on_effective, CTRL_REASON_NONE};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_POWER_CTRL, seq, rsp, sizeof(rsp));
@@ -1259,7 +1261,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 14
+#define APP_FIRMWARE_VERSION_PATCH 15
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 

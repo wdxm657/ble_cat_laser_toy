@@ -85,7 +85,7 @@ void app_ui_power_led_task(void);
 
 
 /**
- * @brief      初始化 RGB 工作状态灯 PWM 输出（在点灯前调用一次）
+ * @brief      初始化 RGB 工作状态灯普通 IO 输出（在点灯前调用一次）
  * @param[in]  none
  * @return     none
  */
@@ -93,7 +93,7 @@ void app_ui_led_init(void);
 
 
 /**
- * @brief      设置 RGB 三通道亮度，用于调光/调色/开关
+ * @brief      点亮/熄灭 RGB 三通道普通 IO（通道值>0 即点亮对应引脚）
  * @param[in]  r - 红通道亮度 0~255
  * @param[in]  g - 绿通道亮度 0~255
  * @param[in]  b - 蓝通道亮度 0~255

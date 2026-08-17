@@ -90,62 +90,14 @@ static void app_ui_led_blink_update(void)
     }
 }
 
-/*=================== RGB 工作状态灯：普通 IO → PWM 调光/调色 ===================
+/*=================== RGB 工作状态灯：普通 IO 控制 ===================
  * 引脚：GPIO_LED_BLUE(PA5) / GPIO_LED_RED(PA6) / GPIO_LED_GREEN(PA7)
- * ⚠  PWM 通道与引脚的对应关系由 B80 数据手册「GPIO 功能复用表」决定，
- *     以下默认值为 Telink 常规映射（PWM0→PA5, PWM1→PA6, PWM2→PA7），
- *     烧录前请对照手册确认；如需调整，修改下面三个 LED_PWM_*_ID 宏即可，
- *     也可在 app_config.h 中提前定义进行覆盖。
+ * 仅支持亮/灭（由 LED_ON_LEVEL 决定高/低电平点灯），无 PWM 调色。
  */
-#ifndef LED_RGB_PWM_CLK_HZ
-#define LED_RGB_PWM_CLK_HZ      2000000u   /* PWM 计数时钟 2MHz */
-#endif
-#ifndef LED_RGB_PWM_CYCLE
-#define LED_RGB_PWM_CYCLE       256u       /* 周期 256 tick → 7.8kHz；占空比 0~255 */
-#endif
-#ifndef LED_PWM_BLUE_ID
-#define LED_PWM_BLUE_ID         PWM0_ID    /* GPIO_LED_BLUE  PA5 */
-#endif
-#ifndef LED_PWM_RED_ID
-#define LED_PWM_RED_ID          PWM1_ID    /* GPIO_LED_RED   PA6 */
-#endif
-#ifndef LED_PWM_GREEN_ID
-#define LED_PWM_GREEN_ID        PWM2_ID    /* GPIO_LED_GREEN PA7 */
-#endif
-
-/* pwm_id(0~5) 与 gpio 功能码 PWM0(3)~PWM5(8) 一一对应 */
-static gpio_func_e app_ui_led_pwm_func(pwm_id id)
-{
-    return (gpio_func_e)(PWM0 + (int)id);
-}
-
-/* duty: 0~255，映射到占空比 0~100%；LED_ON_LEVEL==0（低电平点灯）时反相 */
-static void app_ui_led_pwm_set(pwm_id id, u8 duty)
-{
-    u32 cmp = ((u32)LED_RGB_PWM_CYCLE * duty) / 255u;
-    if (cmp > LED_RGB_PWM_CYCLE)
-    {
-        cmp = LED_RGB_PWM_CYCLE;
-    }
-#if (LED_ON_LEVEL == 0)
-    cmp = LED_RGB_PWM_CYCLE - cmp;
-#endif
-    pwm_set_cmp(id, (u16)cmp);
-}
-
-static void app_ui_led_pwm_channel_init(pwm_id id, GPIO_PinTypeDef pin)
-{
-#if (UI_LED_ENABLE)
-    pwm_set_cycle_and_duty(id, (u16)LED_RGB_PWM_CYCLE, 0);  /* 周期 + 初始熄灭 */
-    gpio_set_func(pin, app_ui_led_pwm_func(id));            /* 引脚复用为 PWMx */
-    gpio_set_output_en(pin, 1);
-    pwm_start(id);
-#endif
-}
 
 /**
- * @brief  初始化 RGB 工作状态灯的 PWM 输出。
- *         必须在任何点灯操作之前调用一次（例如低电检测点灯前）。
+ * @brief  初始化 RGB 工作状态灯为普通 GPIO 输出（必须在任何点灯操作之前调用一次，
+ *         例如低电检测点灯前）。
  */
 void app_ui_led_init(void)
 {
@@ -157,26 +109,29 @@ void app_ui_led_init(void)
     }
     s_inited = 1;
 
-    pwm_set_clk(CLOCK_SYS_CLOCK_HZ, (int)LED_RGB_PWM_CLK_HZ);
-    app_ui_led_pwm_channel_init(LED_PWM_BLUE_ID, GPIO_LED_BLUE);
-    app_ui_led_pwm_channel_init(LED_PWM_RED_ID, GPIO_LED_RED);
-    app_ui_led_pwm_channel_init(LED_PWM_GREEN_ID, GPIO_LED_GREEN);
+    /* 三个引脚配置为普通 GPIO 输出，初始熄灭 */
+    gpio_set_func(GPIO_LED_RED, AS_GPIO);
+    gpio_set_output_en(GPIO_LED_RED, 1);
+    gpio_set_func(GPIO_LED_GREEN, AS_GPIO);
+    gpio_set_output_en(GPIO_LED_GREEN, 1);
+    gpio_set_func(GPIO_LED_BLUE, AS_GPIO);
+    gpio_set_output_en(GPIO_LED_BLUE, 1);
     app_ui_led_show(LED_COLOR_OFF);  /* 默认熄灭 */
 #endif
 }
 
 /**
- * @brief  设置 RGB 三通道亮度，用于调光/调色/开关。
- * @param[in] r 红通道亮度 0~255
- * @param[in] g 绿通道亮度 0~255
- * @param[in] b 蓝通道亮度 0~255
+ * @brief  点亮/熄灭 RGB 三通道（普通 IO，无 PWM 调光）。
+ * @param[in] r 红通道：>0 点亮 GPIO_LED_RED
+ * @param[in] g 绿通道：>0 点亮 GPIO_LED_GREEN
+ * @param[in] b 蓝通道：>0 点亮 GPIO_LED_BLUE
  */
 void app_ui_led_set_color(u8 r, u8 g, u8 b)
 {
 #if (UI_LED_ENABLE)
-    app_ui_led_pwm_set(LED_PWM_RED_ID, r);
-    app_ui_led_pwm_set(LED_PWM_GREEN_ID, g);
-    app_ui_led_pwm_set(LED_PWM_BLUE_ID, b);
+    gpio_write(GPIO_LED_RED, r > 0 ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    gpio_write(GPIO_LED_GREEN, g > 0 ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    gpio_write(GPIO_LED_BLUE, b > 0 ? LED_ON_LEVEL : !LED_ON_LEVEL);
 #endif
 }
 
