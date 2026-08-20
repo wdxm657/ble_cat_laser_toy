@@ -394,8 +394,15 @@ static u16 g_fct_bat_mv;
 static u16 g_fct_ntc_mv;
 static u8  g_fct_key_stable;
 static u8  g_fct_key_candidate;
+static u8  g_fct_usb_stable;
+static u8  g_fct_usb_candidate;
 static u32 g_fct_key_tick;
+static u32 g_fct_usb_tick;
 static u32 g_fct_adc_tick;
+static u32 g_fct_adc_report_tick;
+static u32 g_fct_bat_mv_sum;
+static u32 g_fct_ntc_mv_sum;
+static u16 g_fct_adc_sample_count;
 static u32 g_fct_led_tick;
 static u8  g_fct_led_step;
 
@@ -415,29 +422,38 @@ static void fct_app_hw_init(void)
     fct_gpio_output_init(GPIO_CHARGE_LED_GREEN, !LED_ON_LEVEL);
     fct_gpio_output_init(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
 
+	// 常开NTC电压AD检测开关
+    gpio_write(V_NTC_CON, 1);
+    // 常开电池电压AD检测开关
+    gpio_write(V_BAT_CON, 1);
+    gpio_write(CHARGE_SWITCH, 1);
+
     gpio_set_func(GPIO_KEY, AS_GPIO);
     gpio_set_input_en(GPIO_KEY, 1);
     gpio_set_output_en(GPIO_KEY, 0);
     gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+
+    gpio_set_func(USB_DET, AS_GPIO);
+    gpio_set_input_en(USB_DET, 1);
+    gpio_set_output_en(USB_DET, 0);
+    gpio_setup_up_down_resistor(CHARGE_STATE, PM_PIN_PULLUP_10K);
 
     for (u8 i = 0; i < sizeof(g_fct_gpio_table) / sizeof(g_fct_gpio_table[0]); i++)
     {
         fct_gpio_output_init(g_fct_gpio_table[i], 0);
     }
 
-    gpio_set_func(AD_BAT, AS_GPIO);
-    gpio_set_input_en(AD_BAT, 1);
-    gpio_set_output_en(AD_BAT, 0);
-    gpio_set_func(AD_NTC, AS_GPIO);
-    gpio_set_input_en(AD_NTC, 1);
-    gpio_set_output_en(AD_NTC, 0);
-
-    adc_init();
-    adc_power_on_sar_adc(1);
     g_fct_key_stable = gpio_read(GPIO_KEY) ? 0 : 1;
     g_fct_key_candidate = g_fct_key_stable;
+    g_fct_usb_stable = gpio_read(USB_DET) ? 1 : 0;
+    g_fct_usb_candidate = g_fct_usb_stable;
     g_fct_key_tick = clock_time();
+    g_fct_usb_tick = clock_time();
     g_fct_adc_tick = 0;
+    g_fct_adc_report_tick = 0;
+    g_fct_bat_mv_sum = 0;
+    g_fct_ntc_mv_sum = 0;
+    g_fct_adc_sample_count = 0;
     g_fct_led_tick = 0;
     g_fct_led_step = 0;
 }
@@ -448,6 +464,7 @@ static void fct_app_led_task(void)
     {
         return;
     }
+
     g_fct_led_tick = clock_time();
 
     gpio_write(GPIO_LED_RED, g_fct_led_step == 0 ? LED_ON_LEVEL : !LED_ON_LEVEL);
@@ -466,14 +483,46 @@ static u16 fct_app_adc_sample(adc_input_pin_def_e pin)
 
 static void fct_app_adc_task(void)
 {
-    if (g_fct_adc_tick && !clock_time_exceed(g_fct_adc_tick, 1000000))
+    u32 now = clock_time();
+
+    if (g_fct_adc_tick == 0)
+    {
+        g_fct_adc_tick = now;
+    }
+    if (g_fct_adc_report_tick == 0)
+    {
+        g_fct_adc_report_tick = now;
+    }
+
+    /* Match app_adc_dbg.c: sample every 10ms and update the cached average every 500ms. */
+    if (clock_time_exceed(g_fct_adc_tick, 10000))
+    {
+        g_fct_bat_mv_sum += fct_app_adc_sample(ADC_GPIO_PB2);
+        g_fct_ntc_mv_sum += fct_app_adc_sample(ADC_GPIO_PC4);
+        g_fct_adc_sample_count++;
+        g_fct_adc_tick = now;
+    }
+
+    if (!clock_time_exceed(g_fct_adc_report_tick, 500000))
     {
         return;
     }
-    g_fct_adc_tick = clock_time();
-    g_fct_bat_mv = fct_app_adc_sample(ADC_GPIO_PB2);
-    g_fct_ntc_mv = fct_app_adc_sample(ADC_GPIO_PC4);
-    fct_uart_send_adc(g_fct_bat_mv, g_fct_ntc_mv);
+
+    if (g_fct_adc_sample_count)
+    {
+        u32 bat_adc_mv = g_fct_bat_mv_sum / g_fct_adc_sample_count;
+        u32 ntc_adc_mv = g_fct_ntc_mv_sum / g_fct_adc_sample_count;
+
+        /* app_adc_dbg.c uses a 660k/100k divider: battery = ADC * 6.6. */
+        bat_adc_mv = (bat_adc_mv * 66u + 5u) / 10u;
+        g_fct_bat_mv = (bat_adc_mv > 0xFFFFu) ? 0xFFFFu : (u16)bat_adc_mv;
+        g_fct_ntc_mv = (ntc_adc_mv > 0xFFFFu) ? 0xFFFFu : (u16)ntc_adc_mv;
+    }
+
+    g_fct_bat_mv_sum = 0;
+    g_fct_ntc_mv_sum = 0;
+    g_fct_adc_sample_count = 0;
+    g_fct_adc_report_tick = now;
 }
 
 static void fct_app_key_task(void)
@@ -494,6 +543,25 @@ static void fct_app_key_task(void)
     }
 }
 
+static void fct_app_usb_task(void)
+{
+    u8 raw = gpio_read(USB_DET) ? 1 : 0;
+
+    if (raw == g_fct_usb_candidate)
+    {
+        if (clock_time_exceed(g_fct_usb_tick, 20000) && raw != g_fct_usb_stable)
+        {
+            g_fct_usb_stable = raw;
+            fct_uart_send_usb(raw);
+        }
+    }
+    else
+    {
+        g_fct_usb_candidate = raw;
+        g_fct_usb_tick = clock_time();
+    }
+}
+
 void fct_app_gpio_set(u8 gpio_id, u8 level)
 {
     if (gpio_id >= sizeof(g_fct_gpio_table) / sizeof(g_fct_gpio_table[0]) || level > 1)
@@ -504,9 +572,32 @@ void fct_app_gpio_set(u8 gpio_id, u8 level)
     fct_uart_send_gpio(gpio_id, level);
 }
 
+void fct_app_gpio_set_all(u8 level)
+{
+    if (level > 1)
+    {
+        return;
+    }
+
+    for (u8 i = 0; i < sizeof(g_fct_gpio_table) / sizeof(g_fct_gpio_table[0]); i++)
+    {
+        gpio_write(g_fct_gpio_table[i], level ? LED_ON_LEVEL : !LED_ON_LEVEL);
+    }
+}
+
 void fct_app_uid_send(void)
 {
     fct_uart_send_event(FCT_EVT_UID, g_flash_uid, sizeof(g_flash_uid));
+}
+
+u16 fct_app_get_bat_mv(void)
+{
+    return g_fct_bat_mv;
+}
+
+u16 fct_app_get_ntc_mv(void)
+{
+    return g_fct_ntc_mv;
 }
 
 void fct_app_status_send(u8 seq)
@@ -529,6 +620,7 @@ void fct_app_enter_low_power(void)
     gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
     cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
     gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
+	gpio_setup_up_down_resistor(CHARGE_SWITCH, PM_PIN_PULLUP_10K);
     cpu_sleep_wakeup(DEEPSLEEP_MODE, PM_WAKEUP_PAD, 0);
 }
 
@@ -546,9 +638,6 @@ _attribute_no_inline_ void user_init_normal(void)
 {
 
 //////////////////////////// basic hardware Initialization  Begin //////////////////////////////////
-
-	fct_app_hw_init();
-	fct_uart_init();
 
 	/* random number generator must be initiated before any BLE stack initialization.
 	 * When deepSleep retention wakeUp, no need initialize again */
@@ -760,7 +849,7 @@ _attribute_no_inline_ void user_init_normal(void)
 				blc_pm_setDeepsleepRetentionEarlyWakeupTiming(550);
 			#endif
 		#else
-			bls_pm_setSuspendMask (SUSPEND_ADV | SUSPEND_CONN);
+			bls_pm_setSuspendMask (SUSPEND_DISABLE);
 		#endif
 
 		bls_app_registerEventCallback (BLT_EV_FLAG_SUSPEND_ENTER, &task_sleep_enter);
@@ -786,6 +875,10 @@ _attribute_no_inline_ void user_init_normal(void)
 	blc_app_checkControllerHostInitialization();
 
 	advertise_begin_tick = clock_time();
+	adc_init();
+	adc_power_on_sar_adc(1);
+	fct_app_hw_init();
+	fct_uart_init();
 }
 #if (PM_DEEPSLEEP_RETENTION_ENABLE)
 /**
@@ -936,8 +1029,9 @@ void main_loop (void)
 
 	fct_uart_task();
 	fct_app_led_task();
-	// fct_app_adc_task();
+	fct_app_adc_task();
 	fct_app_key_task();
+	fct_app_usb_task();
 
 	////////////////////////////////////// PM Process /////////////////////////////////
 	blt_pm_proc();

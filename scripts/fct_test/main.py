@@ -20,12 +20,16 @@ from PyQt5 import QtCore, QtWidgets
 try:
     from .protocol import (
         CMD_GPIO_SET,
+        CMD_GPIO_ALL_SET,
+        CMD_BAT_ADC_READ,
         CMD_LOW_POWER,
+        CMD_NTC_ADC_READ,
         CMD_UID_READ,
         EVT_ADC,
         EVT_GPIO,
         EVT_KEY,
         EVT_UID,
+        EVT_USB,
         FrameParser,
         STATUS_TEXT,
         build_command,
@@ -33,12 +37,16 @@ try:
 except ImportError:
     from protocol import (
         CMD_GPIO_SET,
+        CMD_GPIO_ALL_SET,
+        CMD_BAT_ADC_READ,
         CMD_LOW_POWER,
+        CMD_NTC_ADC_READ,
         CMD_UID_READ,
         EVT_ADC,
         EVT_GPIO,
         EVT_KEY,
         EVT_UID,
+        EVT_USB,
         FrameParser,
         STATUS_TEXT,
         build_command,
@@ -49,6 +57,12 @@ GPIO_NAMES = [
     "PC0", "PC1", "PC2", "PC3", "PB7",
     "PB6", "PB5", "PB4", "PC6", "PD7",
 ]
+GPIO_ALIASES = [
+    "1D", "1C", "1B", "1A", "2A",
+    "2B", "2C", "2D", "Laser", "5v+",
+]
+GPIO_LABELS = [f"{pin} ({alias})" for pin, alias in zip(GPIO_NAMES, GPIO_ALIASES)]
+BLE_DEVICE_NAME = "W2MLaserTOY"
 
 
 class SerialWorker(QtCore.QObject):
@@ -153,11 +167,13 @@ class FctWindow(QtWidgets.QWidget):
         self.bat_label = QtWidgets.QLabel("-- mV")
         self.ntc_label = QtWidgets.QLabel("-- mV")
         self.key_label = QtWidgets.QLabel("未知")
+        self.usb_label = QtWidgets.QLabel("未知")
         self.uid_label = QtWidgets.QLabel("未读取")
         self.ble_label = self._result_label("默认")
         for row, (name, widget) in enumerate([
-            ("电池 ADC", self.bat_label), ("NTC ADC", self.ntc_label),
-            ("按键", self.key_label), ("Flash UID", self.uid_label),
+            ("电池电压", self.bat_label), ("NTC 电压", self.ntc_label),
+            ("按键", self.key_label), ("USB", self.usb_label),
+            ("Flash UID", self.uid_label),
             ("BLE UID 匹配", self.ble_label),
         ]):
             sensor_grid.addWidget(QtWidgets.QLabel(name), row // 2, (row % 2) * 2)
@@ -165,9 +181,13 @@ class FctWindow(QtWidgets.QWidget):
         root.addWidget(sensor_box)
 
         action_row = QtWidgets.QHBoxLayout()
+        self.bat_btn = QtWidgets.QPushButton("读取电池 ADC")
+        self.ntc_btn = QtWidgets.QPushButton("读取 NTC ADC")
         self.uid_btn = QtWidgets.QPushButton("读取 UID")
         self.scan_btn = QtWidgets.QPushButton("扫描 BLE 3 秒")
         self.sleep_btn = QtWidgets.QPushButton("进入低功耗")
+        action_row.addWidget(self.bat_btn)
+        action_row.addWidget(self.ntc_btn)
         action_row.addWidget(self.uid_btn)
         action_row.addWidget(self.scan_btn)
         action_row.addWidget(self.sleep_btn)
@@ -175,12 +195,19 @@ class FctWindow(QtWidgets.QWidget):
 
         gpio_box = QtWidgets.QGroupBox("GPIO 控制")
         gpio_grid = QtWidgets.QGridLayout(gpio_box)
+        self.all_gpio_btn = QtWidgets.QPushButton("全部 GPIO 开")
+        self.all_gpio_btn.setCheckable(True)
+        self.all_gpio_btn.setProperty("all_gpio_control", True)
+        self.all_gpio_btn.clicked.connect(self._all_gpio_clicked)
+        gpio_grid.addWidget(self.all_gpio_btn, 0, 0, 1, 5)
+        self._gpio_buttons = []
         for index, name in enumerate(GPIO_NAMES):
-            button = QtWidgets.QPushButton(f"{name} 开")
+            button = QtWidgets.QPushButton(f"{GPIO_LABELS[index]} 开")
             button.setCheckable(True)
             button.setProperty("gpio_index", index)
             button.clicked.connect(self._gpio_clicked)
-            gpio_grid.addWidget(button, index // 5, index % 5)
+            self._gpio_buttons.append(button)
+            gpio_grid.addWidget(button, index // 5 + 1, index % 5)
         root.addWidget(gpio_box)
 
         self.log_edit = QtWidgets.QPlainTextEdit()
@@ -189,6 +216,8 @@ class FctWindow(QtWidgets.QWidget):
 
         self.refresh_btn.clicked.connect(self.refresh_ports)
         self.open_btn.clicked.connect(self._toggle_serial)
+        self.bat_btn.clicked.connect(lambda: self.worker.send(CMD_BAT_ADC_READ))
+        self.ntc_btn.clicked.connect(lambda: self.worker.send(CMD_NTC_ADC_READ))
         self.uid_btn.clicked.connect(lambda: self.worker.send(CMD_UID_READ))
         self.scan_btn.clicked.connect(self._scan_ble)
         self.sleep_btn.clicked.connect(lambda: self.worker.send(CMD_LOW_POWER))
@@ -223,14 +252,41 @@ class FctWindow(QtWidgets.QWidget):
         button = self.sender()
         index = int(button.property("gpio_index"))
         level = 1 if button.isChecked() else 0
-        button.setText(f"{GPIO_NAMES[index]} {'关' if level == 0 else '开'}")
+        button.setText(f"{GPIO_LABELS[index]} {'关' if level == 0 else '开'}")
         self.worker.send(CMD_GPIO_SET, bytes([index, level]))
+        self._sync_all_gpio_button()
+
+    def _all_gpio_clicked(self):
+        level = 1 if self.all_gpio_btn.isChecked() else 0
+        self.all_gpio_btn.setText(f"全部 GPIO {'关' if level == 0 else '开'}")
+        for index, name in enumerate(GPIO_NAMES):
+            button = self._gpio_buttons[index]
+            button.blockSignals(True)
+            button.setChecked(bool(level))
+            button.setText(f"{GPIO_LABELS[index]} {'关' if level == 0 else '开'}")
+            button.blockSignals(False)
+        self.worker.send(CMD_GPIO_ALL_SET, bytes([level]))
+
+    def _sync_all_gpio_button(self):
+        all_on = all(button.isChecked() for button in self._gpio_buttons)
+        self.all_gpio_btn.blockSignals(True)
+        self.all_gpio_btn.setChecked(all_on)
+        self.all_gpio_btn.setText(f"全部 GPIO {'开' if all_on else '关'}")
+        self.all_gpio_btn.blockSignals(False)
 
     def _on_frame(self, frame):
         payload = frame["payload"]
         if frame["type"] == 0x02 and payload:
             self._log(f"响应 cmd=0x{frame['cmd']:02X}: {STATUS_TEXT.get(payload[0], hex(payload[0]))}")
-            if frame["cmd"] == CMD_UID_READ and len(payload) >= 17 and payload[0] == 0:
+            if frame["cmd"] in (CMD_BAT_ADC_READ, CMD_NTC_ADC_READ) and len(payload) >= 3 and payload[0] == 0:
+                value = int.from_bytes(payload[1:3], "little")
+                if frame["cmd"] == CMD_BAT_ADC_READ:
+                    self.bat_label.setText(f"{value} mV")
+                    self._log(f"电池 ADC: {value} mV")
+                else:
+                    self.ntc_label.setText(f"{value} mV")
+                    self._log(f"NTC ADC: {value} mV")
+            elif frame["cmd"] == CMD_UID_READ and len(payload) >= 17 and payload[0] == 0:
                 self.uid = bytes(payload[1:17])
                 self.uid_label.setText(self.uid.hex().upper())
                 self._log(f"UID: {self.uid.hex().upper()}")
@@ -243,12 +299,17 @@ class FctWindow(QtWidgets.QWidget):
                 self.key_label.setText("按下" if payload[4] else "松开")
         elif frame["cmd"] == EVT_KEY and payload:
             self.key_label.setText("按下" if payload[0] else "松开")
+        elif frame["cmd"] == EVT_USB and payload:
+            self.usb_label.setText("已插入" if payload[0] else "已拔出")
         elif frame["cmd"] == EVT_UID:
             self.uid = bytes(payload)
             self.uid_label.setText(self.uid.hex().upper())
             self._log(f"UID: {self.uid.hex().upper()}")
         elif frame["cmd"] == EVT_GPIO and len(payload) >= 2:
-            self._log(f"GPIO {GPIO_NAMES[payload[0]] if payload[0] < len(GPIO_NAMES) else payload[0]} = {payload[1]}")
+            if payload[0] < len(GPIO_LABELS):
+                self._log(f"GPIO {GPIO_LABELS[payload[0]]} = {payload[1]}")
+            else:
+                self._log(f"GPIO {payload[0]} = {payload[1]}")
 
     def _scan_ble(self):
         if BleakScanner is None:
@@ -266,13 +327,23 @@ class FctWindow(QtWidgets.QWidget):
             async def scan():
                 nonlocal found
                 devices = await BleakScanner.discover(timeout=3.0, return_adv=True)
-                target = self.uid.hex().lower()
+                target_uid = bytes(self.uid)
                 for device, adv in devices.values():
-                    values = []
-                    for data in (getattr(adv, "manufacturer_data", {}) or {}).values():
-                        values.append(bytes(data).hex().lower())
-                    if target in "".join(values) or target[::-1] in "".join(values):
-                        found = True
+                    device_name = getattr(device, "name", None)
+                    adv_name = getattr(adv, "local_name", None)
+                    if device_name != BLE_DEVICE_NAME and adv_name != BLE_DEVICE_NAME:
+                        continue
+
+                    manufacturer_data = getattr(adv, "manufacturer_data", {}) or {}
+                    for data in manufacturer_data.values():
+                        raw_data = bytes(data)
+                        if target_uid in raw_data or target_uid[::-1] in raw_data:
+                            self.worker.log.emit(
+                                f"BLE 匹配成功: {BLE_DEVICE_NAME}, Manufacturer Data={raw_data.hex().upper()}"
+                            )
+                            found = True
+                            break
+                    if found:
                         break
             asyncio.run(scan())
         except Exception as exc:

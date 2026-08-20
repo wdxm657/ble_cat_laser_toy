@@ -13,7 +13,10 @@
 enum
 {
     FCT_CMD_GPIO_SET = 0x10,
+    FCT_CMD_GPIO_ALL_SET = 0x11,
     FCT_CMD_UID_READ = 0x20,
+    FCT_CMD_BAT_ADC_READ = 0x21,
+    FCT_CMD_NTC_ADC_READ = 0x22,
     FCT_CMD_LOW_POWER = 0x30,
     FCT_CMD_STATUS_GET = 0x40,
 };
@@ -24,6 +27,7 @@ enum
     FCT_EVT_KEY = 0x81,
     FCT_EVT_GPIO = 0x82,
     FCT_EVT_UID = 0x83,
+    FCT_EVT_USB = 0x84,
 };
 
 enum
@@ -38,8 +42,8 @@ void fct_uart_init(void);
 void fct_uart_ndma_irq_proc(void);
 void fct_uart_task(void);
 void fct_uart_send_event(u8 cmd_id, const u8 *payload, u16 payload_len);
-void fct_uart_send_adc(u16 bat_mv, u16 ntc_mv);
 void fct_uart_send_key(u8 pressed);
+void fct_uart_send_usb(u8 inserted);
 void fct_uart_send_gpio(u8 gpio_id, u8 level);
 
 #endif
