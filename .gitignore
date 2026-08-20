@@ -9,5 +9,6 @@ hardware/**/*zip
 hardware/*/*.htm*
 __Previews
 test/
+*.zip
 
 发票/

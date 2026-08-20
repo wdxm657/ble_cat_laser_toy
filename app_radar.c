@@ -50,7 +50,7 @@ typedef enum
 } hunt_state_e;
 
 #define HUNT_NO_TARGET_TIMEOUT_US   (15u * 1000000u)  // 15s 无目标 → 待机
-#define HUNT_PREY_ZONE_RADIUS_MM    200               // 猎物点半径 20cm
+#define HUNT_PREY_ZONE_RADIUS_MM    400               // 猎物点半径 20cm
 #define HUNT_PREY_ZONE_TIMEOUT_US   (15u * 1000000u)  // 15s 目标在猎物点 → 30s休眠
 #define HUNT_PREY_ZONE_SLEEP_DUR_US (30u * 1000000u)  // 30秒休眠
 #define HUNT_CELEBRATION_DUR_US     (10u * 1000000u)  // 停留10秒
@@ -2313,11 +2313,10 @@ static u8  hunt_is_target_near_prey_point(void)
         last_log_tick = clock_time();
         // 在目标点附近时或等到目标点时才打印，避免过多无关日志
         if (g_hunt_prey_zone_tick != 0 || g_hunt_state == HUNT_STATE_CELEBRATE)
-            BLE_LOG_D("target(%d,%d) prey(%d,%d) dx %d dy %d", tx, ty, g_prey_px_mm, g_prey_py_mm, dx, dy);
+            BLE_LOG_D("cur(%d,%d) per(%d,%d) dx %d dy %d T %d", tx, ty, g_prey_px_mm, g_prey_py_mm, dx, dy, HUNT_PREY_ZONE_RADIUS_MM);
     }
-    s32 d2 = dx * dx + dy * dy;
 
-    return (d2 <= (s32)HUNT_PREY_ZONE_RADIUS_MM * (s32)HUNT_PREY_ZONE_RADIUS_MM) ? 1 : 0;
+    return (dx < HUNT_PREY_ZONE_RADIUS_MM && dy < HUNT_PREY_ZONE_RADIUS_MM) ? 1 : 0;
 }
 
 /** 休眠超时后进入Idle */

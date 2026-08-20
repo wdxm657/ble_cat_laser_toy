@@ -1257,13 +1257,13 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 15
+#define APP_FIRMWARE_VERSION_PATCH 19
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 
 void app_get_firmware_version(void)
 {
-    BLE_LOG_D("[APP][VER] %d.%d.%d", APP_FIRMWARE_VERSION_MAJOR, APP_FIRMWARE_VERSION_MINOR, APP_FIRMWARE_VERSION_PATCH);
+    BLE_LOG_D("[APP][VER] %d.%d.%d", APP_FIRMWARE_VERSION_MAJOR, APP_FIRMWARE_VERSION_MINOR, 1);
 }
 
 // ----------------------- handler: firmware version get -----------------------
