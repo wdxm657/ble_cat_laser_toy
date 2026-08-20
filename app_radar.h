@@ -8,6 +8,7 @@
 #define APP_RADAR_H_
 
 #include "tl_common.h"
+#include "app_config.h"
 
 #define DEG_TO_RAD             0.01745329252f
 #define DEG_TO_RAD_10          (DEG_TO_RAD / 10.0f)

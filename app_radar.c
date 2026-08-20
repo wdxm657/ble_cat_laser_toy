@@ -1190,7 +1190,7 @@ u8 app_radar_find_oldest_complete_record_id(void)
     {
         return 0;
     }
-    BLE_LOG_D("total rec cnt %d", g_radar_play_record_count);
+    BLE_LOG_D("old total rec cnt %d", g_radar_play_record_count);
     u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
     for (u8 i = 0; i < g_radar_play_record_count; i++)
     {
@@ -2312,8 +2312,8 @@ static u8  hunt_is_target_near_prey_point(void)
     {
         last_log_tick = clock_time();
         // 在目标点附近时或等到目标点时才打印，避免过多无关日志
-        if (g_hunt_prey_zone_tick != 0 || g_hunt_state == HUNT_STATE_CELEBRATE)
-            BLE_LOG_D("target(%d,%d) prey(%d,%d) dx %d dy %d", tx, ty, g_prey_px_mm, g_prey_py_mm, dx, dy);
+        // if (g_hunt_prey_zone_tick != 0 || g_hunt_state == HUNT_STATE_CELEBRATE)
+            // BLE_LOG_D("target(%d,%d) prey(%d,%d) dx %d dy %d", tx, ty, g_prey_px_mm, g_prey_py_mm, dx, dy);
     }
     s32 d2 = dx * dx + dy * dy;
 
