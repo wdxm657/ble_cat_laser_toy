@@ -33,47 +33,38 @@ u8 g_ctrlRxBuf[CTRL_RX_MAX_LEN] = {0};
 u8 g_ctrlTxBuf[CTRL_TX_MAX_LEN] = {0};
 
 // simple sequence generator for events/async notifications
-static u8  g_ctrlSeq        = 0;
-static u32 g_power_on_tick  = 0;
-static u32 g_power_off_tick = 0;
+static u8  g_ctrlSeq                   = 0;
+static u32 g_power_on_tick             = 0;
+static u32 g_power_off_tick            = 0;
+static u8  g_power_on_cooldown_active  = 0;
+static u8  g_power_off_cooldown_active = 0;
 
 // Log TX CCC from app_att.c
 extern u8 customCtrlLogCCC[2];
 
-#define POWER_CTRL_OFF_COOLDOWN_US (30000000u) / 1  // 30s
+#define POWER_CTRL_COOLDOWN_US 30000000u  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
 
-static u8 app_ctrl_can_change_power(u8 target_on)
+static void app_ctrl_power_cooldown_task(void)
 {
-    u8 cur_on = app_get_power_state() ? 1 : 0;
-
-    if (target_on)
+    if (g_power_on_cooldown_active && clock_time_exceed(g_power_on_tick, POWER_CTRL_COOLDOWN_US))
     {
-        // 开机不做额外限制
-        return 1;
+        g_power_on_cooldown_active = 0;
     }
 
-    // target_on == 0: 关机限制
-    if (cur_on)
+    if (g_power_off_cooldown_active && clock_time_exceed(g_power_off_tick, POWER_CTRL_COOLDOWN_US))
     {
-        // 开机后 30s 内禁止关机
-        if (g_power_on_tick && !clock_time_exceed(g_power_on_tick, POWER_CTRL_OFF_COOLDOWN_US))
-        {
-            return 0;
-        }
+        g_power_off_cooldown_active = 0;
     }
-    else
-    {
-        // 关机后 30s 内禁止重复关机
-        if (g_power_off_tick && !clock_time_exceed(g_power_off_tick, POWER_CTRL_OFF_COOLDOWN_US))
-        {
-            return 0;
-        }
-    }
+}
 
-    return 1;
+static u8 app_ctrl_power_cooldown_active(u8 after_power_on)
+{
+    app_ctrl_power_cooldown_task();
+
+    return after_power_on ? g_power_on_cooldown_active : g_power_off_cooldown_active;
 }
 
 #if (UI_STEP_MOTOR_ENABLE)
@@ -855,6 +846,8 @@ static int app_ctrl_handle_time_set(u8 seq, u8 *payload, u16 len)
 
 static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
 {
+    app_ctrl_power_cooldown_task();
+
     if (len < 1)
     {
         u8 rsp[3] = {CTRL_STATUS_PARAM_ERROR, 0, CTRL_REASON_NONE};
@@ -902,7 +895,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     {
         if (target_on)
         {
-            if (g_power_off_tick && !clock_time_exceed(g_power_off_tick, POWER_CTRL_OFF_COOLDOWN_US))
+            if (app_ctrl_power_cooldown_active(0))
             {
                 status       = CTRL_STATUS_REJECT_ERROR;
                 reason       = CTRL_REASON_POWER_ON_COOLDOWN_30S;
@@ -911,7 +904,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
         }
         else
         {
-            if (g_power_on_tick && !clock_time_exceed(g_power_on_tick, POWER_CTRL_OFF_COOLDOWN_US))
+            if (app_ctrl_power_cooldown_active(1))
             {
                 status       = CTRL_STATUS_REJECT_ERROR;
                 reason       = CTRL_REASON_POWER_OFF_COOLDOWN_30S;
@@ -932,12 +925,15 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     {
         if (on_effective)
         {
-            g_power_on_tick  = clock_time();
-            g_power_off_tick = 0;
+            g_power_on_tick              = clock_time();
+            g_power_on_cooldown_active   = 1;
+            g_power_off_cooldown_active  = 0;
         }
         else
         {
-            g_power_off_tick = clock_time();
+            g_power_off_tick             = clock_time();
+            g_power_off_cooldown_active  = 1;
+            g_power_on_cooldown_active   = 0;
         }
     }
 
@@ -1526,7 +1522,11 @@ void app_ctrl_init(void)
 {
     memset(g_ctrlRxBuf, 0, sizeof(g_ctrlRxBuf));
     memset(g_ctrlTxBuf, 0, sizeof(g_ctrlTxBuf));
-    g_ctrlSeq = 0;
+    g_ctrlSeq                   = 0;
+    g_power_on_tick             = 0;
+    g_power_off_tick            = 0;
+    g_power_on_cooldown_active  = 0;
+    g_power_off_cooldown_active = 0;
 #if (UI_STEP_MOTOR_ENABLE)
     memset(&g_motor_dir_state, 0, sizeof(g_motor_dir_state));
 #endif
@@ -1556,6 +1556,8 @@ void app_ctrl_notify_play_record_changed(void)
 
 void app_ctrl_task(void)
 {
+    app_ctrl_power_cooldown_task();
+
 #if (UI_RADAR_ENABLE)
     u32 now = clock_time();
 

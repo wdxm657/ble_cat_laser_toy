@@ -130,18 +130,21 @@ class SerialWorker(QtCore.QObject):
 
 
 class FctWindow(QtWidgets.QWidget):
-    scan_finished = QtCore.pyqtSignal(bool)
+    ble_devices_updated = QtCore.pyqtSignal(list)
 
     def __init__(self):
         super().__init__()
         self.worker = SerialWorker()
         self.uid = b""
+        self._ble_stop = threading.Event()
+        self._ble_devices = {}
         self._build_ui()
         self.worker.frame.connect(self._on_frame)
         self.worker.log.connect(self._log)
         self.worker.connected.connect(self._on_connected)
-        self.scan_finished.connect(self._finish_scan)
+        self.ble_devices_updated.connect(self._on_ble_devices_updated)
         self.refresh_ports()
+        self._start_ble_scan()
 
     def _build_ui(self):
         self.setWindowTitle("B80 FCT 量产测试")
@@ -184,14 +187,18 @@ class FctWindow(QtWidgets.QWidget):
         self.bat_btn = QtWidgets.QPushButton("读取电池 ADC")
         self.ntc_btn = QtWidgets.QPushButton("读取 NTC ADC")
         self.uid_btn = QtWidgets.QPushButton("读取 UID")
-        self.scan_btn = QtWidgets.QPushButton("扫描 BLE 3 秒")
         self.sleep_btn = QtWidgets.QPushButton("进入低功耗")
         action_row.addWidget(self.bat_btn)
         action_row.addWidget(self.ntc_btn)
         action_row.addWidget(self.uid_btn)
-        action_row.addWidget(self.scan_btn)
         action_row.addWidget(self.sleep_btn)
         root.addLayout(action_row)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.fct_page = QtWidgets.QWidget()
+        self.ble_page = QtWidgets.QWidget()
+        fct_layout = QtWidgets.QVBoxLayout(self.fct_page)
+        ble_layout = QtWidgets.QVBoxLayout(self.ble_page)
 
         gpio_box = QtWidgets.QGroupBox("GPIO 控制")
         gpio_grid = QtWidgets.QGridLayout(gpio_box)
@@ -208,7 +215,18 @@ class FctWindow(QtWidgets.QWidget):
             button.clicked.connect(self._gpio_clicked)
             self._gpio_buttons.append(button)
             gpio_grid.addWidget(button, index // 5 + 1, index % 5)
-        root.addWidget(gpio_box)
+        fct_layout.addWidget(gpio_box)
+
+        self.ble_table = QtWidgets.QTableWidget(0, 4)
+        self.ble_table.setHorizontalHeaderLabels(["匹配", "地址", "名称", "Manufacturer Specific Data"])
+        self.ble_table.horizontalHeader().setStretchLastSection(True)
+        self.ble_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.ble_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        ble_layout.addWidget(self.ble_table)
+
+        self.tabs.addTab(self.fct_page, "FCT 控制")
+        self.tabs.addTab(self.ble_page, "BLE 设备")
+        root.addWidget(self.tabs)
 
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
@@ -219,7 +237,6 @@ class FctWindow(QtWidgets.QWidget):
         self.bat_btn.clicked.connect(lambda: self.worker.send(CMD_BAT_ADC_READ))
         self.ntc_btn.clicked.connect(lambda: self.worker.send(CMD_NTC_ADC_READ))
         self.uid_btn.clicked.connect(lambda: self.worker.send(CMD_UID_READ))
-        self.scan_btn.clicked.connect(self._scan_ble)
         self.sleep_btn.clicked.connect(lambda: self.worker.send(CMD_LOW_POWER))
 
     def _result_label(self, text):
@@ -290,6 +307,7 @@ class FctWindow(QtWidgets.QWidget):
                 self.uid = bytes(payload[1:17])
                 self.uid_label.setText(self.uid.hex().upper())
                 self._log(f"UID: {self.uid.hex().upper()}")
+                self._refresh_ble_table()
         elif frame["type"] != 0x03:
             return
         elif frame["cmd"] == EVT_ADC and len(payload) >= 4:
@@ -305,62 +323,100 @@ class FctWindow(QtWidgets.QWidget):
             self.uid = bytes(payload)
             self.uid_label.setText(self.uid.hex().upper())
             self._log(f"UID: {self.uid.hex().upper()}")
+            self._refresh_ble_table()
         elif frame["cmd"] == EVT_GPIO and len(payload) >= 2:
             if payload[0] < len(GPIO_LABELS):
                 self._log(f"GPIO {GPIO_LABELS[payload[0]]} = {payload[1]}")
             else:
                 self._log(f"GPIO {payload[0]} = {payload[1]}")
 
-    def _scan_ble(self):
+    def _start_ble_scan(self):
         if BleakScanner is None:
             self._log("缺少 bleak，请安装 bleak")
             return
+        self._ble_stop.clear()
+        threading.Thread(target=self._ble_scan_loop, daemon=True).start()
+
+    def _ble_scan_loop(self):
+        while not self._ble_stop.is_set():
+            try:
+                devices_info = asyncio.run(self._discover_ble_devices())
+            except Exception as exc:
+                self.worker.log.emit(f"BLE 扫描失败: {exc}")
+                devices_info = []
+
+            self.ble_devices_updated.emit(devices_info)
+
+    async def _discover_ble_devices(self):
+        devices_info = []
+        devices = await BleakScanner.discover(timeout=3.0, return_adv=True)
+        for device, adv in devices.values():
+            device_name = getattr(device, "name", None)
+            adv_name = getattr(adv, "local_name", None)
+            if device_name != BLE_DEVICE_NAME and adv_name != BLE_DEVICE_NAME:
+                continue
+
+            manufacturer_data = getattr(adv, "manufacturer_data", {}) or {}
+            manufacturer_items = []
+            manufacturer_raw = []
+            for company_id, data in manufacturer_data.items():
+                raw_data = company_id.to_bytes(2, "little") + bytes(data)
+                manufacturer_raw.append(raw_data)
+                manufacturer_items.append(raw_data.hex(" ").upper())
+
+            address = getattr(device, "address", "")
+            devices_info.append({
+                "address": address,
+                "name": adv_name or device_name or BLE_DEVICE_NAME,
+                "manufacturer_text": " ".join(manufacturer_items),
+                "manufacturer_raw": manufacturer_raw,
+                "last_seen": time.time(),
+            })
+        return devices_info
+
+    def _on_ble_devices_updated(self, devices_info):
+        for item in devices_info:
+            self._ble_devices[item["address"]] = item
+        self._refresh_ble_table()
+
+    def _ble_item_matches_uid(self, item):
         if not self.uid:
-            self._log("请先读取 UID")
-            return
-        self.scan_btn.setEnabled(False)
-        threading.Thread(target=self._scan_ble_thread, daemon=True).start()
+            return False
+        target_uid = bytes(self.uid)
+        return any(target_uid in raw for raw in item["manufacturer_raw"])
 
-    def _scan_ble_thread(self):
+    def _refresh_ble_table(self):
+        devices = sorted(self._ble_devices.values(), key=lambda item: item["address"])
+        self.ble_table.setRowCount(len(devices))
+
         found = False
-        try:
-            async def scan():
-                nonlocal found
-                devices = await BleakScanner.discover(timeout=3.0, return_adv=True)
-                target_uid = bytes(self.uid)
-                for device, adv in devices.values():
-                    device_name = getattr(device, "name", None)
-                    adv_name = getattr(adv, "local_name", None)
-                    if device_name != BLE_DEVICE_NAME and adv_name != BLE_DEVICE_NAME:
-                        continue
+        for row, item in enumerate(devices):
+            matched = self._ble_item_matches_uid(item)
+            found = found or matched
+            values = [
+                "匹配" if matched else "",
+                item["address"],
+                item["name"],
+                item["manufacturer_text"],
+            ]
+            for column, value in enumerate(values):
+                table_item = QtWidgets.QTableWidgetItem(value)
+                if matched:
+                    table_item.setBackground(QtCore.Qt.green)
+                self.ble_table.setItem(row, column, table_item)
 
-                    manufacturer_data = getattr(adv, "manufacturer_data", {}) or {}
-                    for data in manufacturer_data.values():
-                        raw_data = bytes(data)
-                        if target_uid in raw_data or target_uid[::-1] in raw_data:
-                            self.worker.log.emit(
-                                f"BLE 匹配成功: {BLE_DEVICE_NAME}, Manufacturer Data={raw_data.hex().upper()}"
-                            )
-                            found = True
-                            break
-                    if found:
-                        break
-            asyncio.run(scan())
-        except Exception as exc:
-            self.worker.log.emit(f"BLE 扫描失败: {exc}")
-        self.scan_finished.emit(found)
-
-    @QtCore.pyqtSlot(bool)
-    def _finish_scan(self, found):
-        self.ble_label.setText("匹配" if found else "不匹配")
-        self._set_result(self.ble_label, "ok" if found else "fail")
-        self.scan_btn.setEnabled(True)
-        self._log("BLE UID 匹配成功" if found else "BLE UID 未匹配")
+        if self.uid:
+            self.ble_label.setText("匹配" if found else "不匹配")
+            self._set_result(self.ble_label, "ok" if found else "fail")
+        else:
+            self.ble_label.setText("默认")
+            self._set_result(self.ble_label, "default")
 
     def _log(self, text):
         self.log_edit.appendPlainText(f"[{time.strftime('%H:%M:%S')}] {text}")
 
     def closeEvent(self, event):
+        self._ble_stop.set()
         self.worker.close()
         event.accept()
 
