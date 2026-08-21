@@ -370,24 +370,11 @@ void app_get_flash_uid(u8 *uid, u8 len)
 
 void app_uart_ndma_irq_proc(void);
 
-enum
-{
-    FCT_GPIO_PC0 = 0,
-    FCT_GPIO_PC1,
-    FCT_GPIO_PC2,
-    FCT_GPIO_PC3,
-    FCT_GPIO_PB7,
-    FCT_GPIO_PB6,
-    FCT_GPIO_PB5,
-    FCT_GPIO_PB4,
-    FCT_GPIO_PC6,
-    FCT_GPIO_PD7,
-};
 
 static const GPIO_PinTypeDef g_fct_gpio_table[] = {
     GPIO_PC0, GPIO_PC1, GPIO_PC2, GPIO_PC3,
     GPIO_PB7, GPIO_PB6, GPIO_PB5, GPIO_PB4,
-    GPIO_PC6, GPIO_PD7,
+    GPIO_PC6, GPIO_PD7, GPIO_PD5, GPIO_PD6
 };
 
 static u16 g_fct_bat_mv;

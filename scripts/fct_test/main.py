@@ -54,12 +54,12 @@ except ImportError:
 
 
 GPIO_NAMES = [
-    "PC0", "PC1", "PC2", "PC3", "PB7",
-    "PB6", "PB5", "PB4", "PC6", "PD7",
+    " ", " ", " ", " ", " ",
+    " ", " ", " ", " ", " ",
 ]
 GPIO_ALIASES = [
-    "1D", "1C", "1B", "1A", "2A",
-    "2B", "2C", "2D", "Laser", "5v+",
+    "1A", "1B", "1C", "1D", "2D",
+    "2C", "2B", "2A", "Laser", "5v+",
 ]
 GPIO_LABELS = [f"{pin} ({alias})" for pin, alias in zip(GPIO_NAMES, GPIO_ALIASES)]
 BLE_DEVICE_NAME = "W2MLaserTOY"
