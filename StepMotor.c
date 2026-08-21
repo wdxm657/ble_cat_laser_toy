@@ -1,5 +1,5 @@
 #include "StepMotor.h"
-
+#include "app_config.h"
 #if (UI_STEP_MOTOR_ENABLE)
 
 #define STEP_MOTOR_PHASE_COUNT      8
@@ -456,7 +456,7 @@ void StepMotor_GimbalResetTask(void)
 
     case MOTOR_RESET_TILT_UP:
         LOG_D("[MOTOR] reset tilt up to -90");
-        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-95), 1);
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-100), 1);
         g_reset_state = MOTOR_RESET_WAIT_TILT_UP;
         break;
 
@@ -488,7 +488,7 @@ void StepMotor_GimbalResetTask(void)
 
     case MOTOR_RESET_PAN_RIGHT:
         LOG_D("[MOTOR] reset pan right to -97");
-        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-97), 1);
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-95), 1);
         g_reset_state = MOTOR_RESET_WAIT_PAN_RIGHT;
         break;
 
