@@ -1,5 +1,7 @@
 # B80 FCT 上位机
 
+## 安装和运行
+
 安装依赖：
 
 ```bash
@@ -18,20 +20,18 @@ python -m scripts.fct_test.main
 2. 点击“打开串口”。
 3. 使用 GPIO 单路按钮或“全部 GPIO 开/关”按钮控制输出。
 4. 点击“读取电池 ADC”和“读取 NTC ADC”获取最新缓存值。
-5. 上位机进入 APP 后会常开 BLE 扫描，并在“BLE 设备”页面展示所有名称为 `W2MLaserTOY` 的设备及 Manufacturer Specific Data。Bleak 会把 Manufacturer Data 拆成 Company ID 和数据体，上位机会按小端序把 Company ID 拼回前两个字节后再显示和匹配。
-6. 点击“读取 UID”后，上位机会用 UID 匹配当前 BLE 设备列表中的 Manufacturer Specific Data，匹配设备会高亮显示，状态区域同步显示匹配结果。
-7. 按键和 USB 插拔事件会自动显示在状态区域。
+5. 点击“读取 UID”和“读取固件版本”获取设备信息。
+6. 上位机启动后常开 BLE 扫描，并在“BLE 设备”页面展示所有名称为 `W2MLaserTOY` 的设备及 Manufacturer Specific Data。
+7. 读取 UID 后，上位机会用 UID 匹配当前 BLE 设备列表中的 Manufacturer Specific Data，匹配设备会高亮显示，状态区域同步显示匹配结果。
+8. 按键和 USB 插拔事件会自动显示在状态区域。
 
 上位机会在终端打印原始 `TX ...` 和 `RX ...` 十六进制日志，便于串口调试。
 
-# B80 FCT 量产测试
-
-## 1. 串口接口
+## 串口接口
 
 - 默认参数：`115200 8N1`
-- 不使用回环串口 `PD5/PD6`
 
-## 2. 数据帧格式
+## 帧格式
 
 所有多字节数值均为小端序：
 
@@ -50,65 +50,24 @@ python -m scripts.fct_test.main
 | `payload` | N | 负载数据 |
 | `crc16` | 2 | Modbus CRC16，小端序 |
 
-CRC 计算范围为 `version` 到 `payload` 的全部字节，不包含 `55 AA` 和 CRC 本身。帧总长度为 `10 + payload_len`。
+CRC 计算范围为 `version` 到 `payload` 的全部字节，不包含帧头 `55 AA` 和 CRC 本身。帧总长度为 `10 + payload_len`。
 
-## 3. 命令协议
+## 命令协议
 
-### GPIO 单路控制：`0x10`
+| 命令 | 名称 | TX 负载 | RX 负载 |
+| ---: | --- | --- | --- |
+| `0x10` | GPIO 单路控制 | `gpio_id level` | `status` |
+| `0x11` | GPIO 全部控制 | `level` | `status` |
+| `0x20` | 读取 Flash UID | 无 | `status uid[16]` |
+| `0x21` | 读取电池 ADC | 无 | `status battery_mv_u16` |
+| `0x22` | 读取 NTC ADC | 无 | `status ntc_mv_u16` |
+| `0x23` | 读取固件版本 | 无 | `status major minor patch` |
+| `0x30` | 进入低功耗 | 无 | `status` |
+| `0x40` | 读取状态 | 无 | 固件返回 `0x80` ADC 状态事件 |
 
-负载为 `gpio_id level`：
+`status` 是响应状态码，固定放在所有响应负载的第 1 个字节。只有 `status=00` 时，后续负载字段才表示有效数据。
 
-- `gpio_id`：GPIO 对照表中的编号，范围 `0~9`
-- `level`：`00` 关闭，`01` 开启
-
-成功时返回 `status=00`，并额外发送一个 `0x82` GPIO 事件。
-
-### GPIO 全部控制：`0x11`
-
-负载只有一个字节：
-
-```text
-level
-```
-
-一次设置全部 10 路 GPIO，仅返回一帧响应，不发送 10 条单路命令。
-
-### 读取 Flash UID：`0x20`
-
-无负载。响应负载为：
-
-```text
-status uid[16]
-```
-
-### 读取电池 ADC：`0x21`
-
-无负载。响应负载为：
-
-```text
-status battery_mv_u16
-```
-
-电池电压按 `app_adc_dbg.c` 的分压比例计算，即 ADC 电压乘以 `6.6`，单位为 mV。
-
-### 读取 NTC ADC：`0x22`
-
-无负载。响应负载为：
-
-```text
-status ntc_mv_u16
-```
-
-NTC 值为平均后的 NTC ADC 引脚电压，单位为 mV。
-
-### 进入低功耗：`0x30`
-
-无负载。固件先返回成功响应，然后进入深度睡眠。
-
-
-## 4. 响应状态码
-
-响应负载的第一个字节为状态：
+状态码定义：
 
 | 值 | 含义 |
 | ---: | --- |
@@ -117,25 +76,53 @@ NTC 值为平均后的 NTC ADC 引脚电压，单位为 mV。
 | `02` | 不支持的命令 |
 | `03` | 参数错误 |
 
-## 5. 设备事件
+## 设备事件
 
 事件帧的 `type` 为 `03`：
 
-| 事件编号 | 名称 | 负载 |
+| 事件 | 名称 | 负载 |
 | ---: | --- | --- |
-| `80` | ADC 状态 | `battery_mv_u16 ntc_mv_u16 key_state` |
-| `81` | 按键 | `key_state`，`01` 按下，`00` 松开 |
-| `82` | 单路 GPIO | `gpio_id level` |
-| `83` | UID 事件 | `uid[16]` |
-| `84` | USB 检测 | `usb_state`，`01` 插入，`00` 拔出 |
+| `0x80` | ADC 状态 | `battery_mv_u16 ntc_mv_u16 key_state` |
+| `0x81` | 按键 | `key_state`，`01` 按下，`00` 松开 |
+| `0x82` | 单路 GPIO | `gpio_id level` |
+| `0x83` | UID 事件 | `uid[16]` |
+| `0x84` | USB 检测 | `usb_state`，`01` 插入，`00` 拔出 |
 
-按键和 USB 检测均使用约 20 ms 去抖，只在状态变化时上报。USB 检测脚为 `GPIO_PA2`，高电平表示插入。
+ADC 不自动上传。电池 ADC、NTC ADC 通过按钮主动读取。按键和 USB 检测均使用约 20 ms 去抖，只在状态变化时上报。
 
-## 6. TX/RX 示例
+## GPIO 对照表
 
-下面示例中的 UID 是演示数据，CRC 已按本协议计算。
+| `gpio_id` | 芯片 GPIO | Alias |
+| ---: | --- | --- |
+| 0 | `PC0` | `1A` |
+| 1 | `PC1` | `1B` |
+| 2 | `PC2` | `1C` |
+| 3 | `PC3` | `1D` |
+| 4 | `PB7` | `2D` |
+| 5 | `PB6` | `2C` |
+| 6 | `PB5` | `2B` |
+| 7 | `PB4` | `2A` |
+| 8 | `PC6` | `Laser` |
+| 9 | `PD7` | `5v+` |
 
-### 单路 GPIO：打开 PC0 / 1D
+协议中的 `level=1` 表示开启，`level=0` 表示关闭。
+
+## BLE UID 匹配
+
+上位机只展示名称为 `W2MLaserTOY` 的 BLE 设备。Bleak 会把 Manufacturer Specific Data 拆成 Company ID 和数据体，上位机会按小端序把 Company ID 拼回前两个字节后再显示和匹配。
+
+示例：
+
+```text
+Bleak: company_id=0x5042 data=32 30 33 33 37 17 00 F7 03 44 56 03 01 78
+完整 Manufacturer Specific Data: 42 50 32 30 33 33 37 17 00 F7 03 44 56 03 01 78
+```
+
+读取到的 UID 若完整包含于上述 Manufacturer Specific Data，则对应表格行高亮。
+
+## TX/RX 示例
+
+### GPIO 单路控制：打开 `gpio_id=0`
 
 ```text
 TX 12B: 55 AA 01 01 10 00 02 00 00 01 53 EF
@@ -145,7 +132,7 @@ RX 11B: 55 AA 01 02 10 00 01 00 00 9A 21
 
 第一帧 RX 是 GPIO 状态事件，第二帧 RX 是命令响应。
 
-### 一次打开全部 GPIO
+### GPIO 全部打开
 
 ```text
 TX 11B: 55 AA 01 01 11 01 01 00 01 67 EE
@@ -159,17 +146,32 @@ TX 10B: 55 AA 01 01 20 02 00 00 96 0A
 RX 27B: 55 AA 01 02 20 02 11 00 00 50 32 00 42 33 37 30 33 F7 03 17 00 03 01 44 2D C9 88
 ```
 
-### 读取电池和 NTC ADC
+### 读取电池 ADC
 
 ```text
 TX 10B: 55 AA 01 01 21 03 00 00 C6 36
 RX 13B: 55 AA 01 02 21 03 03 00 00 D8 0E 28 4C
+```
 
+上例电池值为 `0x0ED8 = 3800 mV`。
+
+### 读取 NTC ADC
+
+```text
 TX 10B: 55 AA 01 01 22 04 00 00 77 B3
 RX 13B: 55 AA 01 02 22 04 03 00 00 72 06 65 9D
 ```
 
-上例中电池值为 `0x0ED8 = 3800 mV`，NTC 值为 `0x0672 = 1650 mV`。
+上例 NTC 值为 `0x0672 = 1650 mV`。
+
+### 读取固件版本
+
+```text
+TX 10B: 55 AA 01 01 23 06 00 00 D7 8F
+RX 14B: 55 AA 01 02 23 06 04 00 00 01 00 00 4C EB
+```
+
+上例响应负载为 `00 01 00 00`：`status=00` 表示成功，版本号为 `1.0.0`。
 
 ### 按键按下和 USB 插入
 

@@ -22,6 +22,7 @@ try:
         CMD_GPIO_SET,
         CMD_GPIO_ALL_SET,
         CMD_BAT_ADC_READ,
+        CMD_FW_VERSION_READ,
         CMD_LOW_POWER,
         CMD_NTC_ADC_READ,
         CMD_UID_READ,
@@ -39,6 +40,7 @@ except ImportError:
         CMD_GPIO_SET,
         CMD_GPIO_ALL_SET,
         CMD_BAT_ADC_READ,
+        CMD_FW_VERSION_READ,
         CMD_LOW_POWER,
         CMD_NTC_ADC_READ,
         CMD_UID_READ,
@@ -172,11 +174,12 @@ class FctWindow(QtWidgets.QWidget):
         self.key_label = QtWidgets.QLabel("未知")
         self.usb_label = QtWidgets.QLabel("未知")
         self.uid_label = QtWidgets.QLabel("未读取")
+        self.fw_version_label = QtWidgets.QLabel("未读取")
         self.ble_label = self._result_label("默认")
         for row, (name, widget) in enumerate([
             ("电池电压", self.bat_label), ("NTC 电压", self.ntc_label),
             ("按键", self.key_label), ("USB", self.usb_label),
-            ("Flash UID", self.uid_label),
+            ("Flash UID", self.uid_label), ("固件版本", self.fw_version_label),
             ("BLE UID 匹配", self.ble_label),
         ]):
             sensor_grid.addWidget(QtWidgets.QLabel(name), row // 2, (row % 2) * 2)
@@ -187,10 +190,12 @@ class FctWindow(QtWidgets.QWidget):
         self.bat_btn = QtWidgets.QPushButton("读取电池 ADC")
         self.ntc_btn = QtWidgets.QPushButton("读取 NTC ADC")
         self.uid_btn = QtWidgets.QPushButton("读取 UID")
+        self.fw_version_btn = QtWidgets.QPushButton("读取固件版本")
         self.sleep_btn = QtWidgets.QPushButton("进入低功耗")
         action_row.addWidget(self.bat_btn)
         action_row.addWidget(self.ntc_btn)
         action_row.addWidget(self.uid_btn)
+        action_row.addWidget(self.fw_version_btn)
         action_row.addWidget(self.sleep_btn)
         root.addLayout(action_row)
 
@@ -237,6 +242,7 @@ class FctWindow(QtWidgets.QWidget):
         self.bat_btn.clicked.connect(lambda: self.worker.send(CMD_BAT_ADC_READ))
         self.ntc_btn.clicked.connect(lambda: self.worker.send(CMD_NTC_ADC_READ))
         self.uid_btn.clicked.connect(lambda: self.worker.send(CMD_UID_READ))
+        self.fw_version_btn.clicked.connect(lambda: self.worker.send(CMD_FW_VERSION_READ))
         self.sleep_btn.clicked.connect(lambda: self.worker.send(CMD_LOW_POWER))
 
     def _result_label(self, text):
@@ -308,6 +314,10 @@ class FctWindow(QtWidgets.QWidget):
                 self.uid_label.setText(self.uid.hex().upper())
                 self._log(f"UID: {self.uid.hex().upper()}")
                 self._refresh_ble_table()
+            elif frame["cmd"] == CMD_FW_VERSION_READ and len(payload) >= 4 and payload[0] == 0:
+                version = f"{payload[1]}.{payload[2]}.{payload[3]}"
+                self.fw_version_label.setText(version)
+                self._log(f"固件版本: {version}")
         elif frame["type"] != 0x03:
             return
         elif frame["cmd"] == EVT_ADC and len(payload) >= 4:

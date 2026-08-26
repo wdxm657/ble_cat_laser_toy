@@ -15,6 +15,9 @@ extern u8 g_flash_uid[16];
 #define FCT_FRAME_HEAD1 0xAA
 #define FCT_FRAME_OVERHEAD 10
 #define FCT_FRAME_MAX_SIZE (FCT_FRAME_OVERHEAD + FCT_UART_MAX_PAYLOAD)
+#define FCT_FW_VERSION_MAJOR 1
+#define FCT_FW_VERSION_MINOR 0
+#define FCT_FW_VERSION_PATCH 0
 
 static volatile u8 g_fct_rx_frame[FCT_FRAME_MAX_SIZE];
 static volatile u8 g_fct_rx_frame_len;
@@ -251,6 +254,15 @@ static void fct_handle_frame(const u8 *frame)
                     fct_app_get_bat_mv() : fct_app_get_ntc_mv();
         u8 value_payload[2] = {(u8)value, (u8)(value >> 8)};
         fct_uart_send_rsp(cmd, seq, FCT_STATUS_OK, value_payload, sizeof(value_payload));
+    }
+    else if (cmd == FCT_CMD_FW_VERSION_READ)
+    {
+        const u8 version[] = {
+            FCT_FW_VERSION_MAJOR,
+            FCT_FW_VERSION_MINOR,
+            FCT_FW_VERSION_PATCH,
+        };
+        fct_uart_send_rsp(cmd, seq, FCT_STATUS_OK, version, sizeof(version));
     }
     else if (cmd == FCT_CMD_LOW_POWER)
     {
