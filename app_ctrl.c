@@ -1257,7 +1257,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 23
+#define APP_FIRMWARE_VERSION_PATCH 28
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 
@@ -1568,6 +1568,7 @@ void app_ctrl_task(void)
         g_play_record_delay_active = 0;
         g_play_upload_pending      = 1;
         BLE_LOG_D("play record: BLE connected, will check");
+        // app_att_battery_update(app_adc_dbg_get_bat_percent_exact());
     }
 
     // ACK 超时重传（先于 IDLE 检查）

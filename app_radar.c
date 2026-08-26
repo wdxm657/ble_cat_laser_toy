@@ -1190,11 +1190,11 @@ u8 app_radar_find_oldest_complete_record_id(void)
     {
         return 0;
     }
-    BLE_LOG_D("old total rec cnt %d", g_radar_play_record_count);
     u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
     for (u8 i = 0; i < g_radar_play_record_count; i++)
     {
         u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
+        BLE_LOG_D("old total rec cnt %d id:%d", g_radar_play_record_count, idx);
         if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
         {
             return g_radar_play_record_id[idx];
@@ -2455,32 +2455,32 @@ void app_radar_task_power_schedule(void)
         }
 
         // 条件2: 连续15s目标在猎物点半径20cm内 → 30s休眠
-        if (hunt_is_target_near_prey_point())
-        {
-            if (g_hunt_prey_zone_tick == 0)
-            {
-                g_hunt_prey_zone_tick = now_tick;
-                BLE_LOG_D("HUNT: target in prey zone, start timer %d", (g_hunt_prey_zone_tick / 1000000) >> 4);
-            }
-            else if (clock_time_exceed(g_hunt_prey_zone_tick, HUNT_PREY_ZONE_TIMEOUT_US))
-            {
-                radar_play_record_end();  // 记录为未完成
-                radar_working_mode_set(0);
-                StepMotor_StopAll();
-                app_radar_status_led_set(0);
-                app_radar_power_switch(0);
-                g_radar_hold_on_mode  = 0;
-                g_hunt_state          = HUNT_STATE_PREY_ZONE_SLEEP;
-                g_hunt_no_target_tick = 0;
-                g_hunt_prey_zone_tick = 0;
-                BLE_LOG_D("HUNT: ACTIVE -> PREY_ZONE_SLEEP (target in prey zone 15s) total_ms %d", g_hunt_total_active_ms / 1000);
-                return;
-            }
-        }
-        else
-        {
-            g_hunt_prey_zone_tick = 0;
-        }
+        // if (hunt_is_target_near_prey_point())
+        // {
+        //     if (g_hunt_prey_zone_tick == 0)
+        //     {
+        //         g_hunt_prey_zone_tick = now_tick;
+        //         BLE_LOG_D("HUNT: target in prey zone, start timer %d", (g_hunt_prey_zone_tick / 1000000) >> 4);
+        //     }
+        //     else if (clock_time_exceed(g_hunt_prey_zone_tick, HUNT_PREY_ZONE_TIMEOUT_US))
+        //     {
+        //         radar_play_record_end();  // 记录为未完成
+        //         radar_working_mode_set(0);
+        //         StepMotor_StopAll();
+        //         app_radar_status_led_set(0);
+        //         app_radar_power_switch(0);
+        //         g_radar_hold_on_mode  = 0;
+        //         g_hunt_state          = HUNT_STATE_PREY_ZONE_SLEEP;
+        //         g_hunt_no_target_tick = 0;
+        //         g_hunt_prey_zone_tick = 0;
+        //         BLE_LOG_D("HUNT: ACTIVE -> PREY_ZONE_SLEEP (target in prey zone 15s) total_ms %d", g_hunt_total_active_ms / 1000);
+        //         return;
+        //     }
+        // }
+        // else
+        // {
+        //     g_hunt_prey_zone_tick = 0;
+        // }
 
         // 条件3: 狩猎计时到达预设值(固定时长，不按猫运动的时长来判断) → 完成移动
         if (clock_time_exceed(g_hunt_session_tick, (u32)g_hunt_duration_s * 1000000u))
@@ -2500,16 +2500,17 @@ void app_radar_task_power_schedule(void)
             return;
         }
 
-        // 条件4：总逗宠时长若达到预设值则直接进入休眠
-        if (g_hunt_total_active_ms / 1000 >= (u32)g_hunt_duration_s * (u32)g_hunt_count)
-        {
-            BLE_LOG_D("HUNT: ACTIVE -> SLEEP (total active %ds)", g_hunt_total_active_ms / 1000);
-            radar_play_record_end();
-            app_radar_power_switch(0);
-            g_radar_hold_on_mode  = 0;
-            g_hunt_state          = HUNT_STATE_SLEEP;
-            g_hunt_sleep_end_tick = now_tick;
-        }
+        // 条件4：总逗宠时长若达到预设值则直接进入休眠,
+        // 目前不需要这个业务逻辑了，注释掉。
+        // if (g_hunt_total_active_ms / 1000 >= (u32)g_hunt_duration_s * (u32)g_hunt_count)
+        // {
+        //     BLE_LOG_D("HUNT: ACTIVE -> SLEEP (total active %ds)", g_hunt_total_active_ms / 1000);
+        //     radar_play_record_end();
+        //     app_radar_power_switch(0);
+        //     g_radar_hold_on_mode  = 0;
+        //     g_hunt_state          = HUNT_STATE_SLEEP;
+        //     g_hunt_sleep_end_tick = now_tick;
+        // }
 
         return;
     }

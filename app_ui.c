@@ -240,7 +240,7 @@ void app_ui_power_led_task(void)
 
     /* 电源状态灯独立于工作状态灯，不受电源开关影响 */
     u8 charging    = app_adc_dbg_is_charging();
-    u8 bat_percent = app_adc_dbg_get_bat_percent();
+    u8 bat_percent = app_adc_dbg_get_bat_percent_exact();
 
     if (bat_percent >= 80)
     {
