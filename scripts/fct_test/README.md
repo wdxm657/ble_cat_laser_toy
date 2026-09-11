@@ -5,13 +5,13 @@
 安装依赖：
 
 ```bash
-python -m pip install pyserial bleak PyQt5
+pip install pyserial bleak PyQt5 -i  https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 运行：
 
 ```bash
-python -m scripts.fct_test.main
+python main.py
 ```
 
 操作顺序：
@@ -104,6 +104,8 @@ ADC 不自动上传。电池 ADC、NTC ADC 通过按钮主动读取。按键和 
 | 7 | `PB4` | `2A` |
 | 8 | `PC6` | `Laser` |
 | 9 | `PD7` | `5v+` |
+| 10 | `PD5` | `TX_L` |
+| 11 | `PD6` | `RX_L` |
 
 协议中的 `level=1` 表示开启，`level=0` 表示关闭。
 

@@ -242,7 +242,7 @@ void app_ui_power_led_task(void)
     u8 charging    = app_adc_dbg_is_charging();
     u8 bat_percent = app_adc_dbg_get_bat_percent_exact();
 
-    if (bat_percent >= 80)
+    if (bat_percent >= 95)
     {
         app_ui_power_led_set(GPIO_CHARGE_LED_GREEN, 1);
         app_ui_power_led_set(GPIO_CHARGE_LED_RED, 0);
