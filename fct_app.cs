@@ -413,6 +413,8 @@ static void fct_app_hw_init(void)
     gpio_write(V_NTC_CON, 1);
     // 常开电池电压AD检测开关
     gpio_write(V_BAT_CON, 1);
+    // 关闭充电电流限制 高电平关闭 低电平打开
+    gpio_write(Set_Charg_I, 1);
     gpio_write(CHARGE_SWITCH, 1);
 
     gpio_set_func(GPIO_KEY, AS_GPIO);
