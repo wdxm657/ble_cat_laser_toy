@@ -19,11 +19,13 @@ from .constants import (
     CTRL_MSG_TYPE_RSP,
     DEFAULT_RESULT_CSV,
     DEFAULT_RESULT_XLSX,
+    DEFAULT_MANUFACTURER_CSV,
     RESULT_HEADERS,
     THEMES,
 )
 from .deps import BLEAK_IMPORT_ERROR, OPENPYXL_IMPORT_ERROR, Font, PatternFill, Workbook
 from .models import ScanDevice
+from .qr_generator import save_manufacturer_qr
 
 CSV_PAGE_SIZE = 10
 class FactoryTestWindow(QtWidgets.QMainWindow):
@@ -552,11 +554,83 @@ class FactoryTestWindow(QtWidgets.QMainWindow):
         self.status_label.setText(text)
         if connected:
             self.connected_address = self.device_combo.currentData()
+            self._save_connected_manufacturer_qr()
         else:
             self.connected_address = None
             self.factory_ready = False
             self._reset_module_results()
         self._set_connected(connected)
+
+    def _save_connected_manufacturer_qr(self):
+        dev = self._current_device()
+        if dev is None or not dev.manufacturer_data:
+            self._append_log('连接成功，但设备没有可生成二维码的 MANUFACTURER_DATA')
+            return
+        if self._manufacturer_data_record_exists(dev.manufacturer_data):
+            self._append_log(f'MANUFACTURER_DATA 已存在，跳过重复生成二维码和 CSV 记录: {dev.manufacturer_data}')
+            return
+        try:
+            path = save_manufacturer_qr(dev.manufacturer_data)
+        except Exception as ex:
+            self._append_log(f'生成 MANUFACTURER_DATA 二维码失败: {ex}')
+            return
+        else:
+            self._append_log(f'MANUFACTURER_DATA 二维码已保存: {path}')
+        self._save_manufacturer_data_record(dev)
+
+    def _manufacturer_data_record_exists(self, manufacturer_data: str) -> bool:
+        headers = ['生成时间', '设备名称', 'MAC/地址', 'MANUFACTURER_DATA']
+        path = DEFAULT_MANUFACTURER_CSV
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, 'r', newline='', encoding='utf-8-sig') as fp:
+                rows = list(csv.reader(fp))
+        except Exception as ex:
+            self._append_log(f'读取 MANUFACTURER_DATA CSV 失败: {ex}')
+            return False
+        if not rows:
+            return False
+        if rows[0] != headers:
+            self._append_log(f'制造商数据 CSV 表头不匹配，未进行重复判断: {path}')
+            return False
+        mfr_col = headers.index('MANUFACTURER_DATA')
+        return any(len(row) > mfr_col and row[mfr_col] == manufacturer_data for row in rows[1:])
+
+    def _save_manufacturer_data_record(self, dev: ScanDevice):
+        """Persist one unique manufacturer-data record after connecting."""
+        headers = ['生成时间', '设备名称', 'MAC/地址', 'MANUFACTURER_DATA']
+        path = DEFAULT_MANUFACTURER_CSV
+        try:
+            rows = []
+            if os.path.exists(path):
+                with open(path, 'r', newline='', encoding='utf-8-sig') as fp:
+                    existing_rows = list(csv.reader(fp))
+                if existing_rows and existing_rows[0] == headers:
+                    rows = existing_rows[1:]
+                else:
+                    self._append_log(f'制造商数据 CSV 表头不匹配，未写入: {path}')
+                    return
+
+            mfr_col = headers.index('MANUFACTURER_DATA')
+            if any(len(row) > mfr_col and row[mfr_col] == dev.manufacturer_data for row in rows):
+                self._append_log(f'MANUFACTURER_DATA 已存在，跳过 CSV 重复记录: {path}')
+                return
+
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            with open(path, 'w', newline='', encoding='utf-8-sig') as fp:
+                writer = csv.writer(fp)
+                writer.writerow(headers)
+                writer.writerows(rows)
+                writer.writerow([
+                    _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    dev.name,
+                    dev.address,
+                    dev.manufacturer_data,
+                ])
+            self._append_log(f'MANUFACTURER_DATA 已写入 CSV: {path}')
+        except Exception as ex:
+            self._append_log(f'写入 MANUFACTURER_DATA CSV 失败: {ex}')
 
     def _set_connected(self, connected: bool):
         self.scan_btn.setEnabled(not connected)

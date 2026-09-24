@@ -10,5 +10,6 @@ hardware/*/*.htm*
 __Previews
 test/
 *.zip
-
+qrcodes/
+qrcode_images/
 发票/

@@ -37,6 +37,8 @@ RESULT_HEADERS = [
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_RESULT_CSV = os.path.join(SCRIPT_DIR, "factory_test_results.csv")
 DEFAULT_RESULT_XLSX = os.path.join(SCRIPT_DIR, "factory_test_results.xlsx")
+DEFAULT_QR_DIR = os.path.join(SCRIPT_DIR, "qrcodes")
+DEFAULT_MANUFACTURER_CSV = os.path.join(SCRIPT_DIR, "manufacturer_data_records.csv")
 
 # UI themes: 'dark' = 灰底白字, 'light' = 偏黄白底黑字
 THEMES = {

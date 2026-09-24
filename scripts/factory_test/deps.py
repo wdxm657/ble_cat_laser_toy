@@ -58,3 +58,13 @@ except Exception as ex:  # pragma: no cover - shown in UI at runtime
     PYZBAR_IMPORT_ERROR = ex
 else:
     PYZBAR_IMPORT_ERROR = None
+
+try:
+    import qrcode
+    from qrcode import QRCode
+except Exception as ex:  # pragma: no cover - shown in UI at runtime
+    qrcode = None
+    QRCode = None
+    QRCODE_IMPORT_ERROR = ex
+else:
+    QRCODE_IMPORT_ERROR = None
