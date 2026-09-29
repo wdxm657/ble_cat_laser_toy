@@ -25,7 +25,7 @@
 #define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.8f * 1000.0f)
 #define RADAR_FRAME_LEN                   30
 #define SAMPLE_COUNT                      1
-#define STATIONARY_DXY_THRESHOLD_MM       5.0
+#define STATIONARY_DXY_THRESHOLD_MM       10.0f
 #define RADAR_IDLE_TIMEOUT_US             (1000000u * 30u)  // 30s
 /** 与帧解析中「目标在移动」判定一致 (cm/s) */
 #define RADAR_TARGET_MOVING_SPEED_THR_CMS 5
@@ -248,7 +248,7 @@ static void RadarMotionCachePush(u32 now_tick, s16 x_mm, s16 y_mm)
                 float dist2     = (float)dx_mm * (float)dx_mm + (float)dy_mm * (float)dy_mm;
                 float dist_mm   = app_radar_mysqrt_3(dist2);
                 u32   v_cms_mag = 0;
-                if (dist_mm >= 5.0f)
+                if (dist_mm >= STATIONARY_DXY_THRESHOLD_MM)
                 {
                     float v = dist_mm * 100.0f / (float)dt_ms;
                     if (v > 65535.0f)
@@ -1978,7 +1978,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 
 static u32  tick_xy_mm = 0;
 static float motion_rad = 0.0f;
-#define debug_point 0
+#define debug_point 1
+static u8 move_cnt = 0;
+static u8 move_flag = 0;
+
 static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_cm_s)
 {
     s16   proc_x        = x_mm;
@@ -2007,10 +2010,17 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
 
     if (abs(g_radar_pred.prev_x_mm - x_mm) > STATIONARY_DXY_THRESHOLD_MM || abs(g_radar_pred.prev_y_mm - y_mm) > STATIONARY_DXY_THRESHOLD_MM)
     {
-        app_radar_status_led_set(1);
-        motion_valid  = 1;
-        is_stationary = 0;
-        RadarSessionOnMotion(now_tick);
+        move_cnt++;
+        if (move_cnt > 20 || move_flag == 1)
+        {
+            app_radar_status_led_set(1);
+            motion_valid  = 1;
+            is_stationary = 0;
+            // BLE_LOG_D("moved %d", move_cnt);
+            RadarSessionOnMotion(now_tick);
+            move_cnt = 0;
+            move_flag = 1;
+        }
     }
     g_radar_pred.prev_x_mm = x_mm;
     g_radar_pred.prev_y_mm = y_mm;
@@ -2353,6 +2363,7 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 关机 -------- */
     case HUNT_STATE_OFF:
+        move_flag = 0;
         app_radar_power_switch(0);
         g_radar_hold_on_mode = 0;
         radar_working_mode_set(0);
@@ -2517,6 +2528,7 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 待机: 关闭激光+电机, 雷达保持, 检测到目标则恢复 -------- */
     case HUNT_STATE_STANDBY: {
+        move_flag = 0;
         if (!g_radar_power_on)
             app_radar_power_switch(1);
         g_radar_hold_on_mode = 0;  // 不跟踪
@@ -2543,6 +2555,7 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 30秒休眠 (目标在猎物点): 雷达+激光+电机关闭 -------- */
     case HUNT_STATE_PREY_ZONE_SLEEP: {
+        move_flag = 0;
         if (g_hunt_prey_zone_tick == 0)
         {
             g_hunt_prey_zone_tick = now_tick;
@@ -2637,6 +2650,7 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 休眠: 重置狩猎次数和累计时长, 到期后回到Idle -------- */
     case HUNT_STATE_SLEEP: {
+        move_flag = 0;
         app_radar_power_switch(0);
         g_radar_hold_on_mode = 0;
         app_radar_status_led_set(0);
