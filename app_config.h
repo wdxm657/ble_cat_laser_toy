@@ -37,7 +37,7 @@
 #define RADAR_BOUNDARY_FLASH_ADDR                     USER_FLASH_START_ADDR
 // Radar install height storage (one 4K sector)
 #define RADAR_INSTALL_HEIGHT_FLASH_ADDR               (USER_FLASH_START_ADDR + 0x1000)
-// Radar play records storage (one 4K sector)
+// Radar play records storage (one 4K sector, 100 x 32-byte append-only slots)
 #define RADAR_PLAY_RECORD_FLASH_ADDR                  (USER_FLASH_START_ADDR + 0x2000)
 // Battery percent persistence (one 4K sector)
 #define BAT_PERCENT_FLASH_ADDR                        (USER_FLASH_START_ADDR + 0x3000)

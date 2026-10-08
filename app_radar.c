@@ -5,6 +5,7 @@
  *
  *******************************************************************************************************/
 #include "app_radar.h"
+#include <stddef.h>
 
 #ifdef UI_RADAR_ENABLE
 
@@ -311,15 +312,11 @@ _attribute_data_retention_ static u8  g_radar_time_valid        = 0;
 _attribute_data_retention_ static s8  g_radar_time_tz_q15       = 0;
 _attribute_data_retention_ static u8  g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
 _attribute_data_retention_ static u32 g_radar_play_active_start = 0;
-_attribute_data_retention_ static u8  g_radar_play_active_idx   = 0;
-
-_attribute_data_retention_ static u32 g_radar_play_start_sec[RADAR_TIME_MAX_RECORDS]     = {0};
-_attribute_data_retention_ static u32 g_radar_play_end_sec[RADAR_TIME_MAX_RECORDS]       = {0};
-_attribute_data_retention_ static s8  g_radar_play_tz_q15[RADAR_TIME_MAX_RECORDS]        = {0};
-_attribute_data_retention_ static u8  g_radar_play_hunt_result[RADAR_TIME_MAX_RECORDS]   = {0};
-_attribute_data_retention_ static u32 g_radar_play_motion_sec[RADAR_TIME_MAX_RECORDS]    = {0};
-_attribute_data_retention_ static u16 g_radar_play_avg_speed_cms[RADAR_TIME_MAX_RECORDS] = {0};
-_attribute_data_retention_ static u8  g_radar_play_record_id[RADAR_TIME_MAX_RECORDS]     = {0};
+_attribute_data_retention_ static u8  g_radar_play_active_id     = 0;
+_attribute_data_retention_ static s8  g_radar_play_active_tz_q15 = 0;
+_attribute_data_retention_ static u8  g_radar_play_active_result = HUNT_RESULT_INCOMPLETE;
+_attribute_data_retention_ static u32 g_radar_play_active_motion_sec = 0;
+_attribute_data_retention_ static u16 g_radar_play_active_avg_speed_cms = 0;
 _attribute_data_retention_ static u8  g_radar_play_record_count                          = 0;
 _attribute_data_retention_ static u8  g_radar_play_record_next                           = 0;
 /** 自增记录ID计数器，每push一条新记录+1，溢出回绕 */
@@ -406,18 +403,136 @@ typedef struct
 typedef struct
 {
     u32 magic;
-    u8  record_count;
-    u8  record_next;
-    u8  reserved[2];
-    u32 start_sec[RADAR_TIME_MAX_RECORDS];
-    u32 end_sec[RADAR_TIME_MAX_RECORDS];
-    s8  tz_q15[RADAR_TIME_MAX_RECORDS];
-    u8  hunt_result[RADAR_TIME_MAX_RECORDS];  // 狩猎结果: 0=未完成 1=完成 2=捕猎成功
-    u32 motion_sec[RADAR_TIME_MAX_RECORDS];
-    u16 avg_speed_cms[RADAR_TIME_MAX_RECORDS];
-    u8  record_id[RADAR_TIME_MAX_RECORDS];    // 全局唯一记录ID（自增计数器）
+    u32 start_sec;
+    u32 end_sec;
+    u32 motion_sec;
+    u16 avg_speed_cms;
+    s8  tz_q15;
+    u8  hunt_result;
+    u8  record_id;
+    u8  reserved[7];
     u32 crc;
-} radar_play_record_flash_t;
+    u8  committed;
+} __attribute__((packed)) radar_play_record_flash_t;
+
+#define RADAR_PLAY_RECORD_COMMITTED 0xA5
+#define RADAR_PLAY_RECORD_SLOT_SIZE ((u32)sizeof(radar_play_record_flash_t))
+
+static u32 radar_play_record_flash_addr(u8 slot)
+{
+    return RADAR_PLAY_RECORD_FLASH_ADDR + ((u32)slot * RADAR_PLAY_RECORD_SLOT_SIZE);
+}
+
+static u8 radar_play_record_flash_slot_erased(u8 slot)
+{
+    u8 data[sizeof(radar_play_record_flash_t)];
+    u32 addr = radar_play_record_flash_addr(slot);
+
+    flash_read_page(addr, sizeof(data), data);
+    for (u8 i = 0; i < sizeof(data); i++)
+    {
+        if (data[i] != 0xFF)
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static u32 radar_boundary_crc32(const u8 *data, u32 len)
+{
+    u32 crc = 0xFFFFFFFFu;
+    for (u32 i = 0; i < len; i++)
+    {
+        crc ^= data[i];
+        for (u8 b = 0; b < 8; b++)
+        {
+            if (crc & 1u)
+            {
+                crc = (crc >> 1) ^ 0xEDB88320u;
+            }
+            else
+            {
+                crc >>= 1;
+            }
+        }
+    }
+    return ~crc;
+}
+
+
+static u8 radar_play_record_flash_read(u8 slot, radar_play_record_flash_t *record)
+{
+    if (!record || slot >= RADAR_TIME_MAX_RECORDS)
+    {
+        return 0;
+    }
+
+    flash_read_page(radar_play_record_flash_addr(slot), sizeof(*record), (u8 *)record);
+    if (record->committed != RADAR_PLAY_RECORD_COMMITTED ||
+        record->magic != RADAR_PLAY_RECORD_FLASH_MAGIC)
+    {
+        return 0;
+    }
+
+    return radar_boundary_crc32((const u8 *)record,
+                                offsetof(radar_play_record_flash_t, crc)) == record->crc;
+}
+
+static void radar_play_record_flash_invalidate(u8 slot)
+{
+    u8 invalid = 0;
+    flash_write_page(radar_play_record_flash_addr(slot) +
+                         offsetof(radar_play_record_flash_t, committed),
+                     sizeof(invalid), &invalid);
+}
+
+static u8 radar_play_record_flash_write(u8 slot, const radar_play_record_flash_t *record)
+{
+    radar_play_record_flash_t stored;
+    radar_play_record_flash_t verify;
+
+    if (!record || slot >= RADAR_TIME_MAX_RECORDS)
+    {
+        return 0;
+    }
+
+    if (!radar_play_record_flash_slot_erased(slot))
+    {
+        BLE_LOG_D("RADAR_FLASH slot not erased: slot=%d addr=0x%x",
+                  slot, radar_play_record_flash_addr(slot));
+        return 0;
+    }
+
+    stored = *record;
+    stored.committed = RADAR_PLAY_RECORD_COMMITTED;
+    BLE_LOG_D("RADAR_FLASH write begin: slot=%d addr=0x%x id=%d start=%d end=%d result=%d crc=0x%x",
+              slot,
+              radar_play_record_flash_addr(slot),
+              stored.record_id,
+              stored.start_sec,
+              stored.end_sec,
+              stored.hunt_result,
+              stored.crc);
+    flash_write_page(radar_play_record_flash_addr(slot), sizeof(stored), (u8 *)&stored);
+
+    if (!radar_play_record_flash_read(slot, &verify))
+    {
+        BLE_LOG_D("RADAR_FLASH write verify FAILED: slot=%d addr=0x%x",
+                  slot, radar_play_record_flash_addr(slot));
+        return 0;
+    }
+
+    BLE_LOG_D("RADAR_FLASH write verify OK: slot=%d id=%d start=%d end=%d motion=%d avg=%d count=%d",
+              slot,
+              verify.record_id,
+              verify.start_sec,
+              verify.end_sec,
+              verify.motion_sec,
+              verify.avg_speed_cms,
+              g_radar_play_record_count);
+    return 1;
+}
 
 _attribute_data_retention_ static s32 g_radar_install_height_mm = (s32)RADAR_INSTALL_HEIGHT_DEFAULT_MM;
 
@@ -468,26 +583,6 @@ static inline s16 RadarSpeedAbs(s16 v_cm_s)
     return (s16)((v_cm_s < 0) ? (-v_cm_s) : v_cm_s);
 }
 
-static u32 radar_boundary_crc32(const u8 *data, u32 len)
-{
-    u32 crc = 0xFFFFFFFFu;
-    for (u32 i = 0; i < len; i++)
-    {
-        crc ^= data[i];
-        for (u8 b = 0; b < 8; b++)
-        {
-            if (crc & 1u)
-            {
-                crc = (crc >> 1) ^ 0xEDB88320u;
-            }
-            else
-            {
-                crc >>= 1;
-            }
-        }
-    }
-    return ~crc;
-}
 
 /* 猎物点 + 狩猎配置 flash 结构（magic "RDSC"） */
 typedef struct
@@ -579,22 +674,16 @@ static void radar_play_on_cache_displacement_ms(u32 dt_ms, u32 speed_cms_mag)
 
 static void radar_play_records_reset_ram(void)
 {
-    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
-    {
-        g_radar_play_start_sec[i]     = 0;
-        g_radar_play_end_sec[i]       = 0;
-        g_radar_play_tz_q15[i]        = 0;
-        g_radar_play_hunt_result[i]   = 0;
-        g_radar_play_motion_sec[i]    = 0;
-        g_radar_play_avg_speed_cms[i] = 0;
-        g_radar_play_record_id[i]     = 0;
-    }
     g_radar_play_record_count          = 0;
     g_radar_play_record_next           = 0;
     g_radar_play_id_counter            = 0;
     g_radar_play_state                 = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start          = 0;
-    g_radar_play_active_idx            = 0;
+    g_radar_play_active_id             = 0;
+    g_radar_play_active_tz_q15         = 0;
+    g_radar_play_active_result         = HUNT_RESULT_INCOMPLETE;
+    g_radar_play_active_motion_sec     = 0;
+    g_radar_play_active_avg_speed_cms  = 0;
     g_radar_sess_motion_ms             = 0;
     g_radar_sess_speed_dt_sum          = 0u;
     g_radar_last_speed_cms             = 0;
@@ -603,85 +692,42 @@ static void radar_play_records_reset_ram(void)
 
 static void radar_play_records_save_to_flash(void)
 {
-    radar_play_record_flash_t stored;
-    stored.magic        = RADAR_PLAY_RECORD_FLASH_MAGIC;
-    stored.record_count = g_radar_play_record_count;
-    stored.record_next  = g_radar_play_record_next;
-    stored.reserved[0]  = 0;
-    stored.reserved[1]  = 0;
-
-    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
-    {
-        stored.start_sec[i]     = g_radar_play_start_sec[i];
-        stored.end_sec[i]       = g_radar_play_end_sec[i];
-        stored.tz_q15[i]        = g_radar_play_tz_q15[i];
-        stored.hunt_result[i]   = g_radar_play_hunt_result[i];
-        stored.motion_sec[i]    = g_radar_play_motion_sec[i];
-        stored.avg_speed_cms[i] = g_radar_play_avg_speed_cms[i];
-        stored.record_id[i]     = g_radar_play_record_id[i];
-    }
-
-    stored.crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
-
-    flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
-    flash_write_page(RADAR_PLAY_RECORD_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    /* Records are appended individually. Kept as a compatibility no-op. */
 }
 
 static void radar_play_records_load_from_flash(void)
 {
     radar_play_record_flash_t stored;
-    flash_read_page(RADAR_PLAY_RECORD_FLASH_ADDR, sizeof(stored), (u8 *)&stored);
+    u8 last_slot = 0;
+    u8 found_last = 0;
+    u8 max_id = 0;
 
-    if (stored.magic != RADAR_PLAY_RECORD_FLASH_MAGIC)
+    radar_play_records_reset_ram();
+    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
     {
-        radar_play_records_reset_ram();
-        return;
+        if (!radar_play_record_flash_read(slot, &stored))
+        {
+            continue;
+        }
+
+        g_radar_play_record_count++;
+        last_slot = slot;
+        found_last = 1;
+        if (stored.record_id > max_id)
+        {
+            max_id = stored.record_id;
+        }
     }
 
-    u32 crc = radar_boundary_crc32((const u8 *)&stored, sizeof(stored) - sizeof(stored.crc));
-    if (crc != stored.crc)
+    g_radar_play_record_next = found_last ? (u8)(last_slot + 1) : 0;
+    if (g_radar_play_record_next > RADAR_TIME_MAX_RECORDS)
     {
-        radar_play_records_reset_ram();
-        return;
+        g_radar_play_record_next = RADAR_TIME_MAX_RECORDS;
     }
-
-    if (stored.record_count > RADAR_TIME_MAX_RECORDS)
-    {
-        radar_play_records_reset_ram();
-        return;
-    }
-
-    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
-    {
-        g_radar_play_start_sec[i]     = stored.start_sec[i];
-        g_radar_play_end_sec[i]       = stored.end_sec[i];
-        g_radar_play_tz_q15[i]        = stored.tz_q15[i];
-        g_radar_play_hunt_result[i]   = stored.hunt_result[i];
-        g_radar_play_motion_sec[i]    = stored.motion_sec[i];
-        g_radar_play_avg_speed_cms[i] = stored.avg_speed_cms[i];
-        g_radar_play_record_id[i]     = stored.record_id[i];
-    }
-
-    g_radar_play_record_count = stored.record_count;
-    g_radar_play_record_next  = stored.record_next;
-    if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
-    {
-        g_radar_play_record_next = 0;
-    }
+    g_radar_play_id_counter = max_id;
     g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start = 0;
-    g_radar_play_active_idx   = 0;
-
-    /* 恢复 ID 计数器到最大现有 ID + 1，避免与新记录 ID 冲突 */
-    {
-        u8 max_id = 0;
-        for (u8 i = 0; i < g_radar_play_record_count; i++)
-        {
-            u8 id = g_radar_play_record_id[i];
-            if (id > max_id) max_id = id;
-        }
-        g_radar_play_id_counter = max_id;
-    }
+    g_radar_play_active_id    = 0;
 }
 
 static u8 radar_is_leap_year(u16 year)
@@ -762,29 +808,19 @@ static void radar_epoch_to_datetime(u32  epoch_sec,
 
 static u8 radar_play_record_push(u32 start_sec, u32 end_sec)
 {
-    u8 idx = g_radar_play_record_next;
-    BLE_LOG_D("push record idx %d start %d end %d", idx, start_sec, end_sec);
-
-    g_radar_play_start_sec[idx]     = start_sec;
-    g_radar_play_end_sec[idx]       = end_sec;
-    g_radar_play_tz_q15[idx]        = g_radar_time_tz_q15;
-    g_radar_play_hunt_result[idx]   = HUNT_RESULT_INCOMPLETE;
-    g_radar_play_motion_sec[idx]    = 0;
-    g_radar_play_avg_speed_cms[idx] = 0;
+    (void)end_sec;
+    g_radar_play_active_start   = start_sec;
+    g_radar_play_active_tz_q15  = g_radar_time_tz_q15;
+    g_radar_play_active_result  = HUNT_RESULT_INCOMPLETE;
+    g_radar_play_active_motion_sec = 0;
+    g_radar_play_active_avg_speed_cms = 0;
     g_radar_play_id_counter++;
-    g_radar_play_record_id[idx]     = g_radar_play_id_counter;
-
-    g_radar_play_record_next++;
-    if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
+    if (g_radar_play_id_counter == 0)
     {
-        g_radar_play_record_next = 0;
+        g_radar_play_id_counter = 1;
     }
-    if (g_radar_play_record_count < RADAR_TIME_MAX_RECORDS)
-    {
-        g_radar_play_record_count++;
-    }
-
-    return idx;
+    g_radar_play_active_id = g_radar_play_id_counter;
+    return 0;
 }
 
 static inline u8 radar_play_record_is_complete(u32 end_sec)
@@ -796,7 +832,7 @@ static void radar_play_record_start(void)
 {
     if (!g_radar_time_valid)
     {
-        // BLE_LOG_D("radar_play_record_start failed");
+        BLE_LOG_D("RADAR_RECORD start ignored: time invalid");
         return;
     }
 
@@ -806,24 +842,31 @@ static void radar_play_record_start(void)
         g_radar_sess_speed_dt_sum = 0u;
         g_radar_play_state        = RADAR_PLAY_STATE_ACTIVE;
         g_radar_play_active_start = g_radar_time_sec;
-        g_radar_play_active_idx   = radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
-        // radar_play_records_save_to_flash();
-        BLE_LOG_D("radar_play_record_push");
+        radar_play_record_push(g_radar_play_active_start, RADAR_PLAY_END_ONGOING);
+        BLE_LOG_D("RADAR_RECORD start: id=%d start=%d tz=%d next_slot=%d count=%d",
+                  g_radar_play_active_id,
+                  g_radar_play_active_start,
+                  g_radar_play_active_tz_q15,
+                  g_radar_play_record_next,
+                  g_radar_play_record_count);
         // gpio_write(GPIO_LED_WHITE, LED_ON_LEVEL);
     }
     else
     {
-        // g_radar_play_end_sec[(g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - 1) % RADAR_TIME_MAX_RECORDS] = RADAR_PLAY_END_ONGOING;
+        // The active record is held in scalar RAM state until it is complete.
     }
 }
 
 static void radar_play_record_end(void)
 {
+    u32 end_sec;
+
     if (!g_radar_time_valid || g_radar_play_state != RADAR_PLAY_STATE_ACTIVE)
     {
+        BLE_LOG_D("RADAR_RECORD end ignored: time_valid=%d state=%d",
+                  g_radar_time_valid, g_radar_play_state);
         return;
     }
-    BLE_LOG_D("radar_play_record_end");
     radar_working_mode_set(0);
 
     app_radar_status_led_set(0);
@@ -836,30 +879,86 @@ static void radar_play_record_end(void)
         {
             av = (u16)((sum + (unsigned long long)(mot_ms / 2u)) / (unsigned long long)mot_ms);
         }
-        g_radar_play_motion_sec[g_radar_play_active_idx]    = mot_sec;
-        g_radar_play_avg_speed_cms[g_radar_play_active_idx] = av;
+        g_radar_play_active_motion_sec    = mot_sec;
+        g_radar_play_active_avg_speed_cms = av;
     }
     g_radar_sess_motion_ms    = 0;
     g_radar_sess_speed_dt_sum = 0u;
-    if (g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_COMPLETE ||
-        g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_SUCCESS)
+    if (g_radar_play_active_result == HUNT_RESULT_COMPLETE ||
+        g_radar_play_active_result == HUNT_RESULT_SUCCESS)
     {
-        g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_play_start_sec[g_radar_play_active_idx] + g_hunt_duration_s;
+        end_sec = g_radar_play_active_start + g_hunt_duration_s;
     }
     else
     {
-        g_radar_play_end_sec[g_radar_play_active_idx] = g_radar_time_sec;
+        end_sec = g_radar_time_sec;
     }
-    if (g_radar_play_end_sec[g_radar_play_active_idx] - g_radar_play_start_sec[g_radar_play_active_idx] < RADAR_HOLD_ON_NO_MOTION_S - 1)
+    BLE_LOG_D("RADAR_RECORD end: id=%d start=%d end=%d result=%d motion=%d avg=%d next_slot=%d count=%d",
+              g_radar_play_active_id,
+              g_radar_play_active_start,
+              end_sec,
+              g_radar_play_active_result,
+              g_radar_play_active_motion_sec,
+              g_radar_play_active_avg_speed_cms,
+              g_radar_play_record_next,
+              g_radar_play_record_count);
+    if (end_sec - g_radar_play_active_start < RADAR_HOLD_ON_NO_MOTION_S - 1)
     {
-        BLE_LOG_D("end %d - start < %d %d idx %d", g_radar_play_end_sec[g_radar_play_active_idx], RADAR_HOLD_ON_NO_MOTION_S, g_radar_play_start_sec[g_radar_play_active_idx], g_radar_play_active_idx);
-        g_radar_play_active_idx--;
+        BLE_LOG_D("RADAR_RECORD end discarded: duration=%d threshold=%d",
+                  end_sec - g_radar_play_active_start,
+                  RADAR_HOLD_ON_NO_MOTION_S - 1);
         g_radar_play_state = RADAR_PLAY_STATE_IDLE;
         return;
     }
 
+    if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
+    {
+        BLE_LOG_D("RADAR_FLASH sector erase: addr=0x%x records=%d",
+                  RADAR_PLAY_RECORD_FLASH_ADDR, g_radar_play_record_count);
+        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
+        g_radar_play_record_count = 0;
+        g_radar_play_record_next = 0;
+    }
+    else if (!radar_play_record_flash_slot_erased(g_radar_play_record_next))
+    {
+        /*
+         * The previous firmware used a whole-sector record layout.
+         * Erase that legacy data once before using append-only slots.
+         */
+        BLE_LOG_D("RADAR_FLASH migrate erase: slot=%d addr=0x%x",
+                  g_radar_play_record_next,
+                  RADAR_PLAY_RECORD_FLASH_ADDR);
+        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
+        g_radar_play_record_count = 0;
+        g_radar_play_record_next = 0;
+    }
+    radar_play_record_flash_t stored = {0};
+    stored.magic = RADAR_PLAY_RECORD_FLASH_MAGIC;
+    stored.start_sec = g_radar_play_active_start;
+    stored.end_sec = end_sec;
+    stored.motion_sec = g_radar_play_active_motion_sec;
+    stored.avg_speed_cms = g_radar_play_active_avg_speed_cms;
+    stored.tz_q15 = g_radar_play_active_tz_q15;
+    stored.hunt_result = g_radar_play_active_result;
+    stored.record_id = g_radar_play_active_id;
+    stored.crc = radar_boundary_crc32((const u8 *)&stored,
+                                      offsetof(radar_play_record_flash_t, crc));
+    if (!radar_play_record_flash_write(g_radar_play_record_next, &stored))
+    {
+        BLE_LOG_D("RADAR_RECORD end FAILED: Flash write failed id=%d slot=%d",
+                  stored.record_id, g_radar_play_record_next);
+        g_radar_play_state = RADAR_PLAY_STATE_IDLE;
+        return;
+    }
+    g_radar_play_record_next++;
+    g_radar_play_record_count++;
+    BLE_LOG_D("RADAR_RECORD saved: id=%d slot=%d next_slot=%d count=%d",
+              stored.record_id,
+              g_radar_play_record_next - 1,
+              g_radar_play_record_next,
+              g_radar_play_record_count);
+
     g_radar_play_state = RADAR_PLAY_STATE_IDLE;
-    radar_play_records_save_to_flash();
     app_ctrl_notify_play_record_changed();
 }
 
@@ -917,25 +1016,19 @@ int app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
         return 0;
     }
 
-    u8 count = g_radar_play_record_count;
-    if (count > max_records)
+    radar_play_record_flash_t stored;
+    u8 count = 0;
+    for (s16 slot = RADAR_TIME_MAX_RECORDS - 1; slot >= 0 && count < max_records; slot--)
     {
-        count = max_records;
-    }
-
-    u8 idx = g_radar_play_record_next;
-    for (u8 i = 0; i < count; i++)
-    {
-        if (idx == 0)
+        if (!radar_play_record_flash_read((u8)slot, &stored))
         {
-            idx = RADAR_TIME_MAX_RECORDS;
+            continue;
         }
-        idx--;
-        out_buf[i * 2]     = g_radar_play_start_sec[idx];
-        out_buf[i * 2 + 1] = g_radar_play_end_sec[idx];
-        tz_buf[i]          = (u8)g_radar_play_tz_q15[idx];
+        out_buf[count * 2] = stored.start_sec;
+        out_buf[count * 2 + 1] = stored.end_sec;
+        tz_buf[count] = (u8)stored.tz_q15;
+        count++;
     }
-
     return count;
 }
 
@@ -947,73 +1040,43 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
         return 0;
     }
 
-    u8 count     = 0;
-    u8 need_save = 0;
-    u8 idx       = g_radar_play_record_next;
-    for (u8 i = 0; i < g_radar_play_record_count && count < max_records; i++)
+    radar_play_record_flash_t stored;
+    u8 count = 0;
+    for (s16 slot = RADAR_TIME_MAX_RECORDS - 1; slot >= 0 && count < max_records; slot--)
     {
-        if (idx == 0)
-        {
-            idx = RADAR_TIME_MAX_RECORDS;
-        }
-        idx--;
-
-        if (!radar_play_record_is_complete(g_radar_play_end_sec[idx]))
+        if (!radar_play_record_flash_read((u8)slot, &stored) ||
+            !radar_play_record_is_complete(stored.end_sec))
         {
             continue;
         }
-
-        u32 start = g_radar_play_start_sec[idx];
-        u32 end   = g_radar_play_end_sec[idx];
-
-        /* 持续时间不足 RADAR_HOLD_ON_NO_MOTION_S 或时间戳回绕/异常：标记为无效并跳过，下次 clear 会清除 */
-        if (end <= start || (end - start) < (RADAR_HOLD_ON_NO_MOTION_S - 1))
+        if (stored.end_sec <= stored.start_sec ||
+            (stored.end_sec - stored.start_sec) < (RADAR_HOLD_ON_NO_MOTION_S - 1))
         {
-            g_radar_play_end_sec[idx]       = 0;
-            g_radar_play_motion_sec[idx]    = 0;
-            g_radar_play_avg_speed_cms[idx] = 0;
-            need_save                       = 1;
+            radar_play_record_flash_invalidate((u8)slot);
+            if (g_radar_play_record_count)
+            {
+                g_radar_play_record_count--;
+            }
             continue;
         }
-
-        out_buf[count * 2]     = start;
-        out_buf[count * 2 + 1] = end;
-        tz_buf[count]          = (u8)g_radar_play_tz_q15[idx];
-        if (motion_sec_out)
-        {
-            motion_sec_out[count] = g_radar_play_motion_sec[idx];
-        }
-        if (avg_speed_cms_out)
-        {
-            avg_speed_cms_out[count] = g_radar_play_avg_speed_cms[idx];
-        }
-        BLE_LOG_D("count: %d, start: %d, end: %d, result: %d", count, start, end, g_radar_play_hunt_result[idx]);
+        out_buf[count * 2] = stored.start_sec;
+        out_buf[count * 2 + 1] = stored.end_sec;
+        tz_buf[count] = (u8)stored.tz_q15;
+        if (motion_sec_out) motion_sec_out[count] = stored.motion_sec;
+        if (avg_speed_cms_out) avg_speed_cms_out[count] = stored.avg_speed_cms;
         count++;
     }
-
-    if (need_save)
-    {
-        radar_play_records_save_to_flash();
-    }
-
     return count;
 }
 
 u8 app_radar_has_complete_play_records(void)
 {
-    BLE_LOG_D("app_radar_has_complete_play_records");
-    u8 idx = g_radar_play_record_next;
-    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    radar_play_record_flash_t stored;
+    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
     {
-        if (idx == 0)
+        if (radar_play_record_flash_read(slot, &stored) &&
+            radar_play_record_is_complete(stored.end_sec))
         {
-            idx = RADAR_TIME_MAX_RECORDS;
-        }
-        idx--;
-
-        if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
-        {
-            BLE_LOG_D("found complete record idx %d", idx);
             return 1;
         }
     }
@@ -1023,214 +1086,80 @@ u8 app_radar_has_complete_play_records(void)
 
 void app_radar_clear_complete_play_records(void)
 {
-    u32 start_tmp[RADAR_TIME_MAX_RECORDS] = {0};
-    u32 end_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
-    s8  tz_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
-    u8  res_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
-    u32 mot_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
-    u16 av_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
-    u8  id_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
-    u8  keep_count                        = 0;
-
-    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
-    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    radar_play_record_flash_t stored;
+    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
     {
-        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
-        if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
+        if (radar_play_record_flash_read(slot, &stored) &&
+            radar_play_record_is_complete(stored.end_sec))
         {
-            continue;
+            radar_play_record_flash_invalidate(slot);
+            if (g_radar_play_record_count)
+            {
+                g_radar_play_record_count--;
+            }
         }
-
-        start_tmp[keep_count] = g_radar_play_start_sec[idx];
-        end_tmp[keep_count]   = g_radar_play_end_sec[idx];
-        tz_tmp[keep_count]    = g_radar_play_tz_q15[idx];
-        res_tmp[keep_count]   = g_radar_play_hunt_result[idx];
-        mot_tmp[keep_count]   = g_radar_play_motion_sec[idx];
-        av_tmp[keep_count]    = g_radar_play_avg_speed_cms[idx];
-        id_tmp[keep_count]    = g_radar_play_record_id[idx];
-        keep_count++;
     }
-
-    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
-    {
-        g_radar_play_start_sec[i]     = 0;
-        g_radar_play_end_sec[i]       = 0;
-        g_radar_play_tz_q15[i]        = 0;
-        g_radar_play_hunt_result[i]   = 0;
-        g_radar_play_motion_sec[i]    = 0;
-        g_radar_play_avg_speed_cms[i] = 0;
-        g_radar_play_record_id[i]     = 0;
-    }
-    for (u8 i = 0; i < keep_count; i++)
-    {
-        g_radar_play_start_sec[i]     = start_tmp[i];
-        g_radar_play_end_sec[i]       = end_tmp[i];
-        g_radar_play_tz_q15[i]        = tz_tmp[i];
-        g_radar_play_hunt_result[i]   = res_tmp[i];
-        g_radar_play_motion_sec[i]    = mot_tmp[i];
-        g_radar_play_avg_speed_cms[i] = av_tmp[i];
-        g_radar_play_record_id[i]     = id_tmp[i];
-    }
-
-    g_radar_play_record_count = keep_count;
-    g_radar_play_record_next  = keep_count % RADAR_TIME_MAX_RECORDS;
-    radar_play_records_save_to_flash();
 }
-
 /**
- * @brief 删除指定 ID 的逗宠记录（从 RAM 和 Flash 中移除）。
+ * @brief 删除指定 ID 的逗宠记录（从 Flash 中移除）。
  * @param record_id 要删除的记录 ID
  * @return 0=成功, -1=未找到
  */
 int app_radar_delete_play_record_by_id(u8 record_id)
 {
-    u32 start_tmp[RADAR_TIME_MAX_RECORDS] = {0};
-    u32 end_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
-    s8  tz_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
-    u8  res_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
-    u32 mot_tmp[RADAR_TIME_MAX_RECORDS]   = {0};
-    u16 av_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
-    u8  id_tmp[RADAR_TIME_MAX_RECORDS]    = {0};
-    u8  keep_count                        = 0;
-    u8  found                             = 0;
-    u8  ongoing_id                        = 0;  // 进行中记录的ID（如有）
-
-    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
-    for (u8 i = 0; i < g_radar_play_record_count; i++)
+    radar_play_record_flash_t stored;
+    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
     {
-        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
-        if (g_radar_play_record_id[idx] == record_id)
+        if (radar_play_record_flash_read(slot, &stored) && stored.record_id == record_id)
         {
-            found = 1;
-            BLE_LOG_D("deleting record id=%d idx=%d", record_id, idx);
-            continue; // 跳过该条
-        }
-        start_tmp[keep_count] = g_radar_play_start_sec[idx];
-        end_tmp[keep_count]   = g_radar_play_end_sec[idx];
-        tz_tmp[keep_count]    = g_radar_play_tz_q15[idx];
-        res_tmp[keep_count]   = g_radar_play_hunt_result[idx];
-        mot_tmp[keep_count]   = g_radar_play_motion_sec[idx];
-        av_tmp[keep_count]    = g_radar_play_avg_speed_cms[idx];
-        id_tmp[keep_count]    = g_radar_play_record_id[idx];
-        keep_count++;
-    }
-
-    if (!found)
-    {
-        BLE_LOG_D("delete record id=%d not found", record_id);
-        return -1;
-    }
-
-    // 记录进行中会话的 ID，用于压缩后重新定位 active_idx
-    if (g_radar_play_state == RADAR_PLAY_STATE_ACTIVE)
-    {
-        ongoing_id = g_radar_play_record_id[g_radar_play_active_idx];
-    }
-
-    for (u8 i = 0; i < RADAR_TIME_MAX_RECORDS; i++)
-    {
-        g_radar_play_start_sec[i]     = 0;
-        g_radar_play_end_sec[i]       = 0;
-        g_radar_play_tz_q15[i]        = 0;
-        g_radar_play_hunt_result[i]   = 0;
-        g_radar_play_motion_sec[i]    = 0;
-        g_radar_play_avg_speed_cms[i] = 0;
-        g_radar_play_record_id[i]     = 0;
-    }
-    for (u8 i = 0; i < keep_count; i++)
-    {
-        g_radar_play_start_sec[i]     = start_tmp[i];
-        g_radar_play_end_sec[i]       = end_tmp[i];
-        g_radar_play_tz_q15[i]        = tz_tmp[i];
-        g_radar_play_hunt_result[i]   = res_tmp[i];
-        g_radar_play_motion_sec[i]    = mot_tmp[i];
-        g_radar_play_avg_speed_cms[i] = av_tmp[i];
-        g_radar_play_record_id[i]     = id_tmp[i];
-    }
-
-    // ★ 修复：压缩后重新定位进行中记录（active_idx 可能指向了错误位置）
-    if (g_radar_play_state == RADAR_PLAY_STATE_ACTIVE && ongoing_id != 0)
-    {
-        u8 new_active = 0xFF;
-        for (u8 i = 0; i < keep_count; i++)
-        {
-            if (id_tmp[i] == ongoing_id)
+            radar_play_record_flash_invalidate(slot);
+            if (g_radar_play_record_count)
             {
-                new_active = i;
-                break;
+                g_radar_play_record_count--;
             }
-        }
-        if (new_active != 0xFF)
-        {
-            g_radar_play_active_idx = new_active;
-            BLE_LOG_D("delete relocated active_idx to %d (id=%d)", new_active, ongoing_id);
-        }
-        else
-        {
-            // 进行中记录也被删除了（极低概率），置为安全值
-            g_radar_play_state = RADAR_PLAY_STATE_IDLE;
-            BLE_LOG_D("delete: ongoing record was also deleted, state=IDLE");
-        }
-    }
-
-    g_radar_play_record_count = keep_count;
-    g_radar_play_record_next  = keep_count % RADAR_TIME_MAX_RECORDS;
-    radar_play_records_save_to_flash();
-    BLE_LOG_D("delete record id=%d done, remaining=%d", record_id, keep_count);
-    return 0;
-}
-
-/**
- * @brief 查找缓存中最老的完整逗宠记录 ID。
- * @return 记录 ID，0=无完整记录（ID 从 1 开始，0 表示无效）
- */
-u8 app_radar_find_oldest_complete_record_id(void)
-{
-    if (g_radar_play_record_count == 0)
-    {
-        return 0;
-    }
-    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
-    for (u8 i = 0; i < g_radar_play_record_count; i++)
-    {
-        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
-        BLE_LOG_D("old total rec cnt %d id:%d", g_radar_play_record_count, idx);
-        if (radar_play_record_is_complete(g_radar_play_end_sec[idx]))
-        {
-            return g_radar_play_record_id[idx];
-        }
-    }
-    return 0;
-}
-
-/**
- * @brief 按记录 ID 读取一条记录的数据。
- * @return 0=成功, -1=未找到
- */
-int app_radar_get_record_data_by_id(u8 id, u32 *start_sec, u32 *end_sec, u32 *motion_sec, u16 *avg_speed, u8 *result)
-{
-    if (g_radar_play_record_count == 0)
-    {
-        return -1;
-    }
-    BLE_LOG_D("total rec cnt %d", g_radar_play_record_count);
-    u8 start = (u8)((g_radar_play_record_next + RADAR_TIME_MAX_RECORDS - g_radar_play_record_count) % RADAR_TIME_MAX_RECORDS);
-    for (u8 i = 0; i < g_radar_play_record_count; i++)
-    {
-        u8 idx = (u8)((start + i) % RADAR_TIME_MAX_RECORDS);
-        if (g_radar_play_record_id[idx] == id)
-        {
-            if (start_sec)  *start_sec  = g_radar_play_start_sec[idx];
-            if (end_sec)    *end_sec    = g_radar_play_end_sec[idx];
-            if (motion_sec) *motion_sec = g_radar_play_motion_sec[idx];
-            if (avg_speed)  *avg_speed  = g_radar_play_avg_speed_cms[idx];
-            if (result)     *result     = g_radar_play_hunt_result[idx];
             return 0;
         }
     }
     return -1;
 }
-
+/**
+ * @brief 查找 Flash 中最老的完整逗宠记录 ID。
+ * @return 记录 ID，0=无完整记录（ID 从 1 开始，0 表示无效）
+ */
+u8 app_radar_find_oldest_complete_record_id(void)
+{
+    radar_play_record_flash_t stored;
+    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    {
+        if (radar_play_record_flash_read(slot, &stored) &&
+            radar_play_record_is_complete(stored.end_sec))
+        {
+            return stored.record_id;
+        }
+    }
+    return 0;
+}
+/**
+ * @brief 按记录 ID 从 Flash 读取一条记录的数据。
+ * @return 0=成功, -1=未找到
+ */
+int app_radar_get_record_data_by_id(u8 id, u32 *start_sec, u32 *end_sec, u32 *motion_sec, u16 *avg_speed, u8 *result)
+{
+    radar_play_record_flash_t stored;
+    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    {
+        if (radar_play_record_flash_read(slot, &stored) && stored.record_id == id)
+        {
+            if (start_sec) *start_sec = stored.start_sec;
+            if (end_sec) *end_sec = stored.end_sec;
+            if (motion_sec) *motion_sec = stored.motion_sec;
+            if (avg_speed) *avg_speed = stored.avg_speed_cms;
+            if (result) *result = stored.hunt_result;
+            return 0;
+        }
+    }
+    return -1;
+}
 u8 app_radar_is_install_height_set(void)
 {
     return g_radar_install_height_set;
@@ -2098,7 +2027,10 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             }
             else
             {
-                RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                if (g_hunt_state == HUNT_STATE_ACTIVE)
+                {
+                    RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                }
             }
         }
 #else
@@ -2604,7 +2536,7 @@ void app_radar_task_power_schedule(void)
         {
             g_hunt_success = 1;
             // 标记当前记录为成功
-            g_radar_play_hunt_result[g_radar_play_active_idx] = HUNT_RESULT_SUCCESS;
+            g_radar_play_active_result = HUNT_RESULT_SUCCESS;
             BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! target entered prey zone");
         }
 
@@ -2614,9 +2546,9 @@ void app_radar_task_power_schedule(void)
             // 如果还没标记成功, 标记为完成(非成功)
             if (!g_hunt_success)
             {
-                if (g_radar_play_hunt_result[g_radar_play_active_idx] == HUNT_RESULT_INCOMPLETE)
+                if (g_radar_play_active_result == HUNT_RESULT_INCOMPLETE)
                 {
-                    g_radar_play_hunt_result[g_radar_play_active_idx] = HUNT_RESULT_COMPLETE;
+                    g_radar_play_active_result = HUNT_RESULT_COMPLETE;
                 }
             }
 

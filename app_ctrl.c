@@ -42,7 +42,7 @@ static u8  g_power_off_cooldown_active = 0;
 // Log TX CCC from app_att.c
 extern u8 customCtrlLogCCC[2];
 
-#define POWER_CTRL_COOLDOWN_US 30000000u  // 30s
+#define POWER_CTRL_COOLDOWN_US 30000000u / 30  // 30s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -121,7 +121,7 @@ static u8 app_ctrl_play_record_upload_allowed(void)
 }
 
 // ----------------------- 简化逗宠记录上传 -----------------------
-// 每 1s 检查雷达环形缓冲区是否有完整记录，有则上传最老的一条。
+// 每 5s 检查雷达 Flash 记录区是否有完整记录，有则上传最老的一条。
 // 上传后等待 ACK（通过 0x35 删除命令确认），超时 2s 重传。
 // 不从雷达缓冲区移除记录，直到收到 0x35 删除命令。
 
@@ -135,10 +135,10 @@ static u8  g_play_upload_state    = PLAY_UPLOAD_IDLE;
 static u8  g_play_upload_id       = 0;     // 当前正在上传的记录 ID（0=无）
 static u32 g_play_upload_tick     = 0;     // 上次发送/重传时间戳
 static u32 g_play_upload_check_tick = 0;   // 上次检查时间戳
-static u8  g_play_upload_pending  = 0;     // 标记需要立即检查（由 notify 设置）
+static u8  g_play_upload_pending  = 0;     // 仅用于连接后的首次检查
 
-#define PLAY_RECORD_UPLOAD_INTERVAL_US    1000000u  // 检查间隔 1s
-#define PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US 2000000u  // ACK 超时 2s
+#define PLAY_RECORD_UPLOAD_INTERVAL_US    (1000000u * 5u)  // 检查间隔 5s
+#define PLAY_RECORD_UPLOAD_ACK_TIMEOUT_US 5000000u  // ACK 超时 2s
 
 /**
  * @brief 从雷达缓冲区读取指定 ID 的记录数据，构建 EVENT 并发送。
@@ -1257,7 +1257,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 30
+#define APP_FIRMWARE_VERSION_PATCH 31
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 
@@ -1550,7 +1550,7 @@ void app_ctrl_notify_play_record_changed(void)
 {
 #if (UI_RADAR_ENABLE)
     BLE_LOG_D("app_ctrl_notify_play_record_changed");
-    g_play_upload_pending = 1;  // 标记下次 app_ctrl_task 立即检查
+    /* 新记录只改变待上传数据，不打断 5 秒上传节奏。 */
 #endif
 }
 
@@ -1588,7 +1588,7 @@ void app_ctrl_task(void)
         }
     }
 
-    // 每 1s 检查是否有新的完整记录需要上传
+    // 每 5s 检查是否有新的完整记录需要上传
     if (g_play_upload_state == PLAY_UPLOAD_IDLE)
     {
         if (g_play_upload_pending || clock_time_exceed(g_play_upload_check_tick, PLAY_RECORD_UPLOAD_INTERVAL_US))
