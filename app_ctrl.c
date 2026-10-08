@@ -1224,9 +1224,10 @@ static int app_ctrl_handle_radar_reset_flash_config(u8 seq, u8 *payload, u16 len
 {
     (void)payload;
     (void)len;
-    app_radar_clear_install_height_and_record_flash();
     u8 rsp[1] = {CTRL_STATUS_OK};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
+    // 先反馈然后再擦除FLASH，防止擦除FLASH的时候蓝牙倍断开导致APP收不到反馈
+    app_radar_clear_install_height_and_record_flash();
     return 0;
 }
 

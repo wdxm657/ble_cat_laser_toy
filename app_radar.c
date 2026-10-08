@@ -26,10 +26,12 @@
 #define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.8f * 1000.0f)
 #define RADAR_FRAME_LEN                   30
 #define SAMPLE_COUNT                      1
-#define STATIONARY_DXY_THRESHOLD_MM       10.0f
+#define STATIONARY_DXY_THRESHOLD_MM       2.0f
 #define RADAR_IDLE_TIMEOUT_US             (1000000u * 30u)  // 30s
 /** 与帧解析中「目标在移动」判定一致 (cm/s) */
 #define RADAR_TARGET_MOVING_SPEED_THR_CMS 5
+#define RADAR_MOVE_CONFIRM_WINDOW_US     1500000u
+#define RADAR_MOVE_CONFIRM_COUNT         20u
 
 #define RADAR_TIME_SEC_PER_DAY            86400u
 
@@ -319,6 +321,7 @@ _attribute_data_retention_ static u32 g_radar_play_active_motion_sec = 0;
 _attribute_data_retention_ static u16 g_radar_play_active_avg_speed_cms = 0;
 _attribute_data_retention_ static u8  g_radar_play_record_count                          = 0;
 _attribute_data_retention_ static u8  g_radar_play_record_next                           = 0;
+_attribute_data_retention_ static u8  g_radar_play_record_sector                         = 0;
 /** 自增记录ID计数器，每push一条新记录+1，溢出回绕 */
 _attribute_data_retention_ static u8  g_radar_play_id_counter                            = 0;
 /** 最近一次雷达串口速度 (cm/s)，用于会话内「是否触发跟踪」等，非逗宠统计主路径 */
@@ -417,16 +420,20 @@ typedef struct
 
 #define RADAR_PLAY_RECORD_COMMITTED 0xA5
 #define RADAR_PLAY_RECORD_SLOT_SIZE ((u32)sizeof(radar_play_record_flash_t))
+#define RADAR_PLAY_RECORD_SECTOR_SIZE 0x1000u
+#define RADAR_PLAY_RECORD_SECTOR_COUNT 10
 
-static u32 radar_play_record_flash_addr(u8 slot)
+static u32 radar_play_record_flash_addr(u8 sector, u8 slot)
 {
-    return RADAR_PLAY_RECORD_FLASH_ADDR + ((u32)slot * RADAR_PLAY_RECORD_SLOT_SIZE);
+    return RADAR_PLAY_RECORD_FLASH_ADDR +
+           ((u32)sector * RADAR_PLAY_RECORD_SECTOR_SIZE) +
+           ((u32)slot * RADAR_PLAY_RECORD_SLOT_SIZE);
 }
 
-static u8 radar_play_record_flash_slot_erased(u8 slot)
+static u8 radar_play_record_flash_slot_erased(u8 sector, u8 slot)
 {
     u8 data[sizeof(radar_play_record_flash_t)];
-    u32 addr = radar_play_record_flash_addr(slot);
+    u32 addr = radar_play_record_flash_addr(sector, slot);
 
     flash_read_page(addr, sizeof(data), data);
     for (u8 i = 0; i < sizeof(data); i++)
@@ -461,14 +468,14 @@ static u32 radar_boundary_crc32(const u8 *data, u32 len)
 }
 
 
-static u8 radar_play_record_flash_read(u8 slot, radar_play_record_flash_t *record)
+static u8 radar_play_record_flash_read(u8 sector, u8 slot, radar_play_record_flash_t *record)
 {
-    if (!record || slot >= RADAR_TIME_MAX_RECORDS)
+    if (!record || sector >= RADAR_PLAY_RECORD_SECTOR_COUNT || slot >= RADAR_TIME_MAX_RECORDS)
     {
         return 0;
     }
 
-    flash_read_page(radar_play_record_flash_addr(slot), sizeof(*record), (u8 *)record);
+    flash_read_page(radar_play_record_flash_addr(sector, slot), sizeof(*record), (u8 *)record);
     if (record->committed != RADAR_PLAY_RECORD_COMMITTED ||
         record->magic != RADAR_PLAY_RECORD_FLASH_MAGIC)
     {
@@ -479,28 +486,28 @@ static u8 radar_play_record_flash_read(u8 slot, radar_play_record_flash_t *recor
                                 offsetof(radar_play_record_flash_t, crc)) == record->crc;
 }
 
-static void radar_play_record_flash_invalidate(u8 slot)
+static void radar_play_record_flash_invalidate(u8 sector, u8 slot)
 {
     u8 invalid = 0;
-    flash_write_page(radar_play_record_flash_addr(slot) +
+    flash_write_page(radar_play_record_flash_addr(sector, slot) +
                          offsetof(radar_play_record_flash_t, committed),
                      sizeof(invalid), &invalid);
 }
 
-static u8 radar_play_record_flash_write(u8 slot, const radar_play_record_flash_t *record)
+static u8 radar_play_record_flash_write(u8 sector, u8 slot, const radar_play_record_flash_t *record)
 {
     radar_play_record_flash_t stored;
     radar_play_record_flash_t verify;
 
-    if (!record || slot >= RADAR_TIME_MAX_RECORDS)
+    if (!record || sector >= RADAR_PLAY_RECORD_SECTOR_COUNT || slot >= RADAR_TIME_MAX_RECORDS)
     {
         return 0;
     }
 
-    if (!radar_play_record_flash_slot_erased(slot))
+    if (!radar_play_record_flash_slot_erased(sector, slot))
     {
         BLE_LOG_D("RADAR_FLASH slot not erased: slot=%d addr=0x%x",
-                  slot, radar_play_record_flash_addr(slot));
+                  slot, radar_play_record_flash_addr(sector, slot));
         return 0;
     }
 
@@ -508,18 +515,18 @@ static u8 radar_play_record_flash_write(u8 slot, const radar_play_record_flash_t
     stored.committed = RADAR_PLAY_RECORD_COMMITTED;
     BLE_LOG_D("RADAR_FLASH write begin: slot=%d addr=0x%x id=%d start=%d end=%d result=%d crc=0x%x",
               slot,
-              radar_play_record_flash_addr(slot),
+              radar_play_record_flash_addr(sector, slot),
               stored.record_id,
               stored.start_sec,
               stored.end_sec,
               stored.hunt_result,
               stored.crc);
-    flash_write_page(radar_play_record_flash_addr(slot), sizeof(stored), (u8 *)&stored);
+    flash_write_page(radar_play_record_flash_addr(sector, slot), sizeof(stored), (u8 *)&stored);
 
-    if (!radar_play_record_flash_read(slot, &verify))
+    if (!radar_play_record_flash_read(sector, slot, &verify))
     {
         BLE_LOG_D("RADAR_FLASH write verify FAILED: slot=%d addr=0x%x",
-                  slot, radar_play_record_flash_addr(slot));
+                  slot, radar_play_record_flash_addr(sector, slot));
         return 0;
     }
 
@@ -676,6 +683,7 @@ static void radar_play_records_reset_ram(void)
 {
     g_radar_play_record_count          = 0;
     g_radar_play_record_next           = 0;
+    g_radar_play_record_sector         = 0;
     g_radar_play_id_counter            = 0;
     g_radar_play_state                 = RADAR_PLAY_STATE_IDLE;
     g_radar_play_active_start          = 0;
@@ -703,26 +711,34 @@ static void radar_play_records_load_from_flash(void)
     u8 max_id = 0;
 
     radar_play_records_reset_ram();
-    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    for (u8 sector = 0; sector < RADAR_PLAY_RECORD_SECTOR_COUNT; sector++)
     {
-        if (!radar_play_record_flash_read(slot, &stored))
+        for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
         {
-            continue;
-        }
+            if (!radar_play_record_flash_read(sector, slot, &stored))
+            {
+                continue;
+            }
 
-        g_radar_play_record_count++;
-        last_slot = slot;
-        found_last = 1;
-        if (stored.record_id > max_id)
-        {
-            max_id = stored.record_id;
+            g_radar_play_record_count++;
+            if (!found_last || stored.record_id >= max_id)
+            {
+                last_slot = slot;
+                g_radar_play_record_sector = sector;
+                found_last = 1;
+            }
+            if (stored.record_id > max_id)
+            {
+                max_id = stored.record_id;
+            }
         }
     }
 
     g_radar_play_record_next = found_last ? (u8)(last_slot + 1) : 0;
-    if (g_radar_play_record_next > RADAR_TIME_MAX_RECORDS)
+    if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
     {
-        g_radar_play_record_next = RADAR_TIME_MAX_RECORDS;
+        g_radar_play_record_next = 0;
+        g_radar_play_record_sector = (u8)((g_radar_play_record_sector + 1) % RADAR_PLAY_RECORD_SECTOR_COUNT);
     }
     g_radar_play_id_counter = max_id;
     g_radar_play_state        = RADAR_PLAY_STATE_IDLE;
@@ -913,24 +929,25 @@ static void radar_play_record_end(void)
 
     if (g_radar_play_record_next >= RADAR_TIME_MAX_RECORDS)
     {
-        BLE_LOG_D("RADAR_FLASH sector erase: addr=0x%x records=%d",
-                  RADAR_PLAY_RECORD_FLASH_ADDR, g_radar_play_record_count);
-        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
-        g_radar_play_record_count = 0;
         g_radar_play_record_next = 0;
+        g_radar_play_record_sector = (u8)((g_radar_play_record_sector + 1) % RADAR_PLAY_RECORD_SECTOR_COUNT);
+        BLE_LOG_D("RADAR_FLASH advance sector: sector=%d addr=0x%x",
+                  g_radar_play_record_sector,
+                  RADAR_PLAY_RECORD_FLASH_ADDR +
+                      ((u32)g_radar_play_record_sector * RADAR_PLAY_RECORD_SECTOR_SIZE));
+        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR +
+                           ((u32)g_radar_play_record_sector * RADAR_PLAY_RECORD_SECTOR_SIZE));
     }
-    else if (!radar_play_record_flash_slot_erased(g_radar_play_record_next))
+    if (!radar_play_record_flash_slot_erased(g_radar_play_record_sector,
+                                             g_radar_play_record_next))
     {
-        /*
-         * The previous firmware used a whole-sector record layout.
-         * Erase that legacy data once before using append-only slots.
-         */
-        BLE_LOG_D("RADAR_FLASH migrate erase: slot=%d addr=0x%x",
+        BLE_LOG_D("RADAR_FLASH erase sector for slot: sector=%d slot=%d addr=0x%x",
+                  g_radar_play_record_sector,
                   g_radar_play_record_next,
-                  RADAR_PLAY_RECORD_FLASH_ADDR);
-        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
-        g_radar_play_record_count = 0;
-        g_radar_play_record_next = 0;
+                  RADAR_PLAY_RECORD_FLASH_ADDR +
+                      ((u32)g_radar_play_record_sector * RADAR_PLAY_RECORD_SECTOR_SIZE));
+        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR +
+                           ((u32)g_radar_play_record_sector * RADAR_PLAY_RECORD_SECTOR_SIZE));
     }
     radar_play_record_flash_t stored = {0};
     stored.magic = RADAR_PLAY_RECORD_FLASH_MAGIC;
@@ -943,7 +960,8 @@ static void radar_play_record_end(void)
     stored.record_id = g_radar_play_active_id;
     stored.crc = radar_boundary_crc32((const u8 *)&stored,
                                       offsetof(radar_play_record_flash_t, crc));
-    if (!radar_play_record_flash_write(g_radar_play_record_next, &stored))
+    if (!radar_play_record_flash_write(g_radar_play_record_sector,
+                                       g_radar_play_record_next, &stored))
     {
         BLE_LOG_D("RADAR_RECORD end FAILED: Flash write failed id=%d slot=%d",
                   stored.record_id, g_radar_play_record_next);
@@ -1018,16 +1036,24 @@ int app_radar_get_play_records(u32 *out_buf, u8 *tz_buf, u8 max_records)
 
     radar_play_record_flash_t stored;
     u8 count = 0;
-    for (s16 slot = RADAR_TIME_MAX_RECORDS - 1; slot >= 0 && count < max_records; slot--)
+    for (s16 sector_offset = RADAR_PLAY_RECORD_SECTOR_COUNT - 1;
+         sector_offset >= 0 && count < max_records;
+         sector_offset--)
     {
-        if (!radar_play_record_flash_read((u8)slot, &stored))
+        u8 sector = (u8)((g_radar_play_record_sector + sector_offset) % RADAR_PLAY_RECORD_SECTOR_COUNT);
+        for (s16 slot = RADAR_TIME_MAX_RECORDS - 1;
+             slot >= 0 && count < max_records;
+             slot--)
         {
-            continue;
+            if (!radar_play_record_flash_read(sector, (u8)slot, &stored))
+            {
+                continue;
+            }
+            out_buf[count * 2] = stored.start_sec;
+            out_buf[count * 2 + 1] = stored.end_sec;
+            tz_buf[count] = (u8)stored.tz_q15;
+            count++;
         }
-        out_buf[count * 2] = stored.start_sec;
-        out_buf[count * 2 + 1] = stored.end_sec;
-        tz_buf[count] = (u8)stored.tz_q15;
-        count++;
     }
     return count;
 }
@@ -1042,29 +1068,33 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
 
     radar_play_record_flash_t stored;
     u8 count = 0;
-    for (s16 slot = RADAR_TIME_MAX_RECORDS - 1; slot >= 0 && count < max_records; slot--)
+    for (s16 sector_offset = RADAR_PLAY_RECORD_SECTOR_COUNT - 1;
+         sector_offset >= 0 && count < max_records;
+         sector_offset--)
     {
-        if (!radar_play_record_flash_read((u8)slot, &stored) ||
-            !radar_play_record_is_complete(stored.end_sec))
+        u8 sector = (u8)((g_radar_play_record_sector + sector_offset) % RADAR_PLAY_RECORD_SECTOR_COUNT);
+        for (s16 slot = RADAR_TIME_MAX_RECORDS - 1;
+             slot >= 0 && count < max_records;
+             slot--)
         {
-            continue;
-        }
-        if (stored.end_sec <= stored.start_sec ||
-            (stored.end_sec - stored.start_sec) < (RADAR_HOLD_ON_NO_MOTION_S - 1))
-        {
-            radar_play_record_flash_invalidate((u8)slot);
-            if (g_radar_play_record_count)
+            if (!radar_play_record_flash_read(sector, (u8)slot, &stored) ||
+                !radar_play_record_is_complete(stored.end_sec))
             {
-                g_radar_play_record_count--;
+                continue;
             }
-            continue;
+            if (stored.end_sec <= stored.start_sec ||
+                (stored.end_sec - stored.start_sec) < (RADAR_HOLD_ON_NO_MOTION_S - 1))
+            {
+                radar_play_record_flash_invalidate(sector, (u8)slot);
+                continue;
+            }
+            out_buf[count * 2] = stored.start_sec;
+            out_buf[count * 2 + 1] = stored.end_sec;
+            tz_buf[count] = (u8)stored.tz_q15;
+            if (motion_sec_out) motion_sec_out[count] = stored.motion_sec;
+            if (avg_speed_cms_out) avg_speed_cms_out[count] = stored.avg_speed_cms;
+            count++;
         }
-        out_buf[count * 2] = stored.start_sec;
-        out_buf[count * 2 + 1] = stored.end_sec;
-        tz_buf[count] = (u8)stored.tz_q15;
-        if (motion_sec_out) motion_sec_out[count] = stored.motion_sec;
-        if (avg_speed_cms_out) avg_speed_cms_out[count] = stored.avg_speed_cms;
-        count++;
     }
     return count;
 }
@@ -1072,12 +1102,15 @@ int app_radar_get_complete_play_records(u32 *out_buf, u8 *tz_buf, u32 *motion_se
 u8 app_radar_has_complete_play_records(void)
 {
     radar_play_record_flash_t stored;
-    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    for (u8 sector = 0; sector < RADAR_PLAY_RECORD_SECTOR_COUNT; sector++)
     {
-        if (radar_play_record_flash_read(slot, &stored) &&
-            radar_play_record_is_complete(stored.end_sec))
+        for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
         {
-            return 1;
+            if (radar_play_record_flash_read(sector, slot, &stored) &&
+                radar_play_record_is_complete(stored.end_sec))
+            {
+                return 1;
+            }
         }
     }
 
@@ -1087,15 +1120,14 @@ u8 app_radar_has_complete_play_records(void)
 void app_radar_clear_complete_play_records(void)
 {
     radar_play_record_flash_t stored;
-    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    for (u8 sector = 0; sector < RADAR_PLAY_RECORD_SECTOR_COUNT; sector++)
     {
-        if (radar_play_record_flash_read(slot, &stored) &&
-            radar_play_record_is_complete(stored.end_sec))
+        for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
         {
-            radar_play_record_flash_invalidate(slot);
-            if (g_radar_play_record_count)
+            if (radar_play_record_flash_read(sector, slot, &stored) &&
+                radar_play_record_is_complete(stored.end_sec))
             {
-                g_radar_play_record_count--;
+                radar_play_record_flash_invalidate(sector, slot);
             }
         }
     }
@@ -1108,16 +1140,15 @@ void app_radar_clear_complete_play_records(void)
 int app_radar_delete_play_record_by_id(u8 record_id)
 {
     radar_play_record_flash_t stored;
-    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    for (u8 sector = 0; sector < RADAR_PLAY_RECORD_SECTOR_COUNT; sector++)
     {
-        if (radar_play_record_flash_read(slot, &stored) && stored.record_id == record_id)
+        for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
         {
-            radar_play_record_flash_invalidate(slot);
-            if (g_radar_play_record_count)
+            if (radar_play_record_flash_read(sector, slot, &stored) && stored.record_id == record_id)
             {
-                g_radar_play_record_count--;
+                radar_play_record_flash_invalidate(sector, slot);
+                return 0;
             }
-            return 0;
         }
     }
     return -1;
@@ -1129,12 +1160,16 @@ int app_radar_delete_play_record_by_id(u8 record_id)
 u8 app_radar_find_oldest_complete_record_id(void)
 {
     radar_play_record_flash_t stored;
-    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    for (u8 sector_offset = 1; sector_offset <= RADAR_PLAY_RECORD_SECTOR_COUNT; sector_offset++)
     {
-        if (radar_play_record_flash_read(slot, &stored) &&
-            radar_play_record_is_complete(stored.end_sec))
+        u8 sector = (u8)((g_radar_play_record_sector + sector_offset) % RADAR_PLAY_RECORD_SECTOR_COUNT);
+        for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
         {
-            return stored.record_id;
+            if (radar_play_record_flash_read(sector, slot, &stored) &&
+                radar_play_record_is_complete(stored.end_sec))
+            {
+                return stored.record_id;
+            }
         }
     }
     return 0;
@@ -1146,20 +1181,24 @@ u8 app_radar_find_oldest_complete_record_id(void)
 int app_radar_get_record_data_by_id(u8 id, u32 *start_sec, u32 *end_sec, u32 *motion_sec, u16 *avg_speed, u8 *result)
 {
     radar_play_record_flash_t stored;
-    for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
+    for (u8 sector = 0; sector < RADAR_PLAY_RECORD_SECTOR_COUNT; sector++)
     {
-        if (radar_play_record_flash_read(slot, &stored) && stored.record_id == id)
+        for (u8 slot = 0; slot < RADAR_TIME_MAX_RECORDS; slot++)
         {
-            if (start_sec) *start_sec = stored.start_sec;
-            if (end_sec) *end_sec = stored.end_sec;
-            if (motion_sec) *motion_sec = stored.motion_sec;
-            if (avg_speed) *avg_speed = stored.avg_speed_cms;
-            if (result) *result = stored.hunt_result;
-            return 0;
+            if (radar_play_record_flash_read(sector, slot, &stored) && stored.record_id == id)
+            {
+                if (start_sec) *start_sec = stored.start_sec;
+                if (end_sec) *end_sec = stored.end_sec;
+                if (motion_sec) *motion_sec = stored.motion_sec;
+                if (avg_speed) *avg_speed = stored.avg_speed_cms;
+                if (result) *result = stored.hunt_result;
+                return 0;
+            }
         }
     }
     return -1;
 }
+
 u8 app_radar_is_install_height_set(void)
 {
     return g_radar_install_height_set;
@@ -1277,7 +1316,11 @@ void app_radar_clear_install_height_and_record_flash(void)
 
     flash_erase_sector(RADAR_BOUNDARY_FLASH_ADDR);
     flash_erase_sector(RADAR_INSTALL_HEIGHT_FLASH_ADDR);
-    flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR);
+    for (u8 sector = 0; sector < RADAR_PLAY_RECORD_SECTOR_COUNT; sector++)
+    {
+        flash_erase_sector(RADAR_PLAY_RECORD_FLASH_ADDR +
+                           ((u32)sector * RADAR_PLAY_RECORD_SECTOR_SIZE));
+    }
     flash_erase_sector(RADAR_PREY_POINT_CFG_FLASH_ADDR);
 }
 
@@ -1907,9 +1950,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 
 static u32  tick_xy_mm = 0;
 static float motion_rad = 0.0f;
-#define debug_point 1
+#define debug_point 0
 static u8 move_cnt = 0;
 static u8 move_flag = 0;
+static u32 move_cnt_window_tick = 0;
 
 static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_cm_s)
 {
@@ -1939,15 +1983,24 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
 
     if (abs(g_radar_pred.prev_x_mm - x_mm) > STATIONARY_DXY_THRESHOLD_MM || abs(g_radar_pred.prev_y_mm - y_mm) > STATIONARY_DXY_THRESHOLD_MM)
     {
+        if (move_cnt_window_tick == 0 ||
+            clock_time_exceed(move_cnt_window_tick, RADAR_MOVE_CONFIRM_WINDOW_US))
+        {
+            // BLE_LOG_D("move cnt %d", move_cnt);
+            move_cnt = 0;
+            move_cnt_window_tick = now_tick;
+            // BLE_LOG_D("move confirm window reset: %dus", RADAR_MOVE_CONFIRM_WINDOW_US);
+        }
+
         move_cnt++;
-        if (move_cnt > 20 || move_flag == 1)
+        if (move_cnt >= RADAR_MOVE_CONFIRM_COUNT || move_flag == 1)
         {
             app_radar_status_led_set(1);
             motion_valid  = 1;
             is_stationary = 0;
-            // BLE_LOG_D("moved %d", move_cnt);
             RadarSessionOnMotion(now_tick);
             move_cnt = 0;
+            move_cnt_window_tick = 0;
             move_flag = 1;
         }
     }
@@ -2171,6 +2224,9 @@ void app_radar_set_enabled(u8 on)
     {
         app_radar_power_state_reset();
         app_radar_power_switch(0);
+        move_flag = 0;
+        move_cnt = 0;
+        move_cnt_window_tick = 0;
         g_hunt_state           = HUNT_STATE_OFF;
         g_hunt_completed       = 0;
         g_hunt_total_active_ms = 0;
@@ -2190,6 +2246,8 @@ void app_radar_set_enabled(u8 on)
         g_hunt_success         = 0;
         g_hunt_acc_tick_last   = 0;
         g_hunt_sleep_end_tick  = 0;
+        move_cnt = 0;
+        move_cnt_window_tick = 0;
         app_radar_status_led_set(0);
         radar_working_mode_set(1);
         g_radar_hold_on_mode = 1;
@@ -2313,7 +2371,7 @@ void app_radar_task_power_schedule(void)
         }
         g_radar_hold_on_mode = 1;
         // 检测到移动目标 → 开始狩猎
-        if (app_radar_has_recent_motion(HUNT_NO_TARGET_TIMEOUT_US))
+        if (move_flag)
         {
             BLE_LOG_D("HUNT: IDLE -> ACTIVE (target detected)");
             g_hunt_state          = HUNT_STATE_ACTIVE;
@@ -2386,6 +2444,7 @@ void app_radar_task_power_schedule(void)
                 app_radar_status_led_set(0);
                 g_radar_hold_on_mode  = 0;
                 g_hunt_state          = HUNT_STATE_STANDBY;
+                move_flag = 0;
                 g_hunt_no_target_tick = 0;
                 g_hunt_prey_zone_tick = 0;
                 BLE_LOG_D("HUNT: ACTIVE -> STANDBY (15s no target) total_ms %d", g_hunt_total_active_ms / 1000);
@@ -2460,13 +2519,12 @@ void app_radar_task_power_schedule(void)
 
     /* -------- 待机: 关闭激光+电机, 雷达保持, 检测到目标则恢复 -------- */
     case HUNT_STATE_STANDBY: {
-        move_flag = 0;
         if (!g_radar_power_on)
             app_radar_power_switch(1);
         g_radar_hold_on_mode = 0;  // 不跟踪
 
         // 检测到目标 → 恢复狩猎
-        if (app_radar_has_recent_motion(HUNT_NO_TARGET_TIMEOUT_US))
+        if (move_flag)
         {
             BLE_LOG_D("HUNT: STANDBY -> ACTIVE (target returned)");
             g_hunt_session_acc_ms = 0;

@@ -13,7 +13,7 @@
 #define DEG_TO_RAD             0.01745329252f
 #define DEG_TO_RAD_10          (DEG_TO_RAD / 10.0f)
 #define RAD_TO_DEG             57.2957795131f
-#define RADAR_TIME_MAX_RECORDS 8
+#define RADAR_TIME_MAX_RECORDS 100
 
 #ifdef UI_RADAR_ENABLE
 

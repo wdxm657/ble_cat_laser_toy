@@ -37,14 +37,14 @@
 #define RADAR_BOUNDARY_FLASH_ADDR                     USER_FLASH_START_ADDR
 // Radar install height storage (one 4K sector)
 #define RADAR_INSTALL_HEIGHT_FLASH_ADDR               (USER_FLASH_START_ADDR + 0x1000)
-// Radar play records storage (one 4K sector, 100 x 32-byte append-only slots)
+// Radar play records storage (10 x 4K sectors, each with 100 x 32-byte slots)
 #define RADAR_PLAY_RECORD_FLASH_ADDR                  (USER_FLASH_START_ADDR + 0x2000)
-// Battery percent persistence (one 4K sector)
-#define BAT_PERCENT_FLASH_ADDR                        (USER_FLASH_START_ADDR + 0x3000)
+// The following addresses are after the 10-sector radar record area.
+#define BAT_PERCENT_FLASH_ADDR                        (USER_FLASH_START_ADDR + 0xC000)
 // Prey point + hunt config (one 4K sector)
-#define RADAR_PREY_POINT_CFG_FLASH_ADDR               (USER_FLASH_START_ADDR + 0x4000)
+#define RADAR_PREY_POINT_CFG_FLASH_ADDR               (USER_FLASH_START_ADDR + 0xD000)
 // SOFT_POWER_STATE_FLASH_ADDR (one 4K sector): APP 软件开关机状态持久化
-#define SOFT_POWER_STATE_FLASH_ADDR                   (USER_FLASH_START_ADDR + 0x5000)
+#define SOFT_POWER_STATE_FLASH_ADDR                   (USER_FLASH_START_ADDR + 0xE000)
 
 #define BLE_APP_SECURITY_ENABLE      				0
 #define	BLE_OTA_SERVER_ENABLE						1
