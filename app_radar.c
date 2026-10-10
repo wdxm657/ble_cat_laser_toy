@@ -163,7 +163,7 @@ typedef enum
 #define RADAR_TRACK_LEAD_MM_MIN        200
 #define RADAR_TRACK_LEAD_MM_MAX        2000
 /** 目标判定静止时，沿最后运动方向保留的较小超前 (mm)，需 motion_valid（含粘滞方向） */
-#define RADAR_TRACK_LEAD_MM_STATIC     500
+#define RADAR_TRACK_LEAD_MM_STATIC     400
 /** 跟踪点与猫位置的最小间距约束，避免边界修正后贴近目标 */
 #define RADAR_TRACK_ESCAPE_MIN_DIST_MM 600
 
@@ -1470,8 +1470,8 @@ void app_radar_reset_sector_default(void)
 /** 云台偏移角度 (deg10)，远程可配置 */
 // 1.8m  -90 -100
 // 0.8m  -25 -75
-_attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -90;
-_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -20;
+_attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -50;
+_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -30;
 
 /** 设置云台水平和垂直偏移角度 (deg10)，范围 ±3000（±300°）。 */
 void app_radar_set_pan_tilt_offset_deg10(s16 pan_offset, s16 tilt_offset)
@@ -1898,9 +1898,11 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
     // 如果方向为pi/3-2pi/3
     if (motion_rad > 0 && motion_rad < M_PI)
     {
-        tilt_deg10 -= g_radar_tilt_offset_deg10;
+        // 远
+        // tilt_deg10 -= g_radar_tilt_offset_deg10 / 4;
     }else{
-        tilt_deg10 += g_radar_tilt_offset_deg10;
+        // 近
+        // tilt_deg10 += g_radar_tilt_offset_deg10;
     }
     // if (atest)
     // {
@@ -2093,7 +2095,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             motion_valid  = 1;
             RadarSessionOnMotion(now_tick);
             is_stationary = 0;
-        }else if (median_cd >= 1000 && move_flag == 1)
+        }else if (median_cd >= 000 && move_flag == 1)
         {
             is_stationary = 0;
             motion_valid  = 1;
