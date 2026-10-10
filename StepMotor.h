@@ -50,7 +50,7 @@
 #define GIMBAL_PAN_LIMIT_DEG10_POS         DEGx10(60)
 #define GIMBAL_PAN_LIMIT_DEG10_NEG         DEGx10(-60)
 #define GIMBAL_TILT_LIMIT_DEG10_POS        DEGx10(-10)
-#define GIMBAL_TILT_LIMIT_DEG10_NEG        DEGx10(-80)
+#define GIMBAL_TILT_LIMIT_DEG10_NEG        DEGx10(-65)
 
 typedef enum
 {

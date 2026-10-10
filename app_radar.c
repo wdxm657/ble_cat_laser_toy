@@ -669,7 +669,7 @@ static void radar_play_on_cache_displacement_ms(u32 dt_ms, u32 speed_cms_mag)
     }
     if (g_radar_sess_motion_ms <= 0xFFFFFFFFu - dt_ms)
     {
-        // g_radar_sess_motion_ms += dt_ms;
+        g_radar_sess_motion_ms += dt_ms;
     }
     {
         unsigned long long add = (unsigned long long)speed_cms_mag * (unsigned long long)dt_ms;
@@ -1471,7 +1471,7 @@ void app_radar_reset_sector_default(void)
 // 1.8m  -90 -100
 // 0.8m  -25 -75
 _attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -90;
-_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -100;
+_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -20;
 
 /** 设置云台水平和垂直偏移角度 (deg10)，范围 ±3000（±300°）。 */
 void app_radar_set_pan_tilt_offset_deg10(s16 pan_offset, s16 tilt_offset)
@@ -1885,6 +1885,7 @@ void app_radar_set_track_gimbal_interval_us(u32 interval_us)
 #define M_PI     3.1415926
 #define M_PI_3   (M_PI / 4.0f)
 #define M_2_PI_3 (3.0f * M_PI / 4.0f)
+u8 atest = 0;
 static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
 {
     s16 pan_deg10  = 0;
@@ -1897,10 +1898,19 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
     // 如果方向为pi/3-2pi/3
     if (motion_rad > 0 && motion_rad < M_PI)
     {
-        // tilt_deg10 += g_radar_tilt_offset_deg10;
+        tilt_deg10 -= g_radar_tilt_offset_deg10;
     }else{
-        // tilt_deg10 += g_radar_tilt_offset_deg10;
+        tilt_deg10 += g_radar_tilt_offset_deg10;
     }
+    // if (atest)
+    // {
+    //     tilt_deg10 = -DEGx10(65);
+    //     atest = 0;
+    // }else{
+    //     tilt_deg10 = -DEGx10(10);
+    //     atest = 1;
+    // }
+    
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
 }
@@ -2089,7 +2099,11 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             motion_valid  = 1;
             RadarSessionOnMotion(now_tick);
         }
-        motion_rad = lookup_atan2((float)dx_w, (float)dy_w);
+        last_motion_rad = lookup_atan2((float)dx_w, (float)dy_w);
+        if (dx_w != 0 && dy_w != 0)
+        {
+            motion_rad = last_motion_rad;
+        }
     }
     else
     {
@@ -3067,7 +3081,7 @@ void app_hunt_prey_random_move(void)
 {
     // 水平角度（±60°）俯仰角（15°~30°）间随机移动
     s16 pan_deg10  = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
-    s16 tilt_deg10 = (s16)RadarRandRangeI32(150 - 900, 450 - 900);  // 15°-45°
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(250 - 900, 550 - 900);  // 25°-45°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);

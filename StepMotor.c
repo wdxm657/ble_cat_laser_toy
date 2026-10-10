@@ -1,9 +1,11 @@
 #include "StepMotor.h"
 #include "app_config.h"
+
 #if (UI_STEP_MOTOR_ENABLE)
 
-#define STEP_MOTOR_PHASE_COUNT      8
-#define GIMBAL_DISPATCH_CHUNK_STEPS 16
+#define STEP_MOTOR_PHASE_COUNT 8
+#define STEP_MOTOR_S32_MAX     2147483647L
+#define STEP_MOTOR_S32_MIN     (-2147483647L - 1L)
 
 typedef struct
 {
@@ -15,36 +17,13 @@ typedef struct
 
 typedef struct
 {
-    u8  run;
-    u8  dir;
     u8  phase_idx;
-    u8  _rsv;
-    u32 next_tick;
-    u32 interval_us;
-    u32 remain_steps;
-} step_motor_ctrl_t;
-
-typedef struct
-{
+    u32 next_step_tick;
+    u32 target_interval_us;
+    s32 position_steps;
+    s32 zero_steps;
     s32 target_steps;
-} gimbal_axis_ctrl_t;
-
-/* half-step 8-beat sequence: A,AB,B,BC,C,CD,D,DA */
-static const u8 s_phase_table[STEP_MOTOR_PHASE_COUNT][4] = {
-    {1, 0, 0, 0},
-    {1, 1, 0, 0},
-    {0, 1, 0, 0},
-    {0, 1, 1, 0},
-    {0, 0, 1, 0},
-    {0, 0, 1, 1},
-    {0, 0, 0, 1},
-    {1, 0, 0, 1},
-};
-
-static const step_motor_pin_map_t s_motor_pin[STEP_MOTOR_AXIS_MAX] = {
-    {GPIO_STEP_MOTOR_1_A, GPIO_STEP_MOTOR_1_B, GPIO_STEP_MOTOR_1_C, GPIO_STEP_MOTOR_1_D},
-    {GPIO_STEP_MOTOR_2_A, GPIO_STEP_MOTOR_2_B, GPIO_STEP_MOTOR_2_C, GPIO_STEP_MOTOR_2_D},
-};
+} step_motor_axis_state_t;
 
 typedef enum
 {
@@ -66,22 +45,33 @@ typedef enum
     MOTOR_RESET_DONE,
 } step_motor_reset_state_e;
 
-static step_motor_ctrl_t        g_motor_ctrl[STEP_MOTOR_AXIS_MAX]      = {0};
-static gimbal_axis_ctrl_t       g_gimbal_ctrl[STEP_MOTOR_AXIS_MAX]     = {0};
-static s32                      g_axis_pos_steps[STEP_MOTOR_AXIS_MAX]  = {0};
-static s32                      g_axis_zero_steps[STEP_MOTOR_AXIS_MAX] = {0};
-static u32                      g_gimbal_interval_us                   = 1200;
-static u8                       g_auto_enabled                         = 1;
-static step_motor_reset_state_e g_reset_state                          = MOTOR_RESET_IDLE;
-static u8                       g_reset_busy                           = 0;
+/* Half-step sequence: A, AB, B, BC, C, CD, D, DA. */
+static const u8 s_phase_table[STEP_MOTOR_PHASE_COUNT][4] = {
+    {1, 0, 0, 0},
+    {1, 1, 0, 0},
+    {0, 1, 0, 0},
+    {0, 1, 1, 0},
+    {0, 0, 1, 0},
+    {0, 0, 1, 1},
+    {0, 0, 0, 1},
+    {1, 0, 0, 1},
+};
+
+static const step_motor_pin_map_t s_motor_pin[STEP_MOTOR_AXIS_MAX] = {
+    {GPIO_STEP_MOTOR_1_A, GPIO_STEP_MOTOR_1_B, GPIO_STEP_MOTOR_1_C, GPIO_STEP_MOTOR_1_D},
+    {GPIO_STEP_MOTOR_2_A, GPIO_STEP_MOTOR_2_B, GPIO_STEP_MOTOR_2_C, GPIO_STEP_MOTOR_2_D},
+};
+
+static step_motor_axis_state_t g_axis[STEP_MOTOR_AXIS_MAX] = {0};
+static u32                      g_gimbal_interval_us = 1200;
+static u8                       g_auto_enabled = 1;
+static step_motor_reset_state_e g_reset_state = MOTOR_RESET_IDLE;
+static u8                       g_reset_busy = 0;
 
 static inline u32 StepMotor_ClampIntervalUs(u32 interval_us)
 {
-    if (interval_us < STEP_MOTOR_MIN_INTERVAL_US_FASTEST)
-    {
-        return STEP_MOTOR_MIN_INTERVAL_US_FASTEST;
-    }
-    return interval_us;
+    return (interval_us < STEP_MOTOR_MIN_INTERVAL_US_FASTEST) ?
+           STEP_MOTOR_MIN_INTERVAL_US_FASTEST : interval_us;
 }
 
 static inline s32 StepMotor_ClampDeg10(step_motor_axis_e axis, s32 deg_x10)
@@ -112,18 +102,14 @@ static inline s32 StepMotor_ClampDeg10(step_motor_axis_e axis, s32 deg_x10)
 
 static inline s32 StepMotor_Deg10ToSteps(s32 deg_x10)
 {
-    s32 num = (s32)deg_x10 * (s32)STEP_MOTOR_STEPS_PER_REV;
-    s32 den = DEGx10(360);
+    s32 numerator = deg_x10 * (s32)STEP_MOTOR_STEPS_PER_REV;
+    s32 denominator = DEGx10(360);
 
-    /* 四舍五入，降低量化误差导致的小范围抖动 */
-    if (num >= 0)
+    if (numerator >= 0)
     {
-        return (num + (den / 2)) / den;
+        return (numerator + denominator / 2) / denominator;
     }
-    else
-    {
-        return (num - (den / 2)) / den;
-    }
+    return (numerator - denominator / 2) / denominator;
 }
 
 static inline s32 StepMotor_StepsToDeg10(s32 steps)
@@ -142,12 +128,12 @@ static inline void StepMotor_WritePin(GPIO_PinTypeDef pin, u8 on)
 
 static void StepMotor_WritePhase(step_motor_axis_e axis, u8 phase)
 {
-    const u8 *p = s_phase_table[phase & 0x07];
+    const u8 *pattern = s_phase_table[phase & 0x07];
 
-    StepMotor_WritePin(s_motor_pin[axis].pin_a, p[0]);
-    StepMotor_WritePin(s_motor_pin[axis].pin_b, p[1]);
-    StepMotor_WritePin(s_motor_pin[axis].pin_c, p[2]);
-    StepMotor_WritePin(s_motor_pin[axis].pin_d, p[3]);
+    StepMotor_WritePin(s_motor_pin[axis].pin_a, pattern[0]);
+    StepMotor_WritePin(s_motor_pin[axis].pin_b, pattern[1]);
+    StepMotor_WritePin(s_motor_pin[axis].pin_c, pattern[2]);
+    StepMotor_WritePin(s_motor_pin[axis].pin_d, pattern[3]);
 }
 
 static void StepMotor_ConfigOne(step_motor_axis_e axis)
@@ -168,85 +154,100 @@ static void StepMotor_ConfigOne(step_motor_axis_e axis)
     gpio_set_input_en(s_motor_pin[axis].pin_d, 0);
 }
 
-static inline u8 StepMotor_AxisReached(step_motor_axis_e axis, s32 target_deg10)
+static void StepMotor_GimbalSetTargetDeg10Internal(step_motor_axis_e axis,
+                                                    s32 target_deg_x10,
+                                                    u8 bypass_limit)
 {
-    s32 current_deg10 = StepMotor_GimbalGetCurrentDeg10(axis);
-    LOG_D("[MOTOR] axis current/target: %d, %d", current_deg10, target_deg10);
-    return (!StepMotor_IsRunning(axis) &&
-            (current_deg10 == target_deg10));
-}
-
-static void StepMotor_GimbalSetTargetDeg10Internal(step_motor_axis_e axis, s32 target_deg_x10, u8 bypass_limit)
-{
-    s32 target_steps;
+    step_motor_axis_state_t *state;
     s32 adjusted_target_deg_x10;
+    s32 target_steps;
 
     if (axis >= STEP_MOTOR_AXIS_MAX)
     {
         return;
     }
 
-    adjusted_target_deg_x10          = bypass_limit ? target_deg_x10 : StepMotor_ClampDeg10(axis, target_deg_x10);
-    target_steps                     = StepMotor_Deg10ToSteps(adjusted_target_deg_x10);
-    g_gimbal_ctrl[axis].target_steps = g_axis_zero_steps[axis] + target_steps;
+    state = &g_axis[axis];
+    adjusted_target_deg_x10 = bypass_limit ? target_deg_x10 :
+                              StepMotor_ClampDeg10(axis, target_deg_x10);
+    target_steps = state->zero_steps + StepMotor_Deg10ToSteps(adjusted_target_deg_x10);
+    state->target_steps = target_steps;
+    state->target_interval_us = g_gimbal_interval_us;
 }
 
 void StepMotor_Init(void)
 {
-    u8 i;
+    u8 axis;
+    u32 now = clock_time();
 
     g_gimbal_interval_us = 1200;
-
-    for (i = 0; i < STEP_MOTOR_AXIS_MAX; i++)
+    for (axis = 0; axis < STEP_MOTOR_AXIS_MAX; axis++)
     {
-        StepMotor_ConfigOne((step_motor_axis_e)i);
-
-        g_motor_ctrl[i].run          = 0;
-        g_motor_ctrl[i].dir          = STEP_MOTOR_DIR_CW;
-        g_motor_ctrl[i].phase_idx    = 0;
-        g_motor_ctrl[i].next_tick    = 0;
-        g_motor_ctrl[i].interval_us  = g_gimbal_interval_us;
-        g_motor_ctrl[i].remain_steps = 0;
-
-        g_axis_pos_steps[i]           = 0;
-        g_axis_zero_steps[i]          = 0;
-        g_gimbal_ctrl[i].target_steps = 0;
-
-        StepMotor_Stop((step_motor_axis_e)i);
+        StepMotor_ConfigOne((step_motor_axis_e)axis);
+        g_axis[axis].phase_idx = 0;
+        g_axis[axis].next_step_tick = now;
+        g_axis[axis].target_interval_us = g_gimbal_interval_us;
+        g_axis[axis].position_steps = 0;
+        g_axis[axis].zero_steps = 0;
+        g_axis[axis].target_steps = 0;
+        StepMotor_Stop((step_motor_axis_e)axis);
     }
 
     g_reset_state = MOTOR_RESET_IDLE;
-    g_reset_busy  = 0;
+    g_reset_busy = 0;
 }
 
-void StepMotor_MoveSteps(step_motor_axis_e axis, step_motor_dir_e dir, u32 steps, u32 step_interval_us)
+void StepMotor_MoveSteps(step_motor_axis_e axis,
+                         step_motor_dir_e dir,
+                         u32 steps,
+                         u32 step_interval_us)
 {
-    if ((axis >= STEP_MOTOR_AXIS_MAX) || (steps == 0))
+    step_motor_axis_state_t *state;
+    s32 signed_steps;
+    s32 target_steps;
+
+    if ((axis >= STEP_MOTOR_AXIS_MAX) || (steps == 0) || (steps > (u32)STEP_MOTOR_S32_MAX))
     {
         return;
     }
 
-    g_motor_ctrl[axis].dir          = (u8)dir;
-    g_motor_ctrl[axis].remain_steps = steps;
-    g_motor_ctrl[axis].interval_us  = StepMotor_ClampIntervalUs((step_interval_us == 0) ? g_gimbal_interval_us : step_interval_us);
-    g_motor_ctrl[axis].next_tick    = clock_time();
-    g_motor_ctrl[axis].run          = 1;
+    state = &g_axis[axis];
+    signed_steps = (s32)steps;
+    if (dir == STEP_MOTOR_DIR_CCW)
+    {
+        signed_steps = -signed_steps;
+    }
+
+    if (((signed_steps > 0) &&
+         (state->position_steps > (s32)(STEP_MOTOR_S32_MAX - signed_steps))) ||
+        ((signed_steps < 0) &&
+         (state->position_steps < (s32)(STEP_MOTOR_S32_MIN - signed_steps))))
+    {
+        return;
+    }
+
+    target_steps = state->position_steps + signed_steps;
+    state->target_steps = target_steps;
+    state->target_interval_us = StepMotor_ClampIntervalUs((step_interval_us == 0) ?
+                                                          g_gimbal_interval_us : step_interval_us);
 }
 
 void StepMotor_Stop(step_motor_axis_e axis)
 {
+    step_motor_axis_state_t *state;
+
     if (axis >= STEP_MOTOR_AXIS_MAX)
     {
         return;
     }
 
+    state = &g_axis[axis];
     StepMotor_WritePin(s_motor_pin[axis].pin_a, 0);
     StepMotor_WritePin(s_motor_pin[axis].pin_b, 0);
     StepMotor_WritePin(s_motor_pin[axis].pin_c, 0);
     StepMotor_WritePin(s_motor_pin[axis].pin_d, 0);
-
-    g_motor_ctrl[axis].run          = 0;
-    g_motor_ctrl[axis].remain_steps = 0;
+    state->target_steps = state->position_steps;
+    state->next_step_tick = clock_time();
 }
 
 void StepMotor_StopAll(void)
@@ -262,7 +263,7 @@ void StepMotor_CtrlSetAutoEnabled(u8 enable)
 
 u8 StepMotor_CtrlCanEnterAuto(void)
 {
-    return (g_auto_enabled);
+    return g_auto_enabled;
 }
 
 u8 StepMotor_CtrlIsAutoEnabled(void)
@@ -276,52 +277,42 @@ u8 StepMotor_IsRunning(step_motor_axis_e axis)
     {
         return 0;
     }
-
-    return g_motor_ctrl[axis].run;
+    return (g_axis[axis].position_steps != g_axis[axis].target_steps);
 }
 
 void StepMotor_Task(void)
 {
-    u8 i;
+    u8 axis;
+    u32 now = clock_time();
 
-    for (i = 0; i < STEP_MOTOR_AXIS_MAX; i++)
+    for (axis = 0; axis < STEP_MOTOR_AXIS_MAX; axis++)
     {
-        step_motor_ctrl_t *ctrl = &g_motor_ctrl[i];
+        step_motor_axis_state_t *state = &g_axis[axis];
+        s32 delta_steps = state->target_steps - state->position_steps;
 
-        if (!ctrl->run)
+        if (delta_steps == 0)
         {
             continue;
         }
 
-        if (!clock_time_exceed(ctrl->next_tick, ctrl->interval_us))
+        if (!clock_time_exceed(state->next_step_tick, state->target_interval_us))
         {
             continue;
         }
 
-        ctrl->next_tick = clock_time();
-
-        if (ctrl->dir == STEP_MOTOR_DIR_CW)
+        /* One phase transition per axis per task pass; never build a catch-up burst. */
+        state->next_step_tick = now;
+        if (delta_steps > 0)
         {
-            ctrl->phase_idx = (ctrl->phase_idx + 1) & 0x07;
-            g_axis_pos_steps[i]++;
+            state->phase_idx = (state->phase_idx + 1) & 0x07;
+            state->position_steps++;
         }
         else
         {
-            ctrl->phase_idx = (ctrl->phase_idx + 7) & 0x07;
-            g_axis_pos_steps[i]--;
+            state->phase_idx = (state->phase_idx + 7) & 0x07;
+            state->position_steps--;
         }
-
-        StepMotor_WritePhase((step_motor_axis_e)i, ctrl->phase_idx);
-
-        if (ctrl->remain_steps > 0)
-        {
-            ctrl->remain_steps--;
-            if (ctrl->remain_steps == 0)
-            {
-                g_motor_ctrl[i].run          = 0;
-                g_motor_ctrl[i].remain_steps = 0;
-            }
-        }
+        StepMotor_WritePhase((step_motor_axis_e)axis, state->phase_idx);
     }
 }
 
@@ -337,15 +328,16 @@ void StepMotor_GimbalSetTargetDeg10(step_motor_axis_e axis, s32 target_deg_x10)
 
 void StepMotor_GimbalMoveDeltaDeg10(step_motor_axis_e axis, s32 delta_deg_x10)
 {
-    s32 cur_deg10;
+    s32 target_deg10;
 
     if (axis >= STEP_MOTOR_AXIS_MAX)
     {
         return;
     }
 
-    cur_deg10 = StepMotor_StepsToDeg10(g_gimbal_ctrl[axis].target_steps);
-    StepMotor_GimbalSetTargetDeg10(axis, cur_deg10 + delta_deg_x10);
+    target_deg10 = StepMotor_StepsToDeg10(g_axis[axis].target_steps -
+                                           g_axis[axis].zero_steps);
+    StepMotor_GimbalSetTargetDeg10(axis, target_deg10 + delta_deg_x10);
 }
 
 s32 StepMotor_GimbalGetCurrentDeg10(step_motor_axis_e axis)
@@ -354,8 +346,7 @@ s32 StepMotor_GimbalGetCurrentDeg10(step_motor_axis_e axis)
     {
         return 0;
     }
-
-    return StepMotor_StepsToDeg10(g_axis_pos_steps[axis] - g_axis_zero_steps[axis]);
+    return StepMotor_StepsToDeg10(g_axis[axis].position_steps - g_axis[axis].zero_steps);
 }
 
 void StepMotor_GimbalSetZero(step_motor_axis_e axis)
@@ -365,8 +356,8 @@ void StepMotor_GimbalSetZero(step_motor_axis_e axis)
         return;
     }
 
-    g_axis_zero_steps[axis]          = g_axis_pos_steps[axis];
-    g_gimbal_ctrl[axis].target_steps = g_axis_pos_steps[axis];
+    g_axis[axis].zero_steps = g_axis[axis].position_steps;
+    g_axis[axis].target_steps = g_axis[axis].position_steps;
 }
 
 void StepMotor_GimbalSetZeroAll(void)
@@ -383,44 +374,13 @@ void StepMotor_GimbalHome(void)
 
 void StepMotor_GimbalTask(void)
 {
-    u8 i;
-
     StepMotor_Task();
-
-    for (i = 0; i < STEP_MOTOR_AXIS_MAX; i++)
-    {
-        s32 delta_steps;
-        u32 dispatch_steps;
-
-        if (StepMotor_IsRunning((step_motor_axis_e)i))
-        {
-            continue;
-        }
-
-        delta_steps = g_gimbal_ctrl[i].target_steps - g_axis_pos_steps[i];
-        if (delta_steps == 0)
-        {
-            continue;
-        }
-
-        if (delta_steps > 0)
-        {
-            dispatch_steps = (u32)((delta_steps > GIMBAL_DISPATCH_CHUNK_STEPS) ? GIMBAL_DISPATCH_CHUNK_STEPS : delta_steps);
-            StepMotor_MoveSteps((step_motor_axis_e)i, STEP_MOTOR_DIR_CW, dispatch_steps, g_gimbal_interval_us);
-        }
-        else
-        {
-            s32 abs_steps  = -delta_steps;
-            dispatch_steps = (u32)((abs_steps > GIMBAL_DISPATCH_CHUNK_STEPS) ? GIMBAL_DISPATCH_CHUNK_STEPS : abs_steps);
-            StepMotor_MoveSteps((step_motor_axis_e)i, STEP_MOTOR_DIR_CCW, dispatch_steps, g_gimbal_interval_us);
-        }
-    }
 }
 
 void StepMotor_GimbalResetStart(void)
 {
     StepMotor_GimbalSetSpeedUs(800);
-    g_reset_busy  = 1;
+    g_reset_busy = 1;
     g_reset_state = MOTOR_RESET_TILT_DOWN;
     LOG_D("[MOTOR] reset start");
 }
@@ -455,8 +415,8 @@ void StepMotor_GimbalResetTask(void)
         break;
 
     case MOTOR_RESET_TILT_UP:
-        LOG_D("[MOTOR] reset tilt up to -90");
-        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-100), 1);
+        LOG_D("[MOTOR] reset tilt up to -102");
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_TILT, DEGx10(-102), 1);
         g_reset_state = MOTOR_RESET_WAIT_TILT_UP;
         break;
 
@@ -487,7 +447,7 @@ void StepMotor_GimbalResetTask(void)
         break;
 
     case MOTOR_RESET_PAN_RIGHT:
-        LOG_D("[MOTOR] reset pan right to -97");
+        LOG_D("[MOTOR] reset pan right to -95");
         StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-95), 1);
         g_reset_state = MOTOR_RESET_WAIT_PAN_RIGHT;
         break;
@@ -495,18 +455,14 @@ void StepMotor_GimbalResetTask(void)
     case MOTOR_RESET_WAIT_PAN_RIGHT:
         if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN))
         {
-            if (app_factory_test_is_active())
-            {
-                g_reset_state = MOTOR_RESET_PAN_RIGHT_1;
-            }else{
-                g_reset_state = MOTOR_RESET_PAN_SET_ZERO;
-            }
+            g_reset_state = app_factory_test_is_active() ?
+                            MOTOR_RESET_PAN_RIGHT_1 : MOTOR_RESET_PAN_SET_ZERO;
         }
         break;
 
     case MOTOR_RESET_PAN_RIGHT_1:
         LOG_D("[MOTOR] reset pan right to 0");
-        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(0), 1);
+        StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, 0, 1);
         g_reset_state = MOTOR_RESET_WAIT_PAN_RIGHT_1;
         break;
 
@@ -522,6 +478,7 @@ void StepMotor_GimbalResetTask(void)
         StepMotor_GimbalSetTargetDeg10Internal(STEP_MOTOR_AXIS_PAN, DEGx10(-97), 1);
         g_reset_state = MOTOR_RESET_WAIT_PAN_LEFT_1;
         break;
+
     case MOTOR_RESET_WAIT_PAN_LEFT_1:
         if (!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN))
         {
@@ -536,14 +493,14 @@ void StepMotor_GimbalResetTask(void)
         break;
 
     case MOTOR_RESET_DONE:
-        g_reset_busy  = 0;
+        g_reset_busy = 0;
         g_reset_state = MOTOR_RESET_IDLE;
         StepMotor_StopAll();
         LOG_D("[MOTOR] reset done");
         break;
 
     default:
-        g_reset_busy  = 0;
+        g_reset_busy = 0;
         g_reset_state = MOTOR_RESET_IDLE;
         break;
     }
@@ -551,38 +508,28 @@ void StepMotor_GimbalResetTask(void)
 
 void StepMotor_GimbalDemoTask(void)
 {
-    enum
-    {
-        DEMO_RAMP_UP = 0,
-        DEMO_RAMP_DOWN,
-        DEMO_WAIT_RESTART,
-    };
-
-    /* 每 0.1s 调整 1°（单位：deg10） */
 #define DEMO_STEP_DEG10 100
-#define DEMO_UPDATE_US  500000
-#define DEMO_WAIT_US    0
-#define DEMO_MIN_DEG10  DEGx10(-50)
-#define DEMO_MAX_DEG10  DEGx10(50)
+#define DEMO_UPDATE_US  500000u
+#define DEMO_MIN_DEG10 DEGx10(-50)
+#define DEMO_MAX_DEG10 DEGx10(50)
 
-    static u8  s_state        = DEMO_RAMP_UP;
-    static u32 s_update_tick  = 0;
-    static u32 s_wait_tick    = 0;
+    static u8  s_ramp_down = 0;
+    static u8  s_tick_init = 0;
+    static u32 s_update_tick = 0;
     static s16 s_target_deg10 = DEMO_MIN_DEG10;
 
     StepMotor_GimbalTask();
 
-    switch (s_state)
+    if (!s_tick_init)
     {
-    case DEMO_RAMP_UP:
-        if (clock_time_exceed(s_update_tick, DEMO_UPDATE_US))
+        s_tick_init = 1;
+        s_update_tick = clock_time();
+    }
+    else if (clock_time_exceed(s_update_tick, DEMO_UPDATE_US))
+    {
+        s_update_tick = clock_time();
+        if (!s_ramp_down)
         {
-            s_update_tick = clock_time();
-            // if (StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) || StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT))
-            // {
-            //     break;
-            // }
-
             if (s_target_deg10 < DEMO_MAX_DEG10)
             {
                 s_target_deg10 += DEMO_STEP_DEG10;
@@ -590,71 +537,32 @@ void StepMotor_GimbalDemoTask(void)
                 {
                     s_target_deg10 = DEMO_MAX_DEG10;
                 }
-
                 StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, s_target_deg10);
                 StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, s_target_deg10);
-                // LOG_D("PAN,%d,TILT,%d", s_target_deg10, s_target_deg10);
             }
             else
             {
-                s_state = DEMO_RAMP_DOWN;
+                s_ramp_down = 1;
             }
         }
-        break;
-
-    case DEMO_RAMP_DOWN:
-        if (clock_time_exceed(s_update_tick, DEMO_UPDATE_US))
+        else if (s_target_deg10 > DEMO_MIN_DEG10)
         {
-            s_update_tick = clock_time();
-            // if (StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) || StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT))
-            // {
-            //     break;
-            // }
-
-            if (s_target_deg10 > DEMO_MIN_DEG10)
+            s_target_deg10 -= DEMO_STEP_DEG10;
+            if (s_target_deg10 < DEMO_MIN_DEG10)
             {
-                s_target_deg10 -= DEMO_STEP_DEG10;
-                if (s_target_deg10 < DEMO_MIN_DEG10)
-                {
-                    s_target_deg10 = DEMO_MIN_DEG10;
-                }
-
-                StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, s_target_deg10);
-                StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, s_target_deg10);
-                // LOG_D("PAN,%d,TILT,%d", s_target_deg10, s_target_deg10);
+                s_target_deg10 = DEMO_MIN_DEG10;
             }
-            else
-            {
-                s_wait_tick = clock_time();
-                s_state     = DEMO_RAMP_UP;
-            }
+            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, s_target_deg10);
+            StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, s_target_deg10);
         }
-        break;
-
-    case DEMO_WAIT_RESTART:
-        // if (clock_time_exceed(s_wait_tick, DEMO_WAIT_US) &&
-        //     !StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) &&
-        //     !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT))
-        // {
-        // s_target_deg10 = DEMO_MIN_DEG10;
-        // StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, s_target_deg10);
-        // StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, s_target_deg10);
-        s_update_tick = clock_time();
-        s_state       = DEMO_RAMP_UP;
-        // }
-        break;
-
-    default:
-        s_target_deg10 = DEMO_MIN_DEG10;
-        s_update_tick  = clock_time();
-        s_wait_tick    = s_update_tick;
-        s_state        = DEMO_RAMP_UP;
-        break;
+        else
+        {
+            s_ramp_down = 0;
+        }
     }
 
 #undef DEMO_STEP_DEG10
 #undef DEMO_UPDATE_US
-#undef DEMO_WAIT_US
 #undef DEMO_MIN_DEG10
 #undef DEMO_MAX_DEG10
 }
