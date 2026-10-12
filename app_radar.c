@@ -1471,7 +1471,7 @@ void app_radar_reset_sector_default(void)
 // 1.8m  -90 -100
 // 0.8m  -25 -75
 _attribute_data_retention_ static s16 g_radar_pan_offset_deg10  = -50;
-_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -30;
+_attribute_data_retention_ static s16 g_radar_tilt_offset_deg10 = -50;
 
 /** 设置云台水平和垂直偏移角度 (deg10)，范围 ±3000（±300°）。 */
 void app_radar_set_pan_tilt_offset_deg10(s16 pan_offset, s16 tilt_offset)
@@ -1902,7 +1902,7 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
         // tilt_deg10 -= g_radar_tilt_offset_deg10 / 4;
     }else{
         // 近
-        // tilt_deg10 += g_radar_tilt_offset_deg10;
+        tilt_deg10 += g_radar_tilt_offset_deg10;
     }
     // if (atest)
     // {
@@ -2095,7 +2095,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             motion_valid  = 1;
             RadarSessionOnMotion(now_tick);
             is_stationary = 0;
-        }else if (median_cd >= 000 && move_flag == 1)
+        }else if (median_cd >= 2000 && move_flag == 1)
         {
             is_stationary = 0;
             motion_valid  = 1;
@@ -2588,7 +2588,6 @@ void app_radar_task_power_schedule(void)
             BLE_LOG_D("HUNT: stop tracking and move to prey point");
             move_flag = 0;
             memset(check_distance, 0, sizeof(check_distance));
-            g_cat_total_active_ms = 0;
             radar_working_mode_set(0);
             StepMotor_StopAll();
             g_radar_hold_on_mode = 0;  // 停止雷达跟踪, 由云台移动到猎物点
