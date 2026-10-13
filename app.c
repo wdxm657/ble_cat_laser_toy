@@ -91,7 +91,7 @@ void app_set_power_state(u8 on)
     {
         app_radar_set_enabled(0);
     }
-    if (!g_app_power_on)
+    if (g_app_power_on)
     {
         StepMotor_GimbalResetStart();
     }
@@ -431,7 +431,7 @@ u8                                    scan_pm_disable = 0;
 #define SCAN_ACTIVE_US (1 * 1000 * 1000)
 
 #if (PM_DEEPSLEEP_ENABLE)
-static void app_request_deep_sleep(void)
+void app_request_deep_sleep(void)
 {
     if (device_in_connection_state)
     {

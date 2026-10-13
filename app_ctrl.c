@@ -42,7 +42,7 @@ static u8  g_power_off_cooldown_active = 0;
 // Log TX CCC from app_att.c
 extern u8 customCtrlLogCCC[2];
 
-#define POWER_CTRL_COOLDOWN_US 30000000u / 30  // 30s
+#define POWER_CTRL_COOLDOWN_US 30000000u  / 3  // 10s
 
 static volatile u8  s_ctrl_reboot_pending = 0;
 static volatile u32 s_ctrl_reboot_tick    = 0;
@@ -373,6 +373,17 @@ void app_ctrl_notify_power_rejected_battery_temp_high(void)
     app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_POWER_CTRL, g_ctrlSeq++, pl, sizeof(pl));
 }
 
+void app_ctrl_notify_power_rejected_battery_temp_low(void)
+{
+    if (BLS_CONN_HANDLE == 0xFFFF)
+    {
+        return;
+    }
+
+    u8 pl[3] = {CTRL_STATUS_REJECT_ERROR, 0, CTRL_REASON_BATTERY_TEMP_LOW};
+    app_ctrl_send(CTRL_MSG_TYPE_EVENT, CTRL_CMD_POWER_CTRL, g_ctrlSeq++, pl, sizeof(pl));
+}
+
 // ----------------------- response cache for duplicate seq -----------------------
 #define RESP_CACHE_SIZE 4
 typedef struct
@@ -675,7 +686,7 @@ static int app_ctrl_handle_motor_dir_ctrl(u8 seq, u8 *payload, u16 len)
     u8 rspLen = 2;
 
 #if (UI_STEP_MOTOR_ENABLE)
-    if (len < 1)
+    if (len != 1)
     {
         rsp[0] = CTRL_STATUS_PARAM_ERROR;
         app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_MOTOR_DIR_CTRL, seq, rsp, rspLen);
@@ -863,34 +874,29 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     u8 on_effective = target_on;
     u8 reason       = CTRL_REASON_NONE;
 
-    // 低电量禁止开机：bat_percent < 20 且未充电
-    // if (target_on && !cur_on)
-    // {
-    //     u8 bat_percent = app_adc_dbg_get_bat_percent_exact();
-    //     u8 is_charging = app_adc_dbg_is_charging() ? 1 : 0;
-    //     if (bat_percent < 20)
-    //     {
-    //         status       = CTRL_STATUS_REJECT_ERROR;
-    //         reason       = CTRL_REASON_LOW_BATTERY;
-    //         on_effective = 0;
-    //     }
-    // }
-
-    // 电池温度过高禁止开机（>70°C；此时充电开关已由固件关闭）
+    // 电池温度过高或过低禁止开机（>60°C；此时充电开关已由固件关闭）
     if (status == CTRL_STATUS_OK && target_on && !cur_on)
     {
-        if (app_adc_dbg_is_ntc_temp_valid() && app_adc_dbg_get_ntc_temp_c() > 70)
+        if (app_adc_dbg_is_ntc_temp_valid() &&
+            (app_adc_dbg_get_ntc_temp_c() > 60 || app_adc_dbg_get_ntc_temp_c() < -10))
         {
             status       = CTRL_STATUS_REJECT_ERROR;
-            reason       = CTRL_REASON_BATTERY_TEMP_HIGH;
             on_effective = 0;
+            if (app_adc_dbg_get_ntc_temp_c() > 60)
+            {
+                reason       = CTRL_REASON_BATTERY_TEMP_HIGH;
+            }
+            if (app_adc_dbg_get_ntc_temp_c() < -10)
+            {
+                reason       = CTRL_REASON_BATTERY_TEMP_LOW;
+            }
         }
     }
 
-    // 冷却限制：开机/关机都限制 30s
+    // 冷却限制：开机/关机都限制 10s
     // 仅在“实际要改变电源状态”时生效：
-    // - cur_on=0 且 target_on=1：禁止在离上次关机不足 30s 内开机
-    // - cur_on=1 且 target_on=0：禁止在离上次开机不足 30s 内关机
+    // - cur_on=0 且 target_on=1：禁止在离上次关机不足 10s 内开机
+    // - cur_on=1 且 target_on=0：禁止在离上次开机不足 10s 内关机
     if (status == CTRL_STATUS_OK && target_on != cur_on)
     {
         if (target_on)
@@ -898,7 +904,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
             if (app_ctrl_power_cooldown_active(0))
             {
                 status       = CTRL_STATUS_REJECT_ERROR;
-                reason       = CTRL_REASON_POWER_ON_COOLDOWN_30S;
+                reason       = CTRL_REASON_POWER_ON_COOLDOWN_10S;
                 on_effective = cur_on;  // 被拒绝则回显当前真实状态
             }
         }
@@ -907,7 +913,7 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
             if (app_ctrl_power_cooldown_active(1))
             {
                 status       = CTRL_STATUS_REJECT_ERROR;
-                reason       = CTRL_REASON_POWER_OFF_COOLDOWN_30S;
+                reason       = CTRL_REASON_POWER_OFF_COOLDOWN_10S;
                 on_effective = cur_on;  // 被拒绝则回显当前真实状态
             }
         }
@@ -938,9 +944,12 @@ static int app_ctrl_handle_power_ctrl(u8 seq, u8 *payload, u16 len)
     }
 
     LOG_D("pc: %d  payload: %d", on_effective, payload[0]);
-    app_set_power_state(on_effective);
-    // 电源状态实际改变时持久化到 FLASH，重新上电后按此标志恢复开关机
-    app_save_power_state_to_flash();
+    if (on_effective != cur_on)
+    {
+        app_set_power_state(on_effective);
+        // 电源状态实际改变时持久化到 FLASH，重新上电后按此标志恢复开关机
+        app_save_power_state_to_flash();
+    }
 
     u8 rsp[3] = {CTRL_STATUS_OK, on_effective, CTRL_REASON_NONE};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_POWER_CTRL, seq, rsp, sizeof(rsp));
@@ -1258,7 +1267,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 43
+#define APP_FIRMWARE_VERSION_PATCH 44
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 

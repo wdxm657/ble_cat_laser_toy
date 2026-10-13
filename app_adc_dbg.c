@@ -7,9 +7,6 @@
 #include "app_ctrl.h"
 
 #define APP_ADC_SAMPLE_INTERVAL_US       10000u
-#define APP_NTC_CHARGE_OFF_TEMP_C        50
-#define APP_NTC_CHARGE_ON_TEMP_C         40
-#define APP_NTC_POWER_OFF_TEMP_C         70
 #define APP_ADC_REPORT_INTERVAL_US       250000u
 #define APP_BAT_DISCHARGE_STEP_S         10u * 1000000u
 #define APP_BAT_CHARGE_STEP_S            5u * 1000000u
@@ -35,162 +32,97 @@ typedef struct
 } ntc_point_t;
 
 static const ntc_point_t g_ntc_table[] = {
-    {-30, 11952},
-    {-29, 11330},
-    {-28, 10745},
-    {-27, 10193},
-    {-26, 9673},
-    {-25, 9183},
-    {-24, 8721},
-    {-23, 8285},
-    {-22, 7873},
-    {-21, 7485},
-    {-20, 7118},
-    {-19, 6771},
-    {-18, 6443},
-    {-17, 6133},
-    {-16, 5840},
-    {-15, 5562},
-    {-14, 5300},
-    {-13, 5051},
-    {-12, 4816},
-    {-11, 4593},
-    {-10, 4381},
-    {-9, 4181},
-    {-8, 3991},
-    {-7, 3811},
-    {-6, 3640},
-    {-5, 3477},
-    {-4, 3323},
-    {-3, 3177},
-    {-2, 3038},
-    {-1, 2905},
-    {0, 2780},
-    {1, 2660},
-    {2, 2546},
-    {3, 2438},
-    {4, 2335},
-    {5, 2237},
-    {6, 2144},
-    {7, 2055},
-    {8, 1970},
-    {9, 1890},
-    {10, 1813},
-    {11, 1739},
-    {12, 1669},
-    {13, 1602},
-    {14, 1539},
-    {15, 1478},
-    {16, 1420},
-    {17, 1364},
-    {18, 1311},
-    {19, 1261},
-    {20, 1212},
-    {21, 1166},
-    {22, 1122},
-    {23, 1079},
-    {24, 1039},
+    {-20, 6891},
+    {-19, 6563},
+    {-18, 6252},
+    {-17, 5958},
+    {-16, 5680},
+    {-15, 5416},
+    {-14, 5166},
+    {-13, 4929},
+    {-12, 4704},
+    {-11, 4491},
+    {-10, 4288},
+    {-9, 4096},
+    {-8, 3914},
+    {-7, 3740},
+    {-6, 3576},
+    {-5, 3419},
+    {-4, 3270},
+    {-3, 3129},
+    {-2, 2994},
+    {-1, 2866},
+    {0, 2744},
+    {1, 2628},
+    {2, 2517},
+    {3, 2412},
+    {4, 2312},
+    {5, 2216},
+    {6, 2125},
+    {7, 2038},
+    {8, 1955},
+    {9, 1876},
+    {10, 1801},
+    {11, 1729},
+    {12, 1660},
+    {13, 1594},
+    {14, 1531},
+    {15, 1472},
+    {16, 1414},
+    {17, 1360},
+    {18, 1307},
+    {19, 1257},
+    {20, 1209},
+    {21, 1164},
+    {22, 1120},
+    {23, 1078},
+    {24, 1038},
     {25, 1000},
     {26, 963},
-    {27, 927},
-    {28, 893},
+    {27, 928},
+    {28, 894},
     {29, 861},
     {30, 830},
-    {31, 800},
-    {32, 771},
-    {33, 743},
-    {34, 717},
-    {35, 692},
-    {36, 667},
-    {37, 644},
-    {38, 622},
-    {39, 600},
-    {40, 580},
-    {41, 560},
-    {42, 541},
-    {43, 523},
-    {44, 505},
-    {45, 488},
-    {46, 472},
-    {47, 457},
-    {48, 442},
-    {49, 427},
-    {50, 413},
-    {51, 400},
-    {52, 387},
-    {53, 375},
-    {54, 363},
-    {55, 351},
-    {56, 340},
-    {57, 330},
-    {58, 319},
-    {59, 309},
-    {60, 300},
-    {61, 291},
-    {62, 282},
-    {63, 273},
-    {64, 265},
-    {65, 257},
-    {66, 249},
-    {67, 242},
-    {68, 235},
-    {69, 228},
-    {70, 221},
-    {71, 215},
-    {72, 209},
-    {73, 203},
-    {74, 197},
-    {75, 191},
-    {76, 186},
-    {77, 180},
-    {78, 175},
-    {79, 170},
-    {80, 166},
-    {81, 161},
-    {82, 157},
-    {83, 152},
-    {84, 148},
-    {85, 144},
-    {86, 140},
-    {87, 137},
-    {88, 133},
-    {89, 129},
-    {90, 126},
-    {91, 123},
-    {92, 119},
-    {93, 116},
-    {94, 113},
-    {95, 110},
-    {96, 107},
-    {97, 105},
-    {98, 102},
-    {99, 99},
-    {100, 97},
-    {101, 95},
-    {102, 92},
-    {103, 90},
-    {104, 88},
-    {105, 85},
-    {106, 83},
-    {107, 81},
-    {108, 79},
-    {109, 77},
-    {110, 76},
-    {111, 74},
-    {112, 72},
-    {113, 70},
-    {114, 69},
-    {115, 67},
-    {116, 65},
-    {117, 64},
-    {118, 62},
-    {119, 61},
-    {120, 60},
-    {121, 59},
-    {122, 57},
-    {123, 56},
-    {124, 54},
-    {125, 53},
+    {31, 801},
+    {32, 772},
+    {33, 745},
+    {34, 719},
+    {35, 693},
+    {36, 669},
+    {37, 646},
+    {38, 624},
+    {39, 602},
+    {40, 582},
+    {41, 562},
+    {42, 543},
+    {43, 525},
+    {44, 508},
+    {45, 491},
+    {46, 474},
+    {47, 459},
+    {48, 444},
+    {49, 429},
+    {50, 416},
+    {51, 402},
+    {52, 389},
+    {53, 377},
+    {54, 365},
+    {55, 353},
+    {56, 342},
+    {57, 332},
+    {58, 321},
+    {59, 311},
+    {60, 302},
+    {61, 293},
+    {62, 284},
+    {63, 275},
+    {64, 267},
+    {65, 259},
+    {66, 251},
+    {67, 244},
+    {68, 236},
+    {69, 230},
+    {70, 223},
 };
 
 typedef struct
@@ -245,10 +177,12 @@ static u8  s_usb_det_cnt;
 static s8  s_ntc_temp_c;
 static u8  s_ntc_temp_valid;
 static u8  s_charge_switch_on = 1;
-static u8  s_ntc_over70_active;
 static u32 s_bat_flash_save_tick;
 static u8  s_bat_flash_valid;
 static u32 s_log_tick;
+static u8  s_temp_protection_active;
+static u8  s_temp_protection_reason;
+static u8  s_temp_sleep_requested;
 
 static u32 app_adc_dbg_flash_crc32(const u8 *data, u32 len)
 {
@@ -403,42 +337,77 @@ static void app_adc_dbg_temp_charge_manage(void)
         return;
     }
 
-    /* USB 插入且充电开关开启时：>50°C 关充电；USB 插入且开关已关时：≤40°C 恢复开启 */
     if (s_usb_det_stable)
     {
         if (s_charge_switch_on)
         {
-            if (s_ntc_temp_c > APP_NTC_CHARGE_OFF_TEMP_C)
+            /*  USB 插入且充电开关开启时：>45°或小于0° 关充电 */
+            if (s_ntc_temp_c > 45 || s_ntc_temp_c < 0)
             {
                 app_adc_dbg_charge_switch_set(0);
             }
-        }
-        else if (s_ntc_temp_c <= APP_NTC_CHARGE_ON_TEMP_C)
-        {
-            app_adc_dbg_charge_switch_set(1);
+        }else{
+            /*  USB 插入且充电开关关闭时*/
+            if (s_ntc_temp_c >= 0 && s_ntc_temp_c <= 25)
+            {
+                // 低电流充电
+                gpio_write(Set_Charg_I, 1);
+                app_adc_dbg_charge_switch_set(1);
+            }
+            else if (s_ntc_temp_c > 25 && s_ntc_temp_c <= 45)
+            {
+                // 正常电流充电
+                gpio_write(Set_Charg_I, 0);
+                app_adc_dbg_charge_switch_set(1);
+            }
         }
     }
 
-    if (s_ntc_temp_c > APP_NTC_POWER_OFF_TEMP_C)
+    // 大于60°或小于-10°关机，如果未插电时则进入低功耗，插电唤醒
+    u8 temp_protection_reason = 0;
+    if (s_ntc_temp_c > 60)
     {
-        if (s_charge_switch_on)
-        {
-            app_adc_dbg_charge_switch_set(0);
-        }
+        temp_protection_reason = CTRL_REASON_BATTERY_TEMP_HIGH;
+    }
+    else if (s_ntc_temp_c < -10)
+    {
+        temp_protection_reason = CTRL_REASON_BATTERY_TEMP_LOW;
+    }
 
+    if (temp_protection_reason)
+    {
         if (app_get_power_state())
         {
             app_set_power_state(0);
-            if (!s_ntc_over70_active)
+            app_save_power_state_to_flash();
+        }
+
+        if (!s_temp_protection_active || s_temp_protection_reason != temp_protection_reason)
+        {
+            s_temp_protection_active = 1;
+            s_temp_protection_reason = temp_protection_reason;
+            if (temp_protection_reason == CTRL_REASON_BATTERY_TEMP_HIGH)
             {
-                s_ntc_over70_active = 1;
                 app_ctrl_notify_power_rejected_battery_temp_high();
             }
+            else
+            {
+                app_ctrl_notify_power_rejected_battery_temp_low();
+            }
+        }
+
+        if (!s_usb_det_stable && !s_temp_sleep_requested)
+        {
+            s_temp_sleep_requested = 1;
+            BLE_LOG_D("battery temp protection: request deep sleep, temp=%dC", s_ntc_temp_c);
+            app_request_deep_sleep();
         }
     }
     else
     {
-        s_ntc_over70_active = 0;
+        s_temp_protection_active = 0;
+        s_temp_protection_reason = 0;
+        s_temp_sleep_requested = 0;
     }
 }
 
@@ -603,7 +572,9 @@ void app_adc_dbg_init(void)
     s_ntc_temp_c          = 0;
     s_ntc_temp_valid      = 0;
     s_charge_switch_on    = 1;
-    s_ntc_over70_active   = 0;
+    s_temp_protection_active = 0;
+    s_temp_protection_reason = 0;
+    s_temp_sleep_requested = 0;
 }
 
 static u8 first_5ms_flag;
@@ -696,7 +667,7 @@ void app_adc_dbg_poll(void)
         {
             last_s_bat_percent = s_bat_percent;
             // BLE_LOG_D("bat=%d bat_pc=%d is_char=%d bat_raw=%d", mv_bat_avg, s_bat_percent, is_charging, bat_percent_raw);
-            // BLE_LOG_D("ntc=%d NTC_R=%d(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
+            BLE_LOG_D("ntc=%d NTC_R=%d(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
             s_bat_flash_save_tick = now;
         }
         app_adc_dbg_temp_charge_manage();
