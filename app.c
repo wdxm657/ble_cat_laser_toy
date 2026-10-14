@@ -447,6 +447,13 @@ void app_request_deep_sleep(void)
         cpu_set_gpio_wakeup(GPIO_KEY, Level_Low, 1);
         gpio_setup_up_down_resistor(GPIO_KEY, PM_PIN_PULLUP_10K);
 
+        app_radar_uart_deinit();
+        gpio_set_func(GPIO_PD6, AS_GPIO);
+        gpio_set_func(GPIO_PD5, AS_GPIO);
+        gpio_set_input_en(GPIO_PD6, 1);
+        gpio_set_input_en(GPIO_PD5, 1);
+        gpio_setup_up_down_resistor(GPIO_PD5, PM_PIN_PULLDOWN_100K);
+        gpio_setup_up_down_resistor(GPIO_PD6, PM_PIN_PULLDOWN_100K);
         app_ui_led_show(LED_COLOR_OFF);  // RGB 工作状态灯熄灭(PWM)
         gpio_write(GPIO_LED_WHITE, !LED_ON_LEVEL);
         gpio_write(GPIO_CHARGE_LED_RED, !LED_ON_LEVEL);
