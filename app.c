@@ -698,165 +698,104 @@ _attribute_ram_code_ void user_battery_power_check(u16 alarm_vol_mv)
     }
 }
 #endif
-#define COLLOR_NAME "NimBLE_GATT"
 #include <string.h>
 #if (SCAN_ENABLE)
-// 解析并打印一个广播 / 扫描响应数据包中的所有 AD Structure
-static void print_adv_data(event_adv_report_t *pa)
+#define SCAN_TARGET_NAME "eSample"
+
+static struct
 {
-    u8  *data            = pa->data;
-    u8   total_len       = pa->len;  // 有效数据长度 (0~31)
-    u8   index           = 0;
-    u8   dev_name_flag   = 0;
-    u8   uuid16_flag     = 0;
-    u8   uuid32_flag     = 0;
-    u8   uuid128_flag    = 0;
-    u16  uuid16_val      = 0;
-    u32  uuid32_val      = 0;
-    u8   uuid128_val[16] = {0};
-    char name[32]        = {0};
-    // RSSI 在 data[total_len]（即 len 后面的那个字节）
-    s8 rssi = (s8)data[total_len];  // rssi has already plus 110.
-    // 1) 如需看原始字节流，可取消下面注释
-    // for (u8 i = 0; i < total_len; ++i) {
-    //     tl_printf("0x%02x ", data[i]);
-    // }
-    // tl_printf("\r\n");
-    // 2) 按 AD Structure 解析
-    while (index < total_len)
+    u8 data[31];
+    u8 mac[6];
+    u8 len;
+    s8 rssi;
+    int counter;
+    u8 pending;
+} s_esample_adv;
+static u32 s_esample_log_tick;
+
+/* Keep only fresh advertising data; scan responses contain no test counter. */
+static void cache_esample_adv(event_adv_report_t *pa)
+{
+    u8 name_match = 0;
+    int counter = -1;
+
+    if (pa->len > sizeof(s_esample_adv.data) ||
+        pa->event_type == ADV_REPORT_EVENT_TYPE_SCAN_RSP)
     {
-        u8 len = data[index];  // 本 AD 结构长度（不含自己这个 length 字节）
-        // 长度为 0：后面都是 padding（非有效数据），直接结束
+        return;
+    }
+
+    for (u8 index = 0; index < pa->len;)
+    {
+        u8 len = pa->data[index];
         if (len == 0)
         {
             break;
         }
-        // 当前结构总占用字节数：1(长度) + len
-        u16 struct_total = 1 + len;
-        // 越界检查，避免访问到无效内存
-        if (index + struct_total > total_len)
+        if (index + 1 + len > pa->len)
         {
-            LOG_W("AD struct out of range: index=%d, len=%d, total_len=%d",
-                  index,
-                  len,
-                  total_len);
-            break;
+            return;
         }
-        u8  ad_type   = data[index + 1];
-        u8  value_len = len - 1;  // 去掉 type
-        u8 *ad_value  = &data[index + 2];
-        // 根据 AD Type 解析
-        switch (ad_type)
+
+        u8 type = pa->data[index + 1];
+        u8 value_len = len - 1;
+        u8 *value = &pa->data[index + 2];
+        if ((type == DT_COMPLETE_LOCAL_NAME || type == DT_SHORTENED_LOCAL_NAME) &&
+            value_len == sizeof(SCAN_TARGET_NAME) - 1 &&
+            memcmp(value, SCAN_TARGET_NAME, sizeof(SCAN_TARGET_NAME) - 1) == 0)
         {
-        // ===== 16-bit UUID 列表：0x02 / 0x03 =====
-        case 0x02:  // 非完整的 16 bit UUID 列表
-        case 0x03:  // 完整的 16 bit UUID 列表
+            name_match = 1;
+        }
+        else if (type == DT_MANUFACTURER_SPECIFIC_DATA && value_len >= 3 &&
+                 value[0] == 0xFF && value[1] == 0xFF)
         {
-            u8 pos = 0;
-            while (pos + 1 < value_len)
-            {
-                // BLE 小端：低字节在前
-                u16 uuid16 = (u16)ad_value[pos] |
-                             ((u16)ad_value[pos + 1] << 8);
-                // 只记录第一个 UUID16，用于后面统一打印
-                if (!uuid16_flag)
-                {
-                    uuid16_val  = uuid16;
-                    uuid16_flag = 1;
-                }
-                pos += 2;
-            }
-            break;
+            counter = value[2];
         }
-        // ===== 32-bit UUID 列表：0x04 / 0x05 =====
-        case 0x04:  // 非完整的 32 bit UUID 列表
-        case 0x05:  // 完整的 32 bit UUID 列表
-        {
-            u8 pos = 0;
-            while (pos + 3 < value_len)
-            {
-                u32 uuid32 = (u32)ad_value[pos] |
-                             ((u32)ad_value[pos + 1] << 8) |
-                             ((u32)ad_value[pos + 2] << 16) |
-                             ((u32)ad_value[pos + 3] << 24);
-                // 只记录第一个 UUID32，用于后面统一打印
-                if (!uuid32_flag)
-                {
-                    uuid32_val  = uuid32;
-                    uuid32_flag = 1;
-                }
-                pos += 4;
-            }
-            break;
-        }
-        // ===== 128-bit UUID 列表：0x06 / 0x07 =====
-        case 0x06:  // 非完整的 128 bit UUID 列表
-        case 0x07:  // 完整的 128 bit UUID 列表
-        {
-            u8 pos = 0;
-            while (pos + 15 < value_len)
-            {
-                // 只记录第一个 UUID128，用于后面统一打印
-                if (!uuid128_flag)
-                {
-                    for (u8 k = 0; k < 16; ++k)
-                    {
-                        uuid128_val[k] = ad_value[pos + k];
-                    }
-                    uuid128_flag = 1;
-                }
-                pos += 16;
-            }
-            break;
-        }
-        // ===== 设备名：0x08 / 0x09 =====
-        case 0x08:  // Shortened Local Name
-        case 0x09:  // Complete Local Name
-        {
-            if (value_len > 0)
-            {
-                u8 copy_len = (value_len < (sizeof(name) - 1)) ? value_len : (sizeof(name) - 1);
-                memcpy(name, ad_value, copy_len);
-                if (strcmp(name, COLLOR_NAME) == 0)
-                {
-                    dev_name_flag = 1;
-                }
-            }
-            break;
-        }
-        default:
-            // 其它类型暂不处理，必要时可以在这里加日志
-            break;
-        }
-        // 跳到下一个 AD Structure
-        index += struct_total;
+        index += len + 1;
     }
-    // 统一输出：根据是否同时存在 UUID 和 Name 决定打印内容
-    if (dev_name_flag || uuid16_flag || uuid32_flag || uuid128_flag)
+
+    if (!name_match)
     {
-        if (dev_name_flag)
-        {
-            if (uuid16_flag)
-            {
-                LOG_D("  UUID16: 0x%04x, Name: %s db=%d", (unsigned int)uuid16_val, name, rssi);
-            }
-            else if (uuid32_flag)
-            {
-                LOG_D("  UUID32: 0x%08x, Name: %s db=%d", (unsigned int)uuid32_val, name, rssi);
-            }
-            else
-            {
-                LOG_D("  Device Name: %s db=%d", name, rssi);
-            }
-        }
-        //  else {
-        // 	if (uuid16_flag) {
-        // 		LOG_D("  UUID16: 0x%04x db=%d", (unsigned int)uuid16_val, rssi);
-        // 	} else if (uuid32_flag) {
-        // 		LOG_D("  UUID32: 0x%08x db=%d", (unsigned int)uuid32_val, rssi);
-        // 	}
-        // }
+        return;
     }
+
+    memcpy(s_esample_adv.data, pa->data, pa->len);
+    memcpy(s_esample_adv.mac, pa->mac, sizeof(s_esample_adv.mac));
+    s_esample_adv.len = pa->len;
+    s_esample_adv.rssi = (s8)pa->data[pa->len];
+    s_esample_adv.counter = counter;
+    s_esample_adv.pending = 1;
+}
+
+static void esample_adv_log_poll(void)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char data_hex[sizeof(s_esample_adv.data) * 2 + 1];
+
+    if (!clock_time_exceed(s_esample_log_tick, 1000000))
+    {
+        return;
+    }
+    s_esample_log_tick = clock_time();
+    if (!s_esample_adv.pending)
+    {
+        return;
+    }
+    s_esample_adv.pending = 0;
+
+    for (u8 i = 0; i < s_esample_adv.len; i++)
+    {
+        data_hex[i * 2] = hex[s_esample_adv.data[i] >> 4];
+        data_hex[i * 2 + 1] = hex[s_esample_adv.data[i] & 0x0F];
+    }
+    data_hex[s_esample_adv.len * 2] = '\0';
+
+    /* Separate lines keep each message within BLE_LOG_D's 96-byte buffer. */
+    BLE_LOG_D("[SCAN] eSample %02x:%02x:%02x:%02x:%02x:%02x RSSI=%d count=%d",
+              s_esample_adv.mac[5], s_esample_adv.mac[4], s_esample_adv.mac[3],
+              s_esample_adv.mac[2], s_esample_adv.mac[1], s_esample_adv.mac[0],
+              s_esample_adv.rssi, s_esample_adv.counter);
+    BLE_LOG_D("[SCAN] len=%d data=%s", s_esample_adv.len, data_hex);
 }
 /**
  * @brief      callback function of HCI Controller Event
@@ -878,8 +817,7 @@ int controller_event_callback(u32 h, u8 *p, int n)
                 DBG_CHN6_TOGGLE;
                 // after controller is set to scan state, it will report all the adv packet it received by this event
                 event_adv_report_t *pa = (event_adv_report_t *)p;
-                // 打印 data 的全部内容 + 解析 AD 结构
-                print_adv_data(pa);
+                cache_esample_adv(pa);
 #if (DBG_ADV_REPORT_ON_RAM)
                 if (pa->len > 31)
                 {
@@ -1271,6 +1209,10 @@ void main_loop(void)
 {
     ////////////////////////////////////// BLE entry /////////////////////////////////
     blc_sdk_main_loop();
+
+#if (SCAN_ENABLE)
+    esample_adv_log_poll();
+#endif
 
     if (s_factory_test_mode)
     {

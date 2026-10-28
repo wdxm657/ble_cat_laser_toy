@@ -59,7 +59,7 @@
 #define PM_DEEPSLEEP_ENABLE            				1 		//test connection power, should disable deepSleep
 #define PM_DEEPSLEEP_RETENTION_ENABLE               0
 /* scan setting */
-#define SCAN_ENABLE									0
+#define SCAN_ENABLE									1
 /* Flash Protection:
  * 1. Flash protection is enabled by default in SDK. User must enable this function on their final mass production application.
  * 2. User should use "Unlock" command in Telink BDT tool for Flash access during development and debugging phase.

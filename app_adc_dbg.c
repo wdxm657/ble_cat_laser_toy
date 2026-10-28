@@ -670,7 +670,10 @@ void app_adc_dbg_poll(void)
             BLE_LOG_D("ntc=%d NTC_R=%d(ohm) T=%dC", mv_ntc_avg, ntc_res_10ohm, ntc_temp_c);
             s_bat_flash_save_tick = now;
         }
-        app_adc_dbg_temp_charge_manage();
+        if (first_5ms_flag)
+        {
+            app_adc_dbg_temp_charge_manage();
+        }
 
         s_mv_bat_sum      = 0;
         s_mv_ntc_sum      = 0;
