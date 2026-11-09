@@ -1940,9 +1940,20 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     *out_x = proc_x;
     *out_y = proc_y;
 
-    lead_mm  = (s32)RADAR_TRACK_LEAD_MM_STATIC;
-    rand1_mm = RadarRandRangeI32(-200, 200);
-    rand2_mm = RadarRandRangeI32(-200, 200);
+
+    // 静止时扩大范围
+    // if(motion_valid == 0){
+    //     lead_mm  = (s32)0;
+    //     app_radar_set_track_gimbal_interval_us(RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US);
+    //     rand1_mm = RadarRandRangeI32(-1000, 1000);
+    //     rand2_mm = RadarRandRangeI32(-1000, 1000);
+    // }else{
+        lead_mm  = (s32)1000;
+        app_radar_set_track_gimbal_interval_us(RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US);
+        // rand1_mm = RadarRandRangeI32(500, 1000);
+        // rand2_mm = RadarRandRangeI32(500, 1000);
+    // }
+
     {
         off_x = (float)(lead_mm + rand1_mm) * lookup_sin(motion_rad);
         off_y = (float)(lead_mm + rand2_mm) * lookup_cos(motion_rad);
@@ -2043,32 +2054,6 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         return;
     }
     // 测试程序不需要往下走了
-
-    // if (abs(g_radar_pred.prev_x_mm - x_mm) > STATIONARY_DXY_THRESHOLD_MM || abs(g_radar_pred.prev_y_mm - y_mm) > STATIONARY_DXY_THRESHOLD_MM)
-    // {
-    //     if (move_cnt_window_tick == 0 ||
-    //         clock_time_exceed(move_cnt_window_tick, RADAR_MOVE_CONFIRM_WINDOW_US))
-    //     {
-    //         // BLE_LOG_D("move cnt %d", move_cnt);
-    //         move_cnt = 0;
-    //         move_cnt_window_tick = now_tick;
-    //         // BLE_LOG_D("move confirm window reset: %dus", RADAR_MOVE_CONFIRM_WINDOW_US);
-    //     }
-
-    //     move_cnt++;
-    //     if (move_cnt >= RADAR_MOVE_CONFIRM_COUNT || move_flag == 1)
-    //     {
-    //         app_radar_status_led_set(1);
-    //         motion_valid  = 1;
-    //         is_stationary = 0;
-    //         RadarSessionOnMotion(now_tick);
-    //         move_cnt = 0;
-    //         move_cnt_window_tick = 0;
-    //         move_flag = 1;
-    //     }
-    // }
-    // g_radar_pred.prev_x_mm = x_mm;
-    // g_radar_pred.prev_y_mm = y_mm;
     RadarMotionCachePush(now_tick, x_mm, y_mm);
 
     // Prefer direction derived from the 1s window edge points (oldest & newest)
@@ -2078,12 +2063,6 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         newest     = RadarMotionCacheIndexNewest();
         s16 dx_w   = (s16)(g_radar_motion_cache[newest].x_mm - g_radar_motion_cache[oldest].x_mm);
         s16 dy_w   = (s16)(g_radar_motion_cache[newest].y_mm - g_radar_motion_cache[oldest].y_mm);
-        // radar_motion_point_t p;
-        // int median_idx = radar_motion_get_median_index_from_cache(g_radar_pred.motion_cache_count);
-        // if (median_idx >= 0)
-        // {
-        //     p = g_radar_motion_cache[median_idx];
-        // }
         // dx_w*dx_w+dy_w*dy_w mm =200mm*200mm=40000mm
         u16 b_check_distance = dx_w * dx_w + dy_w * dy_w;
         push_check_distance(b_check_distance);
@@ -2092,16 +2071,17 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         if (median_cd >= 14400 && move_flag == 0)
         {
             move_flag = 1;
+            is_stationary = 0;
             motion_valid  = 1;
             RadarSessionOnMotion(now_tick);
-            is_stationary = 0;
-        }else if (median_cd >= 2000 && move_flag == 1)
+        }else if (median_cd >= 3600 && move_flag == 1)
         {
             is_stationary = 0;
             motion_valid  = 1;
             RadarSessionOnMotion(now_tick);
         }
         last_motion_rad = lookup_atan2((float)dx_w, (float)dy_w);
+        // if (motion_valid)
         if (dx_w != 0 && dy_w != 0)
         {
             motion_rad = last_motion_rad;
@@ -2151,6 +2131,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         #if debug_point
             app_ctrl_radar_dbg_send_predseq(1, track_x, track_y);
         #endif 
+
 #if (UI_STEP_MOTOR_ENABLE)
         if (g_radar_hold_on_mode)
         {
@@ -2169,6 +2150,20 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
                 if (g_hunt_state == HUNT_STATE_ACTIVE)
                 {
                     RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                    /*
+                     * 静止时保留当前随机目标直到两轴到位，避免每帧重算目标
+                     * 导致电机始终追不上、实际移动距离很短。
+                     */
+                    // if (motion_valid)
+                    // {
+                    //     RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                    // }else{
+                    //     if ((!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) &&
+                    //      !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT)))
+                    //     {
+                    //         RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                    //     }
+                    // }
                 }
             }
         }
@@ -2593,7 +2588,7 @@ void app_radar_task_power_schedule(void)
             g_radar_hold_on_mode = 0;  // 停止雷达跟踪, 由云台移动到猎物点
             g_hunt_state         = HUNT_STATE_COMPLETE_MOVING;
             // 移动光斑到猎物点
-            StepMotor_GimbalSetSpeedUs(12000);
+            StepMotor_GimbalSetSpeedUs(1200);
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
             app_radar_status_led_set(1);
@@ -2683,19 +2678,28 @@ void app_radar_task_power_schedule(void)
         return;
     }
 
-    /* -------- 停留10秒: 检查目标是否进入猎物点半径 -------- */
+    /* -------- 停留10秒: 检查猎物蓝牙信号中震动字段 -------- */
     case HUNT_STATE_CELEBRATE: {
         app_radar_status_led_set(1);
         // 激光停在猎物点, 电机已停止
         StepMotor_StopAll();
 
-        // 检查目标是否进入猎物点半径20cm → 记录捕猎成功
-        if (!g_hunt_success && hunt_is_target_near_prey_point())
+        // // 检查目标是否进入猎物点半径20cm → 记录捕猎成功
+        // if (!g_hunt_success && hunt_is_target_near_prey_point())
+        // {
+        //     g_hunt_success = 1;
+        //     // 标记当前记录为成功
+        //     g_radar_play_active_result = HUNT_RESULT_SUCCESS;
+        //     BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! target entered prey zone");
+        // }
+
+        // 检查猎物蓝牙信号中震动字段
+        if (!g_hunt_success && liewu_vib_state)
         {
             g_hunt_success = 1;
             // 标记当前记录为成功
             g_radar_play_active_result = HUNT_RESULT_SUCCESS;
-            BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! target entered prey zone");
+            BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! liewu_vib_state true");
         }
 
         // 10秒到 → 判定完成
