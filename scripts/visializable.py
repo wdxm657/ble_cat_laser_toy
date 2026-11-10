@@ -426,6 +426,7 @@ class RadarVisualizer:
 
         self.log_lines = deque(maxlen=2000)
         self.ctrl_lines = deque(maxlen=2000)
+        self.vib_data_text = "尚未查询"
 
         # BLE 断开连接次数统计
         self._ble_disconnect_count: int = 0
@@ -1225,6 +1226,8 @@ class RadarVisualizer:
             if fr.cmd_id == cp.CTRL_CMD_MOTOR_DIR_CTRL and len(pld) >= 3:
                 return f"[RSP][0x22] status={st} dir={pld[1]} op={pld[2]}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_RESET_FLASH_CONFIG:
+                if st == 0x00:
+                    self.vib_data_text = "暂无 VIB 数据（恢复出厂设置已清除）"
                 return f"[RSP][0x56] status={st}"
             if fr.cmd_id == cp.CTRL_CMD_RADAR_CONFIG_SET_HEIGHT:
                 return f"[RSP][0x50] status={st} (new config: height cached)"
@@ -1239,6 +1242,23 @@ class RadarVisualizer:
                     return f"[RSP][0x33] status={st} remaining={remaining} (ACK已废弃, 使用0x35删除代替)"
                 else:
                     return f"[RSP][0x33] status={st} remaining={remaining} (ACK已废弃, 使用0x35删除代替)"
+            if fr.cmd_id == cp.CTRL_CMD_VIB_DATA_GET:
+                if st == 0x06:
+                    self.vib_data_text = "暂无 VIB 数据（设备尚未收到 WM_LT_TOY 广播）"
+                    return "[RSP][0x36] VIB_DATA_GET status=NO_DATA"
+                if st == 0x00 and len(pld) >= 4:
+                    fmt = pld[1]
+                    power = "开机" if pld[2] else "关机"
+                    battery_low = 1 if pld[3] else 0
+                    self.vib_data_text = (
+                        f"状态={power}  电量={'≤20%' if battery_low else '>20%'}"
+                    )
+                    return (
+                        f"[RSP][0x36] VIB_DATA_GET format={fmt} "
+                        f"power_on={pld[2]} battery_low={battery_low}"
+                    )
+                self.vib_data_text = f"查询失败，status={st} payload={pld.hex()}"
+                return f"[RSP][0x36] VIB_DATA_GET status={st} pl={pld.hex()}"
             return f"[RSP][0x{fr.cmd_id:02X}] status={st} pl={pld.hex()}"
 
         if fr.msg_type == CTRL_MSG_TYPE_EVENT and fr.cmd_id == cp.CTRL_CMD_PLAY_RECORD_GET:
@@ -1683,6 +1703,18 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         _nrow()
 
         # 复位和重启
+        g.addWidget(QtWidgets.QLabel("VIB 广播数据 (0x36)"), _nrow(), 0, 1, 4)
+        self.vib_data_info = QtWidgets.QLabel("尚未查询")
+        self.vib_data_info.setWordWrap(True)
+        self.vib_data_info.setStyleSheet("color: #89dceb; font-size: 11px;")
+        g.addWidget(self.vib_data_info, row, 0, 1, 3)
+        b_vib_data_get = QtWidgets.QPushButton("查询最新数据")
+        b_vib_data_get.clicked.connect(lambda: self._send(*vc.cmd_vib_data_get()))
+        b_vib_data_get.setToolTip("查询 LASER Flash 中保存的最新 WM_LT_TOY 广播数据")
+        g.addWidget(b_vib_data_get, row, 3)
+        _nrow()
+
+        # 复位和重启
         g.addWidget(QtWidgets.QLabel("系统控制"), _nrow(), 0, 1, 4)
         b_reset = QtWidgets.QPushButton("复位配置(0x56)")
         b_reset.clicked.connect(lambda: self._send(*vc.cmd_radar_reset_flash()))
@@ -1862,6 +1894,7 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
         with self.vis._lock:
             rec_info = self.vis._play_record_info
             records = list(self.vis._play_records)  # copy under lock
+            vib_data_text = self.vis.vib_data_text
         cur_text = self.play_record_info.text()
         if rec_info and rec_info != cur_text:
             self.play_record_info.setText(rec_info)
@@ -1873,6 +1906,9 @@ class CtrlServiceWindow(QtWidgets.QMainWindow):
                 rid, start_str, end_str, motion, speed, result_str = rec
                 lines.append(f"ID={rid}: {start_str}~{end_str} {motion}s {speed}cm/s {result_str}")
             self.play_record_list.setText("\n".join(lines))
+
+        if vib_data_text != self.vib_data_info.text():
+            self.vib_data_info.setText(vib_data_text)
 
         # Check BLE disconnect for auto power stop
         with self.vis._lock:

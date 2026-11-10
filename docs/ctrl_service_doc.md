@@ -56,6 +56,8 @@ APP 写 Ctrl RX、设备通过 Ctrl TX Notify 返回的内容均从 `byte0` 开�
 - `0x02`：UNSUPPORTED_CMD（不支持的命令）
 - `0x03`：PARAM_ERROR（参数错误）
 - `0x04`：INTERNAL_ERROR（内部错误）
+- `0x05`：REJECT_ERROR（当前状态拒绝执行）
+- `0x06`：NO_DATA（尚无可查询的数据）
 
 建议统一响应负载结构：
 
@@ -763,7 +765,7 @@ byte5 : 0x00
 byte6 : status
 ```
 
-设备行为：清除FLASH中的高度和坐标信息和逗宠记录
+设备行为：清除 Flash 中的高度、坐标信息、逗宠记录以及最新 VIB 广播记录，同时清空对应 RAM 缓存。清除完成后，APP 查询 `VIB_DATA_GET (0x36)` 将返回 `CTRL_STATUS_NO_DATA (0x06)`，直到 LASER 再次收到合法的 `WM_LT_TOY` 广播。
 
 #### 4.14 设备软复位（DEVICE_REBOOT，CMD = 0x5A）
 
@@ -1039,6 +1041,81 @@ byte10: sleep_min      // 休眠时长(分钟) u8
 3. 用户观察光斑位置合适时，发送 `HUNT_PREY_RANDOM(0x62) start=0` → 停止移动，**自动保存当前位置为猎物点**
 4. APP 发送 `HUNT_SETTINGS_SET(0x63)` payload = `5A 00 03 05` → 设置时长 90s、次数 3、休眠 5min
 5. APP 发送 `HUNT_SETTINGS_EXIT(0x61) apply=1` → 应用全部设置，返回自动狩猎
+
+---
+
+#### 4.19 最新 VIB 广播数据查询（VIB_DATA_GET，CMD = 0x36）
+
+LASER 扫描名称为 `WM_LT_TOY` 的 `ADV_NONCONN_IND` 广播。业务数据只包含以下两个字段：
+
+| 业务字段 | 内容 |
+|---|---|
+| `power_on` | 开关机状态：`0` 关机，`1` 开机 |
+| `battery_low` | 低电量标志：`1` 表示电量 ≤20%，`0` 表示电量 >20% |
+
+`DT_MANUFACTURER_SPECIFIC_DATA` 空中包所需的 Company ID 仅是 BLE 格式封装，不属于业务接口，LASER 不保存也不向 APP 返回。LASER 收到合法广播后，将设备 MAC、开关机状态、低电量标志及 RSSI 保存到独立 Flash 扇区 `VIB_DATA_FLASH_ADDR`。相同 MAC、状态和低电量标志的重复广播只更新 RAM 中的 RSSI，不重复擦写 Flash。
+
+**请求帧（APP → LASER）**
+
+```text
+byte0 : 0x01           // version
+byte1 : 0x01           // msgType = CMD
+byte2 : 0x36           // cmdId = VIB_DATA_GET
+byte3 : seq
+byte4 : 0x00           // payloadLen L
+byte5 : 0x00           // payloadLen H
+```
+
+出厂状态或从未收到合法 VIB 广播时，响应为：
+
+```text
+byte0 : 0x01
+byte1 : 0x02           // msgType = RSP
+byte2 : 0x36
+byte3 : seq
+byte4 : 0x01
+byte5 : 0x00
+byte6 : 0x06           // CTRL_STATUS_NO_DATA
+```
+
+已有数据时，响应 payload 为 4 字节：
+
+| 完整帧字节 | payload 字节 | 内容 |
+|---|---|---|
+| 6 | 0 | `CTRL_STATUS_OK (0x00)` |
+| 7 | 1 | 数据格式版本，当前为 `2` |
+| 8 | 2 | 开关机状态 |
+| 9 | 3 | `battery_low`：`1` 表示 ≤20%，`0` 表示 >20% |
+
+**已有数据示例**
+
+假设 APP 使用 `seq=0x21` 查询，LASER 保存的最新状态为“VIB 开机、电量 ≤20%”：
+
+```text
+APP -> LASER 请求：
+01 01 36 21 00 00
+
+LASER -> APP 响应：
+01 02 36 21 04 00 00 02 01 01
+```
+
+响应解析：
+
+```text
+01       version = 1
+02       msgType = RSP
+36       cmdId = VIB_DATA_GET
+21       seq，与请求一致
+04 00    payloadLen = 4
+00       status = OK
+02       数据格式版本 = 2
+01       power_on = 1（开机）
+01       battery_low = 1（电量 ≤20%）
+```
+
+如果电量 >20%，响应最后一个字节为 `00`。接口不向 APP 提供 RSSI、VIB 广播地址或 Company ID。
+
+LASER 的 PyQt 可视化上位机控制服务面板已提供“查询最新数据”按钮，并会显示 `NO_DATA` 或解析后的开关机状态和低电量标志。
 
 ---
 

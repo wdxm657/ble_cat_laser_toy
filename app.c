@@ -28,6 +28,7 @@
 #include "app_att.h"
 #include "app_ui.h"
 #include "app_ctrl.h"
+#include "app_vib_data.h"
 #include "app_buffer.h"
 
 #ifdef UI_RADAR_ENABLE
@@ -712,7 +713,7 @@ u8 app_prey_ble_is_detected(void)
 }
 
 #if (SCAN_ENABLE)
-#define SCAN_TARGET_NAME "VIB_TOY"
+#define SCAN_TARGET_NAME "WM_LT_TOY"
 
 static struct
 {
@@ -728,7 +729,8 @@ static u32 s_esample_log_tick;
 static void cache_esample_adv(event_adv_report_t *pa)
 {
     u8 name_match = 0;
-    int counter = -1;
+    int battery_low = -1;
+    int power_on = -1;
 
     if (pa->len > sizeof(s_esample_adv.data) ||
         pa->event_type == ADV_REPORT_EVENT_TYPE_SCAN_RSP)
@@ -757,28 +759,32 @@ static void cache_esample_adv(event_adv_report_t *pa)
         {
             name_match = 1;
         }
-        else if (type == DT_MANUFACTURER_SPECIFIC_DATA && value_len >= 3 &&
+        else if (type == DT_MANUFACTURER_SPECIFIC_DATA && value_len >= 4 &&
                  value[0] == 0xFF && value[1] == 0xFF)
         {
-            counter = value[2];
+            power_on = value[2] ? 1 : 0;
+            battery_low = value[3] ? 1 : 0;
         }
         index += len + 1;
     }
 
-    if (!name_match)
+    if (!name_match || power_on < 0 || battery_low < 0)
     {
         return;
     }
 
     /* The prey currently has no separate vibration field. Receiving a
-     * VIB_TOY advertisement is itself the capture indication. */
+     * WM_LT_TOY advertisement is itself the capture indication. */
     s_prey_ble_detected = 1;
+
+    app_vib_data_update(pa->mac, (s8)pa->data[pa->len],
+                        (u8)power_on, (u8)battery_low);
 
     memcpy(s_esample_adv.data, pa->data, pa->len);
     memcpy(s_esample_adv.mac, pa->mac, sizeof(s_esample_adv.mac));
     s_esample_adv.len = pa->len;
     s_esample_adv.rssi = (s8)pa->data[pa->len];
-    s_esample_adv.counter = counter;
+    s_esample_adv.counter = battery_low;
     s_esample_adv.pending = 1;
 }
 
@@ -883,6 +889,9 @@ _attribute_no_inline_ void user_init_normal(void)
     app_radar_uart_init();
     app_radar_init();
     app_ctrl_init();
+#endif
+#if (SCAN_ENABLE)
+    app_vib_data_init();
 #endif
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_Init();
@@ -1225,6 +1234,7 @@ void main_loop(void)
 
 #if (SCAN_ENABLE)
     esample_adv_log_poll();
+    app_vib_data_task();
 #endif
 
     if (s_factory_test_mode)

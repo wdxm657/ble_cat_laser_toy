@@ -15,6 +15,7 @@
 #include "app.h"
 #include "app_att.h"
 #include "app_ctrl.h"
+#include "app_vib_data.h"
 
 #if (UI_STEP_MOTOR_ENABLE)
 #include "StepMotor.h"
@@ -1237,6 +1238,7 @@ static int app_ctrl_handle_radar_reset_flash_config(u8 seq, u8 *payload, u16 len
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
     // 先反馈然后再擦除FLASH，防止擦除FLASH的时候蓝牙倍断开导致APP收不到反馈
     app_radar_clear_install_height_and_record_flash();
+    app_vib_data_clear();
     return 0;
 }
 
@@ -1267,7 +1269,7 @@ static int app_ctrl_handle_radar_track_speed(u8 seq, u8 *payload, u16 len)
 /** 固件版本号（大端：MAJOR.MINOR.PATCH） */
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION_PATCH 52
+#define APP_FIRMWARE_VERSION_PATCH 56
 #define APP_FIRMWARE_VERSION       ((APP_FIRMWARE_VERSION_MAJOR << 16) | (APP_FIRMWARE_VERSION_MINOR << 8) | APP_FIRMWARE_VERSION_PATCH)
 
 
@@ -1528,6 +1530,32 @@ static int app_ctrl_handle_factory_test_enter(u8 seq, u8 *payload, u16 len)
 }
 
 // ----------------------- public APIs -----------------------
+static int app_ctrl_handle_vib_data_get(u8 seq, u8 *payload, u16 len)
+{
+    app_vib_data_t data;
+
+    (void)payload;
+    if (len != 0)
+    {
+        u8 rsp[1] = {CTRL_STATUS_LEN_ERROR};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_VIB_DATA_GET, seq, rsp, sizeof(rsp));
+        return -1;
+    }
+
+    if (!app_vib_data_get(&data))
+    {
+        u8 rsp[1] = {CTRL_STATUS_NO_DATA};
+        app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_VIB_DATA_GET, seq, rsp, sizeof(rsp));
+        return 0;
+    }
+
+    /* [0]=OK [1]=format(2) [2]=power_on [3]=battery_low.
+     * RSSI and advertiser address are internal diagnostics, not APP data. */
+    u8 rsp[4] = {CTRL_STATUS_OK, 2, data.power_on, data.battery_low};
+    app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_VIB_DATA_GET, seq, rsp, sizeof(rsp));
+    return 0;
+}
+
 void app_ctrl_init(void)
 {
     memset(g_ctrlRxBuf, 0, sizeof(g_ctrlRxBuf));
@@ -1708,6 +1736,10 @@ void app_ctrl_onRx(u8 *data, u16 len)
     case CTRL_CMD_PLAY_RECORD_DELETE:
         BLE_LOG_D("CTRL_CMD_PLAY_RECORD_DELETE");
         app_ctrl_handle_play_record_delete(seq, payload, payLen);
+        break;
+    case CTRL_CMD_VIB_DATA_GET:
+        BLE_LOG_D("CTRL_CMD_VIB_DATA_GET");
+        app_ctrl_handle_vib_data_get(seq, payload, payLen);
         break;
     case CTRL_CMD_POWER_CTRL:
         BLE_LOG_D("CTRL_CMD_POWER_CTRL");

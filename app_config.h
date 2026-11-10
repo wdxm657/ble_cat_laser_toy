@@ -45,6 +45,8 @@
 #define RADAR_PREY_POINT_CFG_FLASH_ADDR               (USER_FLASH_START_ADDR + 0xD000)
 // SOFT_POWER_STATE_FLASH_ADDR (one 4K sector): APP 软件开关机状态持久化
 #define SOFT_POWER_STATE_FLASH_ADDR                   (USER_FLASH_START_ADDR + 0xE000)
+// Latest WM_LT_TOY advertising data (one 4K sector)
+#define VIB_DATA_FLASH_ADDR                           (USER_FLASH_START_ADDR + 0xF000)
 
 #define BLE_APP_SECURITY_ENABLE      				0
 #define	BLE_OTA_SERVER_ENABLE						1

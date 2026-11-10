@@ -1948,10 +1948,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     //     rand1_mm = RadarRandRangeI32(-1000, 1000);
     //     rand2_mm = RadarRandRangeI32(-1000, 1000);
     // }else{
-        lead_mm  = (s32)1000;
+        lead_mm  = (s32)500;
         app_radar_set_track_gimbal_interval_us(RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US);
-        // rand1_mm = RadarRandRangeI32(500, 1000);
-        // rand2_mm = RadarRandRangeI32(500, 1000);
+        rand1_mm = RadarRandRangeI32(100, 500);
+        rand2_mm = RadarRandRangeI32(100, 500);
     // }
 
     {
@@ -2588,7 +2588,7 @@ void app_radar_task_power_schedule(void)
             g_radar_hold_on_mode = 0;  // 停止雷达跟踪, 由云台移动到猎物点
             g_hunt_state         = HUNT_STATE_COMPLETE_MOVING;
             // 移动光斑到猎物点
-            StepMotor_GimbalSetSpeedUs(1200);
+            StepMotor_GimbalSetSpeedUs(8000);
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, (s32)g_prey_pan_deg10);
             StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
             app_radar_status_led_set(1);
@@ -2696,7 +2696,7 @@ void app_radar_task_power_schedule(void)
         // }
 
         /* The prey currently has no standalone vibration field. Detecting a
-         * VIB_TOY advertisement during this window means it was captured. */
+         * WM_LT_TOY advertisement during this window means it was captured. */
         if (!g_hunt_success && app_prey_ble_is_detected())
         {
             g_hunt_success = 1;
@@ -3088,7 +3088,7 @@ static u32 g_prey_random_tick   = 0;
 void app_hunt_prey_random_move(void)
 {
     // 水平角度（30-60或-30--60°）俯仰角（25°~35°）间随机移动
-    s16 pan_deg10  = (s16)RadarRandRangeI32(30, 60);
+    s16 pan_deg10  = (s16)RadarRandRangeI32(-600, 600);
     s16 tilt_deg10 = (s16)RadarRandRangeI32(250 - 900, 350 - 900);  // 25°-35°
 
 #if (UI_STEP_MOTOR_ENABLE)

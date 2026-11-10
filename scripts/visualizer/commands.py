@@ -97,3 +97,8 @@ def cmd_hunt_settings_get() -> tuple[int, bytes, str]:
 def cmd_play_record_delete(record_id: int) -> tuple[int, bytes, str]:
     """删除指定ID的逗宠记录 (0x35); payload = record_id (1 byte)"""
     return p.CTRL_CMD_PLAY_RECORD_DELETE, bytes([record_id & 0xFF]), f"PLAY_RECORD_DELETE id={record_id}"
+
+
+def cmd_vib_data_get() -> tuple[int, bytes, str]:
+    """查询 LASER 保存的最新 WM_LT_TOY 广播数据 (0x36)。"""
+    return p.CTRL_CMD_VIB_DATA_GET, b"", "VIB_DATA_GET"

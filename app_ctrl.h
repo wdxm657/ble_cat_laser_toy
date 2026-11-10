@@ -39,6 +39,8 @@ enum{
     CTRL_CMD_PLAY_RECORD_GET = 0x33,   // get play records (start/end time)
     CTRL_CMD_UID_GET         = 0x34,   // get flash UID (16 bytes, split into 2 responses)
     CTRL_CMD_PLAY_RECORD_DELETE = 0x35,   // delete a specific play record by ID
+    /** Get latest WM_LT_TOY data. RSP: status,format,power,battery_low. */
+    CTRL_CMD_VIB_DATA_GET        = 0x36,
 
     CTRL_CMD_RADAR_RESET_FLASH_CONFIG   = 0x56,   // reset radar install height and boundary in flash
     /** APP -> device: request boundary quad (device emits 4x EVENT sub BOUNDARY_PT); RSP status only */
@@ -95,6 +97,7 @@ enum{
     CTRL_STATUS_PARAM_ERROR     = 0x03,
     CTRL_STATUS_INTERNAL_ERROR  = 0x04,
     CTRL_STATUS_REJECT_ERROR  = 0x05,
+    CTRL_STATUS_NO_DATA       = 0x06,
 };
 
 // power ctrl reason field (RSP payload[2])
