@@ -49,6 +49,10 @@ void user_init_deepRetn(void);
  */
 void main_loop (void);
 
+/** Clear/read the VIB_TOY advertising detection latch used by hunt result logic. */
+void app_prey_ble_detect_clear(void);
+u8 app_prey_ble_is_detected(void);
+
 void app_set_power_state(u8 on);
 u8 app_get_power_state(void);
 void app_save_power_state_to_flash(void);

@@ -147,7 +147,7 @@ typedef enum
  * 雷达直接跟踪：与 app_ctrl 边界移动（APP_CTRL_BOUNDARY_MOVE_SPEED_US）同量级步间隔，
  * 每帧只更新一个目标点，由 StepMotor_GimbalTask 连续逼近 —— 避免多点折线 + 分段等待造成的顿挫。
  */
-#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 4000u
+#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 4000u / 4
 
 /*
  * 阶段二：沿估计运动方向在水平面内向前偏移 (mm)，使云台略超前目标。
@@ -2672,13 +2672,15 @@ void app_radar_task_power_schedule(void)
             // StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, (s32)g_prey_tilt_deg10);
             g_hunt_celebration_tick = now_tick;
             g_hunt_success          = 0;
+            /* Ignore advertisements seen before this capture window. */
+            app_prey_ble_detect_clear();
             g_hunt_state            = HUNT_STATE_CELEBRATE;
             // }
         }
         return;
     }
 
-    /* -------- 停留10秒: 检查猎物蓝牙信号中震动字段 -------- */
+    /* -------- 停留10秒: 检测猎物蓝牙广播 -------- */
     case HUNT_STATE_CELEBRATE: {
         app_radar_status_led_set(1);
         // 激光停在猎物点, 电机已停止
@@ -2693,13 +2695,14 @@ void app_radar_task_power_schedule(void)
         //     BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! target entered prey zone");
         // }
 
-        // 检查猎物蓝牙信号中震动字段
-        if (!g_hunt_success && liewu_vib_state)
+        /* The prey currently has no standalone vibration field. Detecting a
+         * VIB_TOY advertisement during this window means it was captured. */
+        if (!g_hunt_success && app_prey_ble_is_detected())
         {
             g_hunt_success = 1;
             // 标记当前记录为成功
             g_radar_play_active_result = HUNT_RESULT_SUCCESS;
-            BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! liewu_vib_state true");
+            BLE_LOG_D("HUNT: CELEBRATE -> SUCCESS! prey BLE detected");
         }
 
         // 10秒到 → 判定完成
@@ -3084,9 +3087,9 @@ static u32 g_prey_random_tick   = 0;
 
 void app_hunt_prey_random_move(void)
 {
-    // 水平角度（±60°）俯仰角（15°~30°）间随机移动
-    s16 pan_deg10  = (s16)RadarRandRangeI32(GIMBAL_PAN_LIMIT_DEG10_NEG, GIMBAL_PAN_LIMIT_DEG10_POS);
-    s16 tilt_deg10 = (s16)RadarRandRangeI32(250 - 900, 550 - 900);  // 25°-45°
+    // 水平角度（30-60或-30--60°）俯仰角（25°~35°）间随机移动
+    s16 pan_deg10  = (s16)RadarRandRangeI32(30, 60);
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(250 - 900, 350 - 900);  // 25°-35°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);

@@ -699,8 +699,20 @@ _attribute_ram_code_ void user_battery_power_check(u16 alarm_vol_mv)
 }
 #endif
 #include <string.h>
+static volatile u8 s_prey_ble_detected;
+
+void app_prey_ble_detect_clear(void)
+{
+    s_prey_ble_detected = 0;
+}
+
+u8 app_prey_ble_is_detected(void)
+{
+    return s_prey_ble_detected;
+}
+
 #if (SCAN_ENABLE)
-#define SCAN_TARGET_NAME "eSample"
+#define SCAN_TARGET_NAME "VIB_TOY"
 
 static struct
 {
@@ -712,7 +724,6 @@ static struct
     u8 pending;
 } s_esample_adv;
 static u32 s_esample_log_tick;
-
 /* Keep only fresh advertising data; scan responses contain no test counter. */
 static void cache_esample_adv(event_adv_report_t *pa)
 {
@@ -759,6 +770,10 @@ static void cache_esample_adv(event_adv_report_t *pa)
         return;
     }
 
+    /* The prey currently has no separate vibration field. Receiving a
+     * VIB_TOY advertisement is itself the capture indication. */
+    s_prey_ble_detected = 1;
+
     memcpy(s_esample_adv.data, pa->data, pa->len);
     memcpy(s_esample_adv.mac, pa->mac, sizeof(s_esample_adv.mac));
     s_esample_adv.len = pa->len;
@@ -791,9 +806,7 @@ static void esample_adv_log_poll(void)
     data_hex[s_esample_adv.len * 2] = '\0';
 
     /* Separate lines keep each message within BLE_LOG_D's 96-byte buffer. */
-    BLE_LOG_D("[SCAN] eSample %02x:%02x:%02x:%02x:%02x:%02x RSSI=%d count=%d",
-              s_esample_adv.mac[5], s_esample_adv.mac[4], s_esample_adv.mac[3],
-              s_esample_adv.mac[2], s_esample_adv.mac[1], s_esample_adv.mac[0],
+    BLE_LOG_D("[SCAN] eSample  RSSI=%d count=%d",
               s_esample_adv.rssi, s_esample_adv.counter);
     BLE_LOG_D("[SCAN] len=%d data=%s", s_esample_adv.len, data_hex);
 }
