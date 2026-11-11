@@ -23,7 +23,7 @@
 #define RADAR_RX_IRQ_DEBUG 0
 #endif
 
-#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (1.8f * 1000.0f)
+#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (0.8f * 1000.0f)
 #define RADAR_FRAME_LEN                   30
 #define SAMPLE_COUNT                      1
 #define STATIONARY_DXY_THRESHOLD_MM       2.0f
@@ -66,8 +66,7 @@ _attribute_data_retention_ static u8           g_hunt_sleep_duration_min = 3;   
 _attribute_data_retention_ static u8           g_hunt_completed          = 0;     // 已完成狩猎次数
 _attribute_data_retention_ static u32          g_hunt_total_active_ms    = 0;     // 累计活跃狩猎时长(毫秒)
 _attribute_data_retention_ static u32          g_cat_total_active_ms     = 0;     // 猫运动时长
-_attribute_data_retention_ static u32          g_hunt_session_tick       = 0;     // 当前狩猎开始tick
-_attribute_data_retention_ static u32          g_hunt_session_acc_ms     = 0;     // 当前狩猎累计秒数
+_attribute_data_retention_ static u32          g_hunt_session_acc_ms     = 0;     // 当前狩猎累计时长(毫秒)
 _attribute_data_retention_ static u32          g_hunt_acc_tick_last      = 0;     // 上次累计更新tick
 _attribute_data_retention_ static u32          g_hunt_no_target_tick     = 0;     // 无目标计时开始tick
 _attribute_data_retention_ static u32          g_hunt_prey_zone_tick     = 0;     // 目标在猎物点计时开始tick
@@ -162,8 +161,11 @@ typedef enum
 #define RADAR_TRACK_LEAD_MM_PER_DEN    1
 #define RADAR_TRACK_LEAD_MM_MIN        200
 #define RADAR_TRACK_LEAD_MM_MAX        2000
-/** 目标判定静止时，沿最后运动方向保留的较小超前 (mm)，需 motion_valid（含粘滞方向） */
-#define RADAR_TRACK_LEAD_MM_STATIC     400
+/** 安装高度 800~1800mm 时，静态超前距离由 400mm 线性增加到 1000mm。 */
+#define RADAR_TRACK_HEIGHT_MM_MIN      800
+#define RADAR_TRACK_HEIGHT_MM_MAX      1800
+#define RADAR_TRACK_LEAD_MM_MIN_HEIGHT 400
+#define RADAR_TRACK_LEAD_MM_MAX_HEIGHT 1000
 /** 跟踪点与猫位置的最小间距约束，避免边界修正后贴近目标 */
 #define RADAR_TRACK_ESCAPE_MIN_DIST_MM 600
 
@@ -1644,126 +1646,25 @@ static float RadarLen(radar_vec2f_t a)
     return app_radar_mysqrt_3(a.x * a.x + a.y * a.y);
 }
 
-static radar_vec2f_t RadarNormalize(radar_vec2f_t v)
-{
-    float l = RadarLen(v);
-    if (l <= 0.000001f)
-    {
-        return RadarVec2(0.0f, 0.0f);
-    }
-    return RadarVec2(v.x / l, v.y / l);
-}
-
-static radar_vec2f_t RadarReflect(radar_vec2f_t v_unit, radar_vec2f_t edge_unit)
-{
-    // reflect around edge line: v' = v - 2*(v·n)*n, n = perp(edge)
-    radar_vec2f_t n = RadarVec2(-edge_unit.y, edge_unit.x);
-    n               = RadarNormalize(n);
-    float vn        = RadarDot(v_unit, n);
-    return RadarVec2(v_unit.x - 2.0f * vn * n.x, v_unit.y - 2.0f * vn * n.y);
-}
-
-static u8 RadarSegmentIntersect(radar_vec2f_t p,
-                                radar_vec2f_t p2,
-                                radar_vec2f_t q,
-                                radar_vec2f_t q2,
-                                float        *out_t,
-                                float        *out_u)
-{
-    // Solve p + t*r = q + u*s for t,u in [0,1]
-    radar_vec2f_t r   = RadarVecSub(p2, p);
-    radar_vec2f_t s   = RadarVecSub(q2, q);
-    float         rxs = RadarCross(r, s);
-    radar_vec2f_t qmp = RadarVecSub(q, p);
-
-    if (rxs > -0.000001f && rxs < 0.000001f)
-    {
-        return 0;  // parallel (ignore colinear for our use)
-    }
-
-    float t = RadarCross(qmp, s) / rxs;
-    float u = RadarCross(qmp, r) / rxs;
-
-    if (t >= 0.0f && t <= 1.0f && u >= 0.0f && u <= 1.0f)
-    {
-        *out_t = t;
-        *out_u = u;
-        return 1;
-    }
-
-    return 0;
-}
-
-/**
- * 射线与圆的交点（二次方程）。
- * 射线：P(t) = start + t*(end-start), t ∈ [0,1]。
- * 圆：圆心 center, 半径 radius。
- * 返回最小正 t ∈ (0,1] 的交点参数；无交点返回 -1。
- */
-static float RadarRayCircleIntersect(radar_vec2f_t start, radar_vec2f_t end,
-                                     radar_vec2f_t center, float radius)
-{
-    radar_vec2f_t d = RadarVecSub(end, start);
-    radar_vec2f_t f = RadarVecSub(start, center);
-
-    float a = RadarDot(d, d);
-    if (a < 0.000001f) return -1.0f;  // degenerate ray
-
-    float b = 2.0f * RadarDot(f, d);
-    float c = RadarDot(f, f) - radius * radius;
-
-    float disc = b * b - 4.0f * a * c;
-    if (disc < 0.0f) return -1.0f;  // no intersection
-
-    float sqrt_disc = app_radar_mysqrt_3(disc);
-    float t1 = (-b - sqrt_disc) / (2.0f * a);
-    float t2 = (-b + sqrt_disc) / (2.0f * a);
-
-    // return smallest t in (0, 1]
-    float best = -1.0f;
-    if (t1 > 0.001f && t1 <= 1.001f) best = t1;
-    if (t2 > 0.001f && t2 <= 1.001f && (best < 0.0f || t2 < best)) best = t2;
-    return best;
-}
-
-/**
- * 判断点是否在圆弧的扇区角度范围内（用于射线-圆弧求交后的角度过滤）。
- * 弧段定义为：圆心 center, 半径 radius, 角度范围 [start_rad, end_rad]。
- */
-static u8 RadarPointOnArcSector(radar_vec2f_t pt, radar_vec2f_t center,
-                                float start_rad, float end_rad)
-{
-    float dx = pt.x - center.x;
-    float dy = pt.y - center.y;
-    float a = RadarWrapAngle(lookup_atan2(dx, dy));
-    return RadarAngleInRange(a, start_rad, end_rad);
-}
-
 /* 原始雷达点外部处理策略 */
 #define RADAR_RAW_OUTSIDE_DROP_DIST_MM 800.0f
 #define RADAR_RAW_OUTSIDE_DROP_LIMIT   3
 static _attribute_data_retention_ u8 g_radar_raw_outside_drop_cnt = 0;
 
 /**
- * 预测点 end 在扇区外时：
- * 1. 连接 end→(0, split_y)，根据落区判断与哪条边界相交
- * 2. 找交点 H 做镜面反射 result = 2*H - end
- * 3. 若反射后仍在范围外，在 end→(0, split_y) 线上取随机点
+ * 预测点 end 在扇区外时，取与边界距离最近的点：
+ * 1. 内外圆弧取 end 到圆心方向上的投影（仅在对应圆弧角度范围内有效）
+ * 2. 两条径向边取 end 到边界线段的垂足（垂足超出线段时取端点）
+ * 3. 在所有候选点中选择距离 end 最近的点
  */
-static void RadarAdvanceReflectSector(s32           start_x_mm,
-                                      s32           start_y_mm,
-                                      radar_vec2f_t v_step,
-                                      s16          *out_x_mm,
-                                      s16          *out_y_mm,
-                                      float        *inout_dir_rad)
+static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
+                                               s32           start_y_mm,
+                                               radar_vec2f_t v_step,
+                                               s16          *out_x_mm,
+                                               s16          *out_y_mm)
 {
-    float ri    = (float)g_radar_sector.inner_radius_mm;
-    float ro    = (float)g_radar_sector.outer_radius_mm;
-    float split_y = ro * g_radar_cos_start;       // ro*0.5
-
-    // 分界线中点 (0, split_y)
-    radar_vec2f_t cp = RadarVec2(0.0f, split_y);
-
+    radar_vec2f_t center = RadarVec2((float)g_radar_sector.center_x_mm,
+                                     (float)g_radar_sector.center_y_mm);
     radar_vec2f_t end = RadarVecAdd(RadarVec2((float)start_x_mm, (float)start_y_mm), v_step);
 
     if (RadarPointInsideSector((s32)end.x, (s32)end.y))
@@ -1773,91 +1674,69 @@ static void RadarAdvanceReflectSector(s32           start_x_mm,
         return;
     }
 
-    // --- 判断与哪条边界相交 ---
-    int bound = -1;  // 0=内弧 1=外弧 2=左径 3=右径
-    if (end.y > split_y)
-    {
-        bound = 1;  // 上半区 → 必定交外弧
-    }
-    else
-    {
-        float xl = ri * g_radar_sin_start;   // 内弧与左径线交点 x ≈ -433
-        float xr = ri * g_radar_sin_end;     // 内弧与右径线交点 x ≈  433
-        if (end.x < xl)
-            bound = 2;  // 左径线
-        else if (end.x > xr)
-            bound = 3;  // 右径线
-        else
-            bound = 0;  // 内弧
-    }
+    float ri = (float)g_radar_sector.inner_radius_mm;
+    float ro = (float)g_radar_sector.outer_radius_mm;
+    radar_vec2f_t best = end;
+    float best_dist2 = 3.402823466e+38F;
 
-    // --- 镜面反射 ---
-    radar_vec2f_t result = end;
-    radar_vec2f_t dir = RadarVecSub(cp, end);
-    float dir_len = RadarLen(dir);
-    radar_vec2f_t dir_u = (dir_len > 0.001f) ? RadarVecMul(dir, 1.0f / dir_len) : RadarVec2(0.0f, 1.0f);
-    radar_vec2f_t H = end;  // 边界交点，备 fallback 用
+    /* 圆弧上的最近点是 end 到圆心方向的径向投影。 */
+    radar_vec2f_t from_center = RadarVecSub(end, center);
+    float radius = RadarLen(from_center);
+    if (radius > 0.000001f)
+    {
+        radar_vec2f_t unit = RadarVecMul(from_center, 1.0f / radius);
+        float angle = RadarWrapAngle(lookup_atan2(unit.x, unit.y));
+        if (RadarAngleInRange(angle, g_radar_start_rad, g_radar_end_rad))
+        {
+            radar_vec2f_t candidate = RadarVecAdd(center, RadarVecMul(unit, ro));
+            float dx = candidate.x - end.x;
+            float dy = candidate.y - end.y;
+            best = candidate;
+            best_dist2 = dx * dx + dy * dy;
 
-    if (bound == 0 || bound == 1)
-    {
-        float r = (bound == 0) ? ri : ro;
-        float a = RadarDot(dir_u, dir_u);
-        radar_vec2f_t f = end;
-        float b = 2.0f * RadarDot(f, dir_u);
-        float c = RadarDot(f, f) - r * r;
-        float disc = b * b - 4.0f * a * c;
-        if (disc >= 0.0f)
-        {
-            float t = (-b - app_radar_mysqrt_3(disc)) / (2.0f * a);
-            if (t < 0.001f) t = (-b + app_radar_mysqrt_3(disc)) / (2.0f * a);
-            if (t > 0.001f)
+            candidate = RadarVecAdd(center, RadarVecMul(unit, ri));
+            dx = candidate.x - end.x;
+            dy = candidate.y - end.y;
+            if (dx * dx + dy * dy < best_dist2)
             {
-                H = RadarVecAdd(end, RadarVecMul(dir_u, t));
-                result = RadarVecSub(RadarVecMul(H, 2.0f), end);
-            }
-        }
-    }
-    else
-    {
-        radar_vec2f_t u = (bound == 2) ? RadarVec2(g_radar_sin_start, g_radar_cos_start)
-                                       : RadarVec2(g_radar_sin_end,   g_radar_cos_end);
-        if (u.x > 0.001f || u.x < -0.001f)
-        {
-            float t_num = end.y * u.x - end.x * u.y;
-            float t_den = dir_u.x * u.y - dir_u.y * u.x;
-            if (t_den > 0.001f || t_den < -0.001f)
-            {
-                float t = t_num / t_den;
-                if (t > 0.001f)
-                {
-                    H = RadarVecAdd(end, RadarVecMul(dir_u, t));
-                    result = RadarVecSub(RadarVecMul(H, 2.0f), end);
-                }
+                best = candidate;
+                best_dist2 = dx * dx + dy * dy;
             }
         }
     }
 
-    // --- 若反射后仍在范围外 → 在 H→cp 线上随机取一点 ---
-    if (!RadarPointInsideSector((s32)result.x, (s32)result.y))
+    /* 径向边是有限线段，垂足超出范围时自动落到对应端点。 */
+    radar_vec2f_t inner_start = RadarVecAdd(center,
+        RadarVec2(ri * g_radar_sin_start, ri * g_radar_cos_start));
+    radar_vec2f_t outer_start = RadarVecAdd(center,
+        RadarVec2(ro * g_radar_sin_start, ro * g_radar_cos_start));
+    radar_vec2f_t inner_end = RadarVecAdd(center,
+        RadarVec2(ri * g_radar_sin_end, ri * g_radar_cos_end));
+    radar_vec2f_t outer_end = RadarVecAdd(center,
+        RadarVec2(ro * g_radar_sin_end, ro * g_radar_cos_end));
+    radar_vec2f_t candidates[2];
+    candidates[0] = RadarClosestPointOnSegment(end, inner_start, outer_start);
+    candidates[1] = RadarClosestPointOnSegment(end, inner_end, outer_end);
+
+    for (u8 i = 0; i < 2; ++i)
     {
-        radar_vec2f_t seg = RadarVecSub(cp, H);
-        float seg_len = RadarLen(seg);
-        if (seg_len > 0.5f)
+        float dx = candidates[i].x - end.x;
+        float dy = candidates[i].y - end.y;
+        float dist2 = dx * dx + dy * dy;
+        if (dist2 < best_dist2)
         {
-            float t = (float)RadarRandRangeI32(100, 900) / 1000.0f;  // 0.1~0.9
-            result = RadarVecAdd(H, RadarVecMul(seg, t));
+            best = candidates[i];
+            best_dist2 = dist2;
         }
     }
 
-    if (result.x > 32767.0f) result.x = 32767.0f;
-    else if (result.x < -32768.0f) result.x = -32768.0f;
-    if (result.y > 32767.0f) result.y = 32767.0f;
-    else if (result.y < -32768.0f) result.y = -32768.0f;
+    if (best.x > 32767.0f) best.x = 32767.0f;
+    else if (best.x < -32768.0f) best.x = -32768.0f;
+    if (best.y > 32767.0f) best.y = 32767.0f;
+    else if (best.y < -32768.0f) best.y = -32768.0f;
 
-    *out_x_mm = (s16)result.x;
-    *out_y_mm = (s16)result.y;
-
-    (void)inout_dir_rad;
+    *out_x_mm = (s16)best.x;
+    *out_y_mm = (s16)best.y;
 }
 
 void app_radar_gimbal_track_task(void)
@@ -1912,7 +1791,7 @@ static void RadarGimbalApplyTargetMm(s16 x_mm, s16 y_mm, float motion_rad)
     //     tilt_deg10 = -DEGx10(10);
     //     atest = 1;
     // }
-    
+
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_PAN, pan_deg10);
     StepMotor_GimbalSetTargetDeg10(STEP_MOTOR_AXIS_TILT, tilt_deg10);
 }
@@ -1924,6 +1803,23 @@ void app_radar_set_track_gimbal_interval_us(u32 interval_us)
 #endif
 
 #if RADAR_TRACK_LEAD_ENABLE
+static s32 RadarTrackLeadMmByHeight(s32 height_mm)
+{
+    if (height_mm <= RADAR_TRACK_HEIGHT_MM_MIN)
+    {
+        return RADAR_TRACK_LEAD_MM_MIN_HEIGHT;
+    }
+    if (height_mm >= RADAR_TRACK_HEIGHT_MM_MAX)
+    {
+        return RADAR_TRACK_LEAD_MM_MAX_HEIGHT;
+    }
+
+    return RADAR_TRACK_LEAD_MM_MIN_HEIGHT +
+           (height_mm - RADAR_TRACK_HEIGHT_MM_MIN) *
+           (RADAR_TRACK_LEAD_MM_MAX_HEIGHT - RADAR_TRACK_LEAD_MM_MIN_HEIGHT) /
+           (RADAR_TRACK_HEIGHT_MM_MAX - RADAR_TRACK_HEIGHT_MM_MIN);
+}
+
 /**
  * 在 (proc_x, proc_y) 基础上沿 motion_rad 向前偏移 lead_mm（与既有预测点 sin(x)/cos(y) 约定一致），
  * 越界时按反射前进修正并保证最小逃跑距离，再回到工作四边形内。
@@ -1941,18 +1837,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
     *out_y = proc_y;
 
 
-    // 静止时扩大范围
-    // if(motion_valid == 0){
-    //     lead_mm  = (s32)0;
-    //     app_radar_set_track_gimbal_interval_us(RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US);
-    //     rand1_mm = RadarRandRangeI32(-1000, 1000);
-    //     rand2_mm = RadarRandRangeI32(-1000, 1000);
-    // }else{
-        lead_mm  = (s32)500;
-        app_radar_set_track_gimbal_interval_us(RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US);
-        rand1_mm = RadarRandRangeI32(100, 500);
-        rand2_mm = RadarRandRangeI32(100, 500);
-    // }
+    lead_mm  = RadarTrackLeadMmByHeight(g_radar_install_height_mm);
+    app_radar_set_track_gimbal_interval_us(RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US);
+    rand1_mm = RadarRandRangeI32(100, 500);
+    rand2_mm = RadarRandRangeI32(100, 500);
 
     {
         off_x = (float)(lead_mm + rand1_mm) * lookup_sin(motion_rad);
@@ -1960,11 +1848,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 
         s16           candidate_x     = 0;
         s16           candidate_y     = 0;
-        float         escape_dir_rad  = motion_rad;
 
         /* 越界时按“沿运动向量前进并反射”处理，避免最近垂足投影导致贴边/贴猫。 */
         radar_vec2f_t v_step = RadarVec2(off_x, off_y);
-        RadarAdvanceReflectSector((s32)proc_x, (s32)proc_y, v_step, &candidate_x, &candidate_y, &escape_dir_rad);
+        RadarClampToNearestSectorBoundary((s32)proc_x, (s32)proc_y, v_step, &candidate_x, &candidate_y);
         // BLE_LOG_D("PREDDBG: reflect out=(%d,%d)", candidate_x, candidate_y);
 
         *out_x = candidate_x;
@@ -1975,7 +1862,7 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 
 static u32  tick_xy_mm = 0;
 static float motion_rad = 0.0f;
-#define debug_point 0
+#define debug_point 1
 static u8 move_cnt = 0;
 static u8 move_flag = 0;
 static u32 move_cnt_window_tick = 0;
@@ -2043,6 +1930,11 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
 
 
 
+    if (x_mm == 0 && y_mm == 0)
+    {
+        return;
+    }
+
     if (app_factory_test_is_active())
     {
         // 0.5s打印一次
@@ -2082,7 +1974,7 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         }
         last_motion_rad = lookup_atan2((float)dx_w, (float)dy_w);
         // if (motion_valid)
-        if (dx_w != 0 && dy_w != 0)
+        if (b_check_distance > 14400)
         {
             motion_rad = last_motion_rad;
         }
@@ -2091,6 +1983,11 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
     {
         return;
     }
+    if (!move_flag)
+    {
+        return;
+    }
+
     #if debug_point
         // 将原始坐标点和运动方向发送到上位机（用于 UI 显示）
         s16 motion_dir_deg10 = 0;
@@ -2120,7 +2017,10 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         s16 track_x = proc_x;
         s16 track_y = proc_y;
 #if RADAR_TRACK_LEAD_ENABLE
+        // 运动时用这个预测点算法
         RadarTrackComputeLeadMm(proc_x, proc_y, motion_valid, is_stationary, motion_rad, v_cm_s, &track_x, &track_y);
+        // 静止时根据预测点算法得到的点如果在边界上则让预测点在当前边界上从最边上到另一个边上每次变动10%,注意大的弧需要分为左右两部分,小弧和左右的径线不用分
+        
         // BLE_LOG_D("PREDDBG: lead out=(%d,%d) inside=%d", track_x, track_y,RadarPointInsideSector((s32)track_x, (s32)track_y));
 #else
         // RADAR_TRACK_LEAD_ENABLE=0 时 track=proc
@@ -2462,7 +2362,6 @@ void app_radar_task_power_schedule(void)
             g_hunt_state          = HUNT_STATE_ACTIVE;
             g_hunt_session_acc_ms = 0;
             g_hunt_acc_tick_last  = now_tick;
-            g_hunt_session_tick   = now_tick;
             g_hunt_success        = 0;
             g_hunt_no_target_tick = 0;
             g_hunt_prey_zone_tick = 0;
@@ -2484,25 +2383,33 @@ void app_radar_task_power_schedule(void)
         }
         g_radar_hold_on_mode = 1;
 
-        // 累计狩猎时间 (每秒)
+        /*
+         * 累计当前 ACTIVE 的实际经过时间。
+         * clock_time() 是 32 位 16MHz tick，直接用 clock_time_exceed() 判断
+         * 600s 会在 us→tick 时溢出，因此长时长统一使用短间隔累计的毫秒值。
+         */
         if (g_hunt_acc_tick_last)
         {
             u32 elapsed_us = (now_tick - g_hunt_acc_tick_last) >> 4;
             if (elapsed_us >= 1000000u)
             {
-                g_hunt_session_acc_ms = g_radar_sess_motion_ms;
-                g_hunt_total_active_ms += 1000;  // 每秒增加1000ms
-                g_cat_total_active_ms += 1000;
+                u32 elapsed_ms = elapsed_us / 1000u;
+                g_hunt_session_acc_ms += elapsed_ms;
+                g_hunt_total_active_ms += elapsed_ms;
+                g_cat_total_active_ms += elapsed_ms;
                 g_hunt_acc_tick_last = now_tick;
                 BLE_LOG_D("HUNT: active %ds/%ds total %ds",
-                          g_cat_total_active_ms / 1000,
+                          g_hunt_session_acc_ms / 1000,
                           g_hunt_duration_s,
                           g_hunt_total_active_ms / 1000);
                 BLE_LOG_D("last_motion %d", (g_radar_last_motion_tick / 1000000u) >> 4);
                 // 调试的目标丢失累计时间打印
                 if (g_hunt_no_target_tick != 0)
                 {
-                    g_cat_total_active_ms -= 1000;
+                    if (g_cat_total_active_ms >= elapsed_ms)
+                        g_cat_total_active_ms -= elapsed_ms;
+                    else
+                        g_cat_total_active_ms = 0;
                     BLE_LOG_D("HUNT: no target for %ds, total cat %d", ((now_tick - g_hunt_no_target_tick) / 1000000u) >> 4,
                      (g_cat_total_active_ms) / 1000);
                 }
@@ -2576,8 +2483,7 @@ void app_radar_task_power_schedule(void)
         // }
 
         // 条件3: 狩猎计时到达预设值(固定时长，不按猫运动的时长来判断) → 完成移动
-        if (clock_time_exceed(g_hunt_session_tick, (u32)g_hunt_duration_s * 1000000u))
-        // if (g_hunt_session_acc_ms / 1000 >= (u32)g_hunt_duration_s)
+        if (g_hunt_session_acc_ms >= (u32)g_hunt_duration_s * 1000u)
         {
             BLE_LOG_D("HUNT: ACTIVE -> COMPLETE_MOVING (timer %ds)", g_hunt_duration_s);
             BLE_LOG_D("HUNT: stop tracking and move to prey point");
@@ -2622,7 +2528,6 @@ void app_radar_task_power_schedule(void)
             BLE_LOG_D("HUNT: STANDBY -> ACTIVE (target returned)");
             g_hunt_session_acc_ms = 0;
             g_hunt_acc_tick_last  = now_tick;
-            g_hunt_session_tick   = now_tick;
             g_hunt_success        = 0;
             g_hunt_no_target_tick = 0;
             g_hunt_prey_zone_tick = 0;
@@ -3087,9 +2992,9 @@ static u32 g_prey_random_tick   = 0;
 
 void app_hunt_prey_random_move(void)
 {
-    // 水平角度（30-60或-30--60°）俯仰角（25°~35°）间随机移动
-    s16 pan_deg10  = (s16)RadarRandRangeI32(-600, 600);
-    s16 tilt_deg10 = (s16)RadarRandRangeI32(250 - 900, 350 - 900);  // 25°-35°
+    // 水平角度（-60-60°）俯仰角（25°~35°）间随机移动
+    s16 pan_deg10  = (s16)RadarRandRangeI32(DEGx10(-60), DEGx10(60));
+    s16 tilt_deg10 = (s16)RadarRandRangeI32(200 - 900, 350 - 900);  // 20°-35°
 
 #if (UI_STEP_MOTOR_ENABLE)
     StepMotor_GimbalSetSpeedUs(1200);
