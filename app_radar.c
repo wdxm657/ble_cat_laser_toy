@@ -23,7 +23,7 @@
 #define RADAR_RX_IRQ_DEBUG 0
 #endif
 
-#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (0.8f * 1000.0f)
+#define RADAR_INSTALL_HEIGHT_DEFAULT_MM   (0.855f * 1000.0f)
 #define RADAR_FRAME_LEN                   30
 #define SAMPLE_COUNT                      1
 #define STATIONARY_DXY_THRESHOLD_MM       2.0f
@@ -146,7 +146,7 @@ typedef enum
  * 雷达直接跟踪：与 app_ctrl 边界移动（APP_CTRL_BOUNDARY_MOVE_SPEED_US）同量级步间隔，
  * 每帧只更新一个目标点，由 StepMotor_GimbalTask 连续逼近 —— 避免多点折线 + 分段等待造成的顿挫。
  */
-#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 4000u / 4
+#define RADAR_TRACK_GIMBAL_INTERVAL_DEFAULT_US 4000u / 2
 
 /*
  * 阶段二：沿估计运动方向在水平面内向前偏移 (mm)，使云台略超前目标。
@@ -1240,11 +1240,6 @@ static int radar_install_height_load_from_flash(void)
  */
 static void radar_sector_update_outer_from_height(void)
 {
-    if (!g_radar_install_height_set)
-    {
-        return;
-    }
-
     float height_m = (float)g_radar_install_height_mm / 1000.0f;
     float outer_m  = 3.5f * height_m - 0.3f;
 
@@ -1349,15 +1344,11 @@ void app_radar_init(void)
     {
         LOG_D("radar_sector_load_from_flash success: outer=%d", g_radar_sector.outer_radius_mm);
     }
-    else if (g_radar_install_height_set)
+    else
     {
         LOG_D("radar_sector_load_from_flash failed, auto-calc from height");
         radar_sector_update_outer_from_height();
         radar_sector_save_to_flash();
-    }
-    else
-    {
-        LOG_D("radar_sector_load_from_flash failed, using defaults");
     }
 
     radar_play_records_load_from_flash();
@@ -1587,6 +1578,16 @@ typedef struct
     float y;
 } radar_vec2f_t;
 
+typedef enum
+{
+    RADAR_BOUNDARY_NONE = 0,       // 预测点未越界，不需要沿边界扫描
+    RADAR_BOUNDARY_OUTER_LEFT,     // 外侧大圆弧的左半段：起始角 → 中间角
+    RADAR_BOUNDARY_OUTER_RIGHT,    // 外侧大圆弧的右半段：中间角 → 终止角
+    RADAR_BOUNDARY_INNER,          // 内侧小圆弧：起始角 → 终止角，不拆分
+    RADAR_BOUNDARY_RADIAL_START,   // 起始角一侧的径向直线：内圆 → 外圆
+    RADAR_BOUNDARY_RADIAL_END,     // 终止角一侧的径向直线：内圆 → 外圆
+} radar_boundary_t;
+
 static radar_vec2f_t RadarVec2(float x, float y)
 {
     radar_vec2f_t v;
@@ -1646,6 +1647,20 @@ static float RadarLen(radar_vec2f_t a)
     return app_radar_mysqrt_3(a.x * a.x + a.y * a.y);
 }
 
+static float RadarAngleSpanPositive(float start, float end)
+{
+    /*
+     * 将角度跨度转换为 0～2π 的正数。
+     * 例如 start=-60°、end=+60°，返回的跨度就是 120°。
+     */
+    float span = RadarWrapAngle(end - start);
+    if (span < 0.0f)
+    {
+        span += 6.2831852f;
+    }
+    return span;
+}
+
 /* 原始雷达点外部处理策略 */
 #define RADAR_RAW_OUTSIDE_DROP_DIST_MM 800.0f
 #define RADAR_RAW_OUTSIDE_DROP_LIMIT   3
@@ -1661,7 +1676,8 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
                                                s32           start_y_mm,
                                                radar_vec2f_t v_step,
                                                s16          *out_x_mm,
-                                               s16          *out_y_mm)
+                                               s16          *out_y_mm,
+                                               radar_boundary_t *out_boundary)
 {
     radar_vec2f_t center = RadarVec2((float)g_radar_sector.center_x_mm,
                                      (float)g_radar_sector.center_y_mm);
@@ -1669,8 +1685,13 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
 
     if (RadarPointInsideSector((s32)end.x, (s32)end.y))
     {
+        /* 没有越界，直接使用原预测点，并用 NONE 告诉调用者无需扫描边界。 */
         *out_x_mm = (s16)end.x;
         *out_y_mm = (s16)end.y;
+        if (out_boundary)
+        {
+            *out_boundary = RADAR_BOUNDARY_NONE;
+        }
         return;
     }
 
@@ -1678,6 +1699,7 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
     float ro = (float)g_radar_sector.outer_radius_mm;
     radar_vec2f_t best = end;
     float best_dist2 = 3.402823466e+38F;
+    radar_boundary_t best_boundary = RADAR_BOUNDARY_NONE;
 
     /* 圆弧上的最近点是 end 到圆心方向的径向投影。 */
     radar_vec2f_t from_center = RadarVecSub(end, center);
@@ -1693,6 +1715,16 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
             float dy = candidate.y - end.y;
             best = candidate;
             best_dist2 = dx * dx + dy * dy;
+            {
+                /*
+                 * 外弧较长，按扇区中间角拆成左右两段。
+                 * pos 位于前半段时扫描左外弧，位于后半段时扫描右外弧。
+                 */
+                float span = RadarAngleSpanPositive(g_radar_start_rad, g_radar_end_rad);
+                float pos = RadarAngleSpanPositive(g_radar_start_rad, angle);
+                best_boundary = (pos <= span * 0.5f) ? RADAR_BOUNDARY_OUTER_LEFT
+                                                     : RADAR_BOUNDARY_OUTER_RIGHT;
+            }
 
             candidate = RadarVecAdd(center, RadarVecMul(unit, ri));
             dx = candidate.x - end.x;
@@ -1701,6 +1733,7 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
             {
                 best = candidate;
                 best_dist2 = dx * dx + dy * dy;
+                best_boundary = RADAR_BOUNDARY_INNER;
             }
         }
     }
@@ -1727,6 +1760,8 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
         {
             best = candidates[i];
             best_dist2 = dist2;
+            best_boundary = (i == 0) ? RADAR_BOUNDARY_RADIAL_START
+                                     : RADAR_BOUNDARY_RADIAL_END;
         }
     }
 
@@ -1737,6 +1772,10 @@ static void RadarClampToNearestSectorBoundary(s32           start_x_mm,
 
     *out_x_mm = (s16)best.x;
     *out_y_mm = (s16)best.y;
+    if (out_boundary)
+    {
+        *out_boundary = best_boundary;
+    }
 }
 
 void app_radar_gimbal_track_task(void)
@@ -1820,11 +1859,131 @@ static s32 RadarTrackLeadMmByHeight(s32 height_mm)
            (RADAR_TRACK_HEIGHT_MM_MAX - RADAR_TRACK_HEIGHT_MM_MIN);
 }
 
+typedef struct
+{
+    u8               target_valid;   // 是否已经生成过一个静止目标点
+    radar_boundary_t boundary;       // NONE=圆内随机；其他值=正在扫描对应边界
+    u8               progress_10pct; // 当前边界进度：0～10 分别表示 0%～100%
+    s8               direction;      // +1 向 100% 前进，-1 向 0% 返回
+    s16              target_x_mm;    // 当前下发给云台的静止目标 X
+    s16              target_y_mm;    // 当前下发给云台的静止目标 Y
+} radar_stationary_track_t;
+
+_attribute_data_retention_ static radar_stationary_track_t g_radar_stationary_track = {0};
+
+static void RadarStationaryTrackReset(void)
+{
+    /* 目标重新运动后，清除上一次静止随机/边界扫描状态。 */
+    memset(&g_radar_stationary_track, 0, sizeof(g_radar_stationary_track));
+}
+
+/**
+ * 根据边界类型和扫描进度计算坐标。
+ * progress_10pct=0 表示边界一端，10 表示另一端，中间每加 1 就移动 10%。
+ *
+ * 外弧被拆成左右两半；内弧以及左右径向线都按完整边界计算。
+ */
+static void RadarBoundaryPointAtProgress(radar_boundary_t boundary, u8 progress_10pct,
+                                         s16 *out_x_mm, s16 *out_y_mm)
+{
+    /* 将整数进度 0～10 转换为浮点比例 0.0～1.0。 */
+    float t = (float)progress_10pct / 10.0f;
+    float ri = (float)g_radar_sector.inner_radius_mm;
+    float ro = (float)g_radar_sector.outer_radius_mm;
+    float x;
+    float y;
+
+    if (boundary == RADAR_BOUNDARY_RADIAL_START ||
+        boundary == RADAR_BOUNDARY_RADIAL_END)
+    {
+        /*
+         * 径向边的角度固定，只改变半径：
+         * t=0 位于内圆端，t=1 位于外圆端。
+         */
+        float radius = ri + (ro - ri) * t;
+        float sin_a = (boundary == RADAR_BOUNDARY_RADIAL_START) ? g_radar_sin_start
+                                                                : g_radar_sin_end;
+        float cos_a = (boundary == RADAR_BOUNDARY_RADIAL_START) ? g_radar_cos_start
+                                                                : g_radar_cos_end;
+        x = (float)g_radar_sector.center_x_mm + radius * sin_a;
+        y = (float)g_radar_sector.center_y_mm + radius * cos_a;
+    }
+    else
+    {
+        /* 圆弧的半径固定，通过改变角度沿圆弧移动。默认处理完整内圆弧。 */
+        float span = RadarAngleSpanPositive(g_radar_start_rad, g_radar_end_rad);
+        float start = g_radar_start_rad;
+        float end = g_radar_end_rad;
+        float radius = ri;
+
+        if (boundary == RADAR_BOUNDARY_OUTER_LEFT)
+        {
+            /* 外弧左半段：扇区起始角 → 扇区中间角。 */
+            end = g_radar_start_rad + span * 0.5f;
+            radius = ro;
+        }
+        else if (boundary == RADAR_BOUNDARY_OUTER_RIGHT)
+        {
+            /* 外弧右半段：扇区中间角 → 扇区终止角。 */
+            start = g_radar_start_rad + span * 0.5f;
+            end = g_radar_start_rad + span;
+            radius = ro;
+        }
+
+        float angle = start + (end - start) * t;
+        x = (float)g_radar_sector.center_x_mm + radius * lookup_sin(angle);
+        y = (float)g_radar_sector.center_y_mm + radius * lookup_cos(angle);
+    }
+
+    *out_x_mm = (s16)x;
+    *out_y_mm = (s16)y;
+}
+
+static void RadarStationaryBoundaryAdvance(void)
+{
+    /* 每次只推进一格，也就是整段边界长度的 10%。 */
+    s16 next = (s16)g_radar_stationary_track.progress_10pct +
+               (s16)g_radar_stationary_track.direction;
+
+    if (next >= 10)
+    {
+        /* 到达 100% 端点后掉头，下一次开始往回扫描。 */
+        next = 10;
+        g_radar_stationary_track.direction = -1;
+    }
+    else if (next <= 0)
+    {
+        /* 回到 0% 端点后再次掉头，实现持续往返扫描。 */
+        next = 0;
+        g_radar_stationary_track.direction = 1;
+    }
+    g_radar_stationary_track.progress_10pct = (u8)next;
+}
+
+static u8 RadarStationaryTargetCanAdvance(void)
+{
+#if (UI_STEP_MOTOR_ENABLE)
+    /*
+     * 两轴中只要有一个还没有到达当前目标，就保持原目标不变。
+     * 这样可避免约 19Hz 的雷达更新不断打断步进电机运动。
+     */
+    if (g_radar_stationary_track.target_valid &&
+        (StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) ||
+         StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT)))
+    {
+        return 0;
+    }
+#endif
+    return 1;
+}
+
 /**
  * 在 (proc_x, proc_y) 基础上沿 motion_rad 向前偏移 lead_mm（与既有预测点 sin(x)/cos(y) 约定一致），
- * 越界时按反射前进修正并保证最小逃跑距离，再回到工作四边形内。
+ * 越界时投影到距离原始预测点最近的扇形边界点。
  */
-static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 is_stationary, float motion_rad, s16 v_cm_s, s16 *out_x, s16 *out_y)
+static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 is_stationary,
+                                    float motion_rad, s16 v_cm_s, s16 *out_x, s16 *out_y,
+                                    radar_boundary_t *out_boundary)
 {
     s16 v_abs;
     s32 lead_mm;
@@ -1835,6 +1994,10 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
 
     *out_x = proc_x;
     *out_y = proc_y;
+    if (out_boundary)
+    {
+        *out_boundary = RADAR_BOUNDARY_NONE;
+    }
 
 
     lead_mm  = RadarTrackLeadMmByHeight(g_radar_install_height_mm);
@@ -1849,14 +2012,92 @@ static void RadarTrackComputeLeadMm(s16 proc_x, s16 proc_y, u8 motion_valid, u8 
         s16           candidate_x     = 0;
         s16           candidate_y     = 0;
 
-        /* 越界时按“沿运动向量前进并反射”处理，避免最近垂足投影导致贴边/贴猫。 */
+        /* 越界时取预测点在扇形边界上的最近投影点。 */
         radar_vec2f_t v_step = RadarVec2(off_x, off_y);
-        RadarClampToNearestSectorBoundary((s32)proc_x, (s32)proc_y, v_step, &candidate_x, &candidate_y);
-        // BLE_LOG_D("PREDDBG: reflect out=(%d,%d)", candidate_x, candidate_y);
+        RadarClampToNearestSectorBoundary((s32)proc_x, (s32)proc_y, v_step,
+                                          &candidate_x, &candidate_y, out_boundary);
+        // BLE_LOG_D("PREDDBG: clamp out=(%d,%d)", candidate_x, candidate_y);
 
         *out_x = candidate_x;
         *out_y = candidate_y;
     }
+}
+
+static void RadarTrackComputeStationaryMm(s16 proc_x, s16 proc_y, float motion_rad,
+                                          s16 v_cm_s, s16 *out_x, s16 *out_y)
+{
+    /* 电机还在运动时重复返回缓存目标，不生成新随机点，也不推进边界进度。 */
+    if (!RadarStationaryTargetCanAdvance())
+    {
+        *out_x = g_radar_stationary_track.target_x_mm;
+        *out_y = g_radar_stationary_track.target_y_mm;
+        return;
+    }
+
+    if (g_radar_stationary_track.boundary != RADAR_BOUNDARY_NONE)
+    {
+        /* 已经进入边界扫描：当前目标到达后，将扫描进度推进 10%。 */
+        if (g_radar_stationary_track.target_valid)
+        {
+            RadarStationaryBoundaryAdvance();
+        }
+        RadarBoundaryPointAtProgress(g_radar_stationary_track.boundary,
+                                     g_radar_stationary_track.progress_10pct,
+                                     out_x, out_y);
+    }
+    else
+    {
+        /*
+         * 尚未进入边界扫描，先运行原来的预测算法：
+         * - 原预测点越界并被投影到边界：锁定该边界并开始扫描；
+         * - 原预测点没有落到边界：改为在当前雷达点附近 500mm 圆内随机。
+         */
+        s16 predicted_x = proc_x;
+        s16 predicted_y = proc_y;
+        radar_boundary_t predicted_boundary = RADAR_BOUNDARY_NONE;
+
+        RadarTrackComputeLeadMm(proc_x, proc_y, 0, 1, motion_rad, v_cm_s,
+                                &predicted_x, &predicted_y, &predicted_boundary);
+        if (predicted_boundary != RADAR_BOUNDARY_NONE)
+        {
+            /* 从选中边界的 0% 端点开始，之后按 10% 逐步扫描。 */
+            g_radar_stationary_track.boundary = predicted_boundary;
+            g_radar_stationary_track.progress_10pct = 0;
+            g_radar_stationary_track.direction = 1;
+            RadarBoundaryPointAtProgress(predicted_boundary, 0, out_x, out_y);
+        }
+        else
+        {
+            /*
+             * 以当前雷达点 (proc_x, proc_y) 为圆心随机：
+             * 半径 0～500mm，方向 0～359.9°。
+             */
+            s32 radius_mm = RadarRandRangeI32(0, 500);
+            float angle = (float)RadarRandRangeI32(0, 3599) * DEG_TO_RAD_10;
+            radar_vec2f_t random_step = RadarVec2((float)radius_mm * lookup_sin(angle),
+                                                  (float)radius_mm * lookup_cos(angle));
+            radar_boundary_t random_boundary = RADAR_BOUNDARY_NONE;
+
+            RadarClampToNearestSectorBoundary((s32)proc_x, (s32)proc_y, random_step,
+                                              out_x, out_y, &random_boundary);
+            if (random_boundary != RADAR_BOUNDARY_NONE)
+            {
+                /*
+                 * 随机点越界时，最近点投影函数会返回对应边界。
+                 * 此时不重新随机，直接锁定该边界并从 0% 开始扫描。
+                 */
+                g_radar_stationary_track.boundary = random_boundary;
+                g_radar_stationary_track.progress_10pct = 0;
+                g_radar_stationary_track.direction = 1;
+                RadarBoundaryPointAtProgress(random_boundary, 0, out_x, out_y);
+            }
+        }
+    }
+
+    /* 缓存本次目标；电机到达前，后续 19Hz 调用始终返回这个点。 */
+    g_radar_stationary_track.target_x_mm = *out_x;
+    g_radar_stationary_track.target_y_mm = *out_y;
+    g_radar_stationary_track.target_valid = 1;
 }
 #endif /* RADAR_TRACK_LEAD_ENABLE */
 
@@ -1978,6 +2219,13 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
         {
             motion_rad = last_motion_rad;
         }
+        if (b_check_distance < 3600)
+        {
+            // 快速进入静止状态,不等滤波
+            is_stationary = 1;
+            motion_valid  = 0;
+        }
+        
     }
     else
     {
@@ -2011,16 +2259,27 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
     #endif
 
     /*
-     * 跟踪：直接根据目标运动方向计算预测点，沿运动方向加超前量+边界保护(反射)。
+     * 运动时沿目标方向计算预测点；静止时执行局部随机或边界扫描。
      */
     {
         s16 track_x = proc_x;
         s16 track_y = proc_y;
 #if RADAR_TRACK_LEAD_ENABLE
-        // 运动时用这个预测点算法
-        RadarTrackComputeLeadMm(proc_x, proc_y, motion_valid, is_stationary, motion_rad, v_cm_s, &track_x, &track_y);
-        // 静止时根据预测点算法得到的点如果在边界上则让预测点在当前边界上从最边上到另一个边上每次变动10%,注意大的弧需要分为左右两部分,小弧和左右的径线不用分
-        
+        if (motion_valid)
+        {
+            /* 目标正在运动：结束静止扫描，继续使用正常的运动预测算法。 */
+            RadarStationaryTrackReset();
+            RadarTrackComputeLeadMm(proc_x, proc_y, motion_valid, is_stationary,
+                                    motion_rad, v_cm_s, &track_x, &track_y, 0);
+        }
+        else
+        {
+            /* 目标静止：在 500mm 圆内随机，越界后改为沿边界扫描。 */
+            RadarTrackComputeStationaryMm(proc_x, proc_y, motion_rad, v_cm_s,
+                                          &track_x, &track_y);
+            app_radar_set_track_gimbal_interval_us(8000);
+        }
+
         // BLE_LOG_D("PREDDBG: lead out=(%d,%d) inside=%d", track_x, track_y,RadarPointInsideSector((s32)track_x, (s32)track_y));
 #else
         // RADAR_TRACK_LEAD_ENABLE=0 时 track=proc
@@ -2049,21 +2308,20 @@ static void ReportPredictionSerialized(u32 now_tick, s16 x_mm, s16 y_mm, s16 v_c
             {
                 if (g_hunt_state == HUNT_STATE_ACTIVE)
                 {
-                    RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
                     /*
                      * 静止时保留当前随机目标直到两轴到位，避免每帧重算目标
                      * 导致电机始终追不上、实际移动距离很短。
                      */
-                    // if (motion_valid)
-                    // {
-                    //     RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
-                    // }else{
-                    //     if ((!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) &&
-                    //      !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT)))
-                    //     {
-                    //         RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
-                    //     }
-                    // }
+                    if (motion_valid)
+                    {
+                        RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                    }else{
+                        if ((!StepMotor_IsRunning(STEP_MOTOR_AXIS_PAN) &&
+                         !StepMotor_IsRunning(STEP_MOTOR_AXIS_TILT)))
+                        {
+                            RadarGimbalApplyTargetMm(track_x, track_y, motion_rad);
+                        }
+                    }
                 }
             }
         }
