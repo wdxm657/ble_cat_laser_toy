@@ -1234,9 +1234,28 @@ static int app_ctrl_handle_radar_reset_flash_config(u8 seq, u8 *payload, u16 len
 {
     (void)payload;
     (void)len;
+
+    /*
+     * App 收到本命令的成功响应后会执行设备解绑。
+     * 如果设备当前仍处于开机状态，必须先完成正常关机并保存关机状态，
+     * 防止解绑后设备继续运行，或重新上电后又恢复为开机状态。
+     */
+    if (app_get_power_state())
+    {
+        BLE_LOG_D("RADAR_RESET_FLASH_CONFIG: power off before unbind");
+        app_set_power_state(0);
+        app_save_power_state_to_flash();
+
+        /* 记录本次关机时间，保持与普通电源控制相同的开机冷却限制。 */
+        g_power_off_tick             = clock_time();
+        g_power_off_cooldown_active  = 1;
+        g_power_on_cooldown_active   = 0;
+    }
+
     u8 rsp[1] = {CTRL_STATUS_OK};
     app_ctrl_send(CTRL_MSG_TYPE_RSP, CTRL_CMD_RADAR_RESET_FLASH_CONFIG, seq, rsp, sizeof(rsp));
-    // 先反馈然后再擦除FLASH，防止擦除FLASH的时候蓝牙倍断开导致APP收不到反馈
+
+    // 关机完成后先反馈解绑成功，再擦除配置，避免擦除期间蓝牙断开导致 App 收不到响应。
     app_radar_clear_install_height_and_record_flash();
     app_vib_data_clear();
     return 0;
